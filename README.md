@@ -78,9 +78,6 @@ time in a strip above it).
   rear-view mirror; turn that off in Settings.
 - **MAP** shows the same offline waterway map as the Map screen.
 
-![Camera picture-in-picture](shots/cam_pip.png)
-![Camera full width](shots/cam_full.png)
-
 ### Heart rate
 
 Any Bluetooth heart rate sensor works: a chest strap (Polar H10, Garmin HRM,
@@ -177,7 +174,7 @@ Sessions screen show local time (`cfg::TIMEZONE`, Amsterdam by default).
 Lists every session on the card with its number, start date and time, duration
 and size.
 
-- **RENAME** gives a session a name such as `Bosbaan intervals`. Its files
+- The pencil gives a session a name such as `Bosbaan intervals`. Its files
   become `S0022_Bosbaan_intervals_imu.csv` and so on, and `fetch.py` and
   `analyse.py` understand both forms.
 - Tap a session's name to review it: the GPS track on the offline map, coloured
@@ -190,7 +187,11 @@ and size.
 - A session without a GPS fix still shows what was recorded: time, average
   rate, strokes, laps, average and maximum heart rate, and the rate and heart
   rate graphs.
-- **DELETE**, then **CONFIRM**, removes all files of a session.
+- The trash can, tapped twice (it turns red after the first tap), removes all
+  files of a session.
+
+![Sessions screen](shots/sessions.png)
+![Session review](shots/session_review.png)
 
 ## Exporting to Strava or Garmin Connect
 
@@ -281,14 +282,15 @@ Tap **MAPS** on the Map screen (between sessions). Wi-Fi switches on while this
 screen is open and off again when you leave it.
 
 - **LIBRARY**: well-known rowing waters (Bosbaan, Willem-Alexander Baan, Amstel,
-  Henley, Tideway, Rotsee, Bled, ...). Tap DOWNLOAD; UPDATE fetches a fresh copy.
+  Henley, Tideway, Rotsee, Bled, ...). Tap the download arrow; for a map already
+  on the card, the circular arrow fetches a fresh copy.
 - **DRAW AREA**: an OpenStreetMap background centred on your position. Drag to
   pan, +/- to zoom, tap SELECT AREA and drag a rectangle over the water you row
   on (up to 8 x 8 km), then DOWNLOAD AREA.
 - **ON CARD**: the maps on the SD card with their size. A map you drew is named
-  after its centre (`Area 52.226 5.072`); tap **RENAME** to give it a proper
+  after its centre (`Area 52.226 5.072`); tap the pencil to give it a proper
   name with the on-screen keyboard. The file name on the card stays the same.
-  **DELETE**, then **CONFIRM**, removes a map. Recorded sessions are on the
+  The trash can, tapped twice, removes a map. Recorded sessions are on the
   **Sessions** screen.
 
 A download takes 30-60 s, mostly waiting for the Overpass map server; the header
