@@ -213,11 +213,21 @@ bool draw(int x, int y, int w, int h, bool mirror, bool rotate180) {
 }  // namespace camera
 
 // The prebuilt image tuning folds white balance into the colour matrix and, in warm or dim light,
-// asks for gains above the ISP's +-4 limit. Unclamped, the whole update is rejected, white balance
-// is never applied and the picture turns green; with saturation the driver clamps instead.
+// asks for gains above the ISP's +-4 limit. The driver then rejects the whole update (its `saturation`
+// flag is not honoured by this build), white balance is never applied, the picture turns green and the
+// stream cannot restart. Scaling an offending row down keeps that channel's colour mix.
 extern "C" esp_err_t __real_esp_isp_ccm_configure(isp_proc_handle_t proc, const esp_isp_ccm_config_t* cfg);
 extern "C" esp_err_t __wrap_esp_isp_ccm_configure(isp_proc_handle_t proc, const esp_isp_ccm_config_t* cfg) {
+    if (!cfg) return __real_esp_isp_ccm_configure(proc, cfg);
+    constexpr float LIMIT = 3.99f;
     esp_isp_ccm_config_t c = *cfg;
     c.saturation = true;
+    for (int r = 0; r < ISP_CCM_DIMENSION; r++) {
+        float peak = 0;
+        for (int k = 0; k < ISP_CCM_DIMENSION; k++) peak = fmaxf(peak, fabsf(c.matrix[r][k]));
+        if (peak > LIMIT) {
+            for (int k = 0; k < ISP_CCM_DIMENSION; k++) c.matrix[r][k] *= LIMIT / peak;
+        }
+    }
     return __real_esp_isp_ccm_configure(proc, &c);
 }

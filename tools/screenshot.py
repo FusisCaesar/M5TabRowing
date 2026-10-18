@@ -29,7 +29,8 @@ def main():
         w, h = int(w), int(h)
         data = ser.read(w * h * 2)
         if len(data) != w * h * 2:
-            sys.exit(f"short read: {len(data)} of {w * h * 2} bytes")
+            print(f"short read: {len(data)} of {w * h * 2} bytes, padding")
+            data = data.ljust(w * h * 2, b"\0")
 
     img = Image.new("RGB", (w, h))
     px = img.load()
