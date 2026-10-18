@@ -1,0 +1,944 @@
+#include "ui.h"
+
+#include <M5Unified.h>
+
+#include "board.h"
+#include "camera.h"
+#include "display_fb.h"
+#include "config.h"
+#include "gps_nav.h"
+#include "imu_stroke.h"
+#include "logger.h"
+#include "map_data.h"
+#include "map_job.h"
+#include "map_view.h"
+#include "maps_ui.h"
+#include "net.h"
+#include "metrics.h"
+#include "settings.h"
+#include "track.h"
+
+namespace ui {
+
+namespace {
+
+// ---- layout (landscape 1280 x 720) ---------------------------------------
+constexpr int W = 1280;
+constexpr int H = 720;
+constexpr int BAR_H = 56;
+constexpr int BIG_W = 640, BIG_H = 232;
+constexpr int SMALL_Y = BAR_H + 2 * BIG_H;
+constexpr int SMALL_W = 320, SMALL_H = 100;
+constexpr int BTN_Y = SMALL_Y + SMALL_H;
+constexpr int BTN_COUNT = 5;
+constexpr int BTN_W = W / BTN_COUNT, BTN_H = H - BTN_Y;
+// Camera picture-in-picture: left half, metrics stacked on the right.
+constexpr int PIP_W = 640, PIP_H = 360;
+constexpr int PIP_INFO_Y = BAR_H + PIP_H + 4;
+// Camera full screen: one row of small metric tiles above the image.
+constexpr int FULL_CAM_Y = BAR_H + SMALL_H;
+constexpr int FULL_CAM_H = BTN_Y - FULL_CAM_Y;
+constexpr int CONTENT_H = BTN_Y - BAR_H;
+constexpr int PLOT_H = 430;
+constexpr int ROW_H = 67;
+constexpr int PLOT_POINTS = 600;   // 6 s at 100 Hz
+constexpr float PLOT_RANGE_G = 0.6f;
+
+// The NEXT button cycles through the first CYCLE screens; Maps opens from the Map screen.
+enum class Screen { Main, Map, Plot, Settings, Maps };
+constexpr int CYCLE = 4;
+enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
+
+struct Theme {
+    uint16_t bg, fg, label, accent, dim, btn, btnText, warn, ok;
+};
+const Theme NIGHT = {TFT_BLACK, TFT_WHITE, 0xAD55, TFT_YELLOW, 0x39E7, 0x2124, TFT_WHITE, TFT_RED, TFT_GREEN};
+const Theme DAY = {TFT_WHITE, TFT_BLACK, 0x31A6, 0x001F, 0xC618, 0xDEFB, TFT_BLACK, 0xC000, 0x0400};
+
+M5Canvas bigC(&M5.Display);
+M5Canvas smallC(&M5.Display);
+M5Canvas barC(&M5.Display);
+M5Canvas rowC(&M5.Display);
+M5Canvas plotC(&M5.Display);
+M5Canvas btnC(&M5.Display);
+M5Canvas setC(&M5.Display);
+M5Canvas mapC(&M5.Display);     // full-size map area (Map screen or full-on-Main)
+M5Canvas mapPipC(&M5.Display);  // picture-in-picture map
+
+Screen screen = Screen::Main;
+const Theme* th = &NIGHT;
+bool forceRedraw = true;
+camera::Status camShown = camera::Status::Off;
+uint32_t lastMap = 0;
+uint32_t lastMapScan = 0;
+bool dragging = false;
+// On-map button that opens the Maps screen (Map screen, no session running).
+constexpr int MAPS_BTN_X = 16, MAPS_BTN_Y = 16, MAPS_BTN_W = 170, MAPS_BTN_H = 64;
+
+struct Cache {
+    char text[96];
+};
+Cache bigCache[4], smallCache[6], btnCache[BTN_COUNT], barCache, rowCache[10];
+
+char hint[48] = "";
+uint32_t hintUntil = 0;
+uint32_t lastFrame = 0;
+uint32_t lastPlot = 0;
+uint32_t lastBattery = 0;
+
+imu::PlotPoint plotBuf[PLOT_POINTS];
+
+// ---- formatting ------------------------------------------------------------
+
+void fmtSplit(char* out, size_t n, float s) {
+    if (s <= 0 || s >= 600) {
+        snprintf(out, n, "-:--.-");
+        return;
+    }
+    int tenths = (int)lroundf(s * 10);
+    snprintf(out, n, "%d:%02d.%d", tenths / 600, (tenths / 10) % 60, tenths % 10);
+}
+
+void fmtTime(char* out, size_t n, float s) {
+    if (s < 3600) {
+        int tenths = (int)(s * 10);
+        snprintf(out, n, "%d:%02d.%d", tenths / 600, (tenths / 10) % 60, tenths % 10);
+    } else {
+        int sec = (int)s;
+        snprintf(out, n, "%d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
+    }
+}
+
+bool changed(Cache& c, const char* text) {
+    if (!forceRedraw && strcmp(c.text, text) == 0) return false;
+    strlcpy(c.text, text, sizeof(c.text));
+    return true;
+}
+
+void showHint(const char* text) {
+    strlcpy(hint, text, sizeof(hint));
+    hintUntil = millis() + 2500;
+}
+
+// ---- drawing primitives ----------------------------------------------------
+
+void drawValue(M5Canvas& c, const char* value, int top, float maxScale, uint16_t color) {
+    c.setFont(&fonts::Font7);
+    c.setTextSize(1);
+    int tw = c.textWidth(value);
+    int fh = c.fontHeight();
+    float s = maxScale;
+    if (tw > 0) s = fminf(s, (c.width() - 40) / (float)tw);
+    s = fminf(s, (c.height() - top - 10) / (float)fh);
+    c.setTextSize(s);
+    c.setTextColor(color);
+    c.setTextDatum(middle_center);
+    c.drawString(value, c.width() / 2, top + (c.height() - top) / 2);
+}
+
+void drawTile(M5Canvas& c, int x, int y, const char* label, const char* unit, const char* value,
+              bool big, uint16_t color) {
+    c.fillSprite(th->bg);
+    c.drawRoundRect(4, 4, c.width() - 8, c.height() - 8, 14, th->dim);
+    c.setFont(big ? &fonts::FreeSansBold18pt7b : &fonts::FreeSansBold12pt7b);
+    c.setTextSize(1);
+    c.setTextColor(th->label);
+    c.setTextDatum(top_left);
+    c.drawString(label, 20, big ? 16 : 12);
+    c.setTextDatum(top_right);
+    c.drawString(unit, c.width() - 20, big ? 16 : 12);
+    drawValue(c, value, big ? 56 : 38, big ? 3.6f : 1.15f, color);
+    fb::push(c, x, y);
+}
+
+void drawButton(int idx, const char* label, bool enabled, bool lit = false) {
+    char key[64];
+    snprintf(key, sizeof(key), "%s|%d|%d", label, enabled, lit);
+    if (!changed(btnCache[idx], key)) return;
+    M5Canvas& c = btnC;
+    c.fillSprite(th->bg);
+    c.fillRoundRect(8, 8, BTN_W - 16, BTN_H - 16, 18, lit ? th->accent : enabled ? th->btn : th->bg);
+    c.drawRoundRect(8, 8, BTN_W - 16, BTN_H - 16, 18, th->dim);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    if (c.textWidth(label) > BTN_W - 32) c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextColor(lit ? th->bg : enabled ? th->btnText : th->dim);
+    c.setTextDatum(middle_center);
+    c.drawString(label, BTN_W / 2, BTN_H / 2);
+    fb::push(c, idx * BTN_W, BTN_Y);
+}
+
+void drawRow(int idx, int y, const char* left, const char* right, uint16_t color) {
+    char key[96];
+    snprintf(key, sizeof(key), "%s|%s", left, right);
+    if (!changed(rowCache[idx], key)) return;
+    rowC.fillSprite(th->bg);
+    rowC.setFont(&fonts::FreeSans12pt7b);
+    rowC.setTextSize(1);
+    rowC.setTextColor(color);
+    rowC.setTextDatum(middle_left);
+    rowC.drawString(left, 24, ROW_H / 2);
+    rowC.setTextDatum(middle_right);
+    rowC.drawString(right, W - 24, ROW_H / 2);
+    fb::push(rowC, 0, y);
+}
+
+// ---- top bar and buttons ---------------------------------------------------
+
+void drawTopBar(const metrics::View& v) {
+    char left[32], mid[80], right[32];
+    switch (v.state) {
+        case metrics::State::Ready: snprintf(left, sizeof(left), "READY"); break;
+        case metrics::State::Running:
+            if (v.session >= 0) snprintf(left, sizeof(left), "REC  S%04d", v.session);
+            else snprintf(left, sizeof(left), "RUNNING (no SD)");
+            break;
+        case metrics::State::Stopped: snprintf(left, sizeof(left), "STOPPED"); break;
+    }
+
+    if (millis() < hintUntil) {
+        snprintf(mid, sizeof(mid), "%s", hint);
+    } else if (v.hasLap && millis() - v.lapShownMs < 6000) {
+        char split[16], t[16];
+        fmtSplit(split, sizeof(split), v.lastLap.avgSplit);
+        fmtTime(t, sizeof(t), v.lastLap.time);
+        snprintf(mid, sizeof(mid), "LAP %d  %s  %.0f m  %s/500  %.0f spm", v.lastLap.number, t,
+                 v.lastLap.distance, split, v.lastLap.avgRate);
+    } else if (!v.gpsConnected) {
+        snprintf(mid, sizeof(mid), "GPS not connected");
+    } else if (!v.gpsFix) {
+        snprintf(mid, sizeof(mid), "GPS searching  %d sats", v.sats);
+    } else {
+        snprintf(mid, sizeof(mid), "GPS %.0f Hz  %d sats  HDOP %.1f", v.gpsHz, v.sats, v.hdop);
+    }
+
+#if SIM_MODE
+    const char* sim = "SIM  ";
+#else
+    const char* sim = "";
+#endif
+    const char* wifi = "";
+    switch (net::state()) {
+        case net::State::Connecting: wifi = "WIFI...  "; break;
+        case net::State::Connected: wifi = "WIFI  "; break;
+        case net::State::Failed: wifi = "NO WIFI  "; break;
+        case net::State::Off: break;
+    }
+    if (v.battery >= 0) snprintf(right, sizeof(right), "%s%sBAT %d%%", wifi, sim, v.battery);
+    else snprintf(right, sizeof(right), "%s%s", wifi, sim);
+
+    char key[160];
+    snprintf(key, sizeof(key), "%s|%s|%s", left, mid, right);
+    if (!changed(barCache, key)) return;
+
+    barC.fillSprite(th->bg);
+    barC.drawFastHLine(0, BAR_H - 1, W, th->dim);
+    barC.setFont(&fonts::FreeSansBold12pt7b);
+    barC.setTextSize(1);
+    barC.setTextDatum(middle_left);
+    barC.setTextColor(v.state == metrics::State::Running ? th->warn : th->label);
+    barC.drawString(left, 20, BAR_H / 2);
+    barC.setTextDatum(middle_center);
+    barC.setTextColor(v.gpsFix || millis() < hintUntil ? th->fg : th->warn);
+    barC.drawString(mid, W / 2, BAR_H / 2);
+    barC.setTextDatum(middle_right);
+    barC.setTextColor(th->label);
+    barC.drawString(right, W - 20, BAR_H / 2);
+    fb::push(barC, 0, 0);
+}
+
+const char* wifiButtonLabel() {
+    if (net::setupActive()) return "CANCEL SETUP";
+    switch (net::state()) {
+        case net::State::Connected: return "WIFI: ON";
+        case net::State::Connecting: return "WIFI: ...";
+        default: return net::hasStoredNetwork() ? "WIFI: OFF" : "WIFI SETUP";
+    }
+}
+
+void drawMapsButtons() {
+    mapsui::View mv = mapsui::view();
+    drawButton(0, "LIBRARY", true, mv == mapsui::View::Library);
+    drawButton(1, "DRAW AREA", true, mv == mapsui::View::Draw);
+    drawButton(2, "ON CARD", true, mv == mapsui::View::OnCard);
+    drawButton(3, wifiButtonLabel(), true, net::connected() || net::setupActive());
+    drawButton(4, "BACK", true);
+}
+
+void drawButtons(const metrics::View& v) {
+    using metrics::State;
+    if (screen == Screen::Maps) {
+        drawMapsButtons();
+        return;
+    }
+    const Settings& s = settings::get();
+    const char* primary = v.state == State::Running ? "HOLD: STOP"
+                          : v.state == State::Stopped ? "NEW" : "START";
+    drawButton(0, primary, true);
+    drawButton(1, "LAP", v.state == State::Running);
+    drawButton(2, "HOLD: RESET", v.state == State::Stopped);
+
+    // Button 3 depends on the screen: picture-in-picture mode on Main, map orientation on Map.
+    if (screen == Screen::Main) {
+        const char* pip = s.pipMode == PipCamera ? "PIP: CAM" : s.pipMode == PipMap ? "PIP: MAP" : "PIP: OFF";
+        drawButton(3, pip, true, s.pipMode != PipOff);
+    } else if (screen == Screen::Map) {
+        drawButton(3, s.mapHeadUp ? "HEAD UP" : "NORTH UP", true, s.mapHeadUp);
+    } else {
+        drawButton(3, "", false);
+    }
+
+    const char* next = screen == Screen::Main   ? "MAP"
+                       : screen == Screen::Map  ? "PLOT"
+                       : screen == Screen::Plot ? "SETTINGS"
+                                                : "METRICS";
+    drawButton(4, next, true);
+}
+
+// ---- main metrics screen ---------------------------------------------------
+
+void drawSmallRow(const metrics::View& v);
+
+// The four key numbers in one row across the top (used by full-width PIP and the Map screen).
+void drawTopTiles(const metrics::View& v) {
+    char split[16], rate[8], dist[16], elapsed[16];
+    fmtSplit(split, sizeof(split), v.split);
+    if (v.rate > 0) snprintf(rate, sizeof(rate), "%d", (int)lroundf(v.rate));
+    else snprintf(rate, sizeof(rate), "--");
+    snprintf(dist, sizeof(dist), "%d", (int)v.distance);
+    fmtTime(elapsed, sizeof(elapsed), v.elapsed);
+    if (changed(smallCache[0], split)) drawTile(smallC, 0, BAR_H, "SPLIT", "/500m", split, false, th->fg);
+    if (changed(smallCache[1], rate)) drawTile(smallC, SMALL_W, BAR_H, "RATE", "spm", rate, false, th->accent);
+    if (changed(smallCache[2], dist)) drawTile(smallC, 2 * SMALL_W, BAR_H, "DISTANCE", "m", dist, false, th->fg);
+    if (changed(smallCache[3], elapsed)) drawTile(smallC, 3 * SMALL_W, BAR_H, "TIME", "", elapsed, false, th->fg);
+}
+
+void drawMain(const metrics::View& v) {
+    char split[16], rate[8], dist[16], elapsed[16];
+    fmtSplit(split, sizeof(split), v.split);
+    if (v.rate > 0) snprintf(rate, sizeof(rate), "%d", (int)lroundf(v.rate));
+    else snprintf(rate, sizeof(rate), "--");
+    snprintf(dist, sizeof(dist), "%d", (int)v.distance);
+    fmtTime(elapsed, sizeof(elapsed), v.elapsed);
+
+    const Settings& s = settings::get();
+    bool hasPip = s.pipMode != PipOff;
+
+    if (hasPip && s.camFull) {
+        // Full-width content: everything that matters in one row above it.
+        drawTopTiles(v);
+        return;
+    }
+    if (hasPip) {
+        // Picture-in-picture: content top left, split and rate stay big on the right.
+        if (changed(bigCache[0], split)) drawTile(bigC, BIG_W, BAR_H, "SPLIT", "/500m", split, true, th->fg);
+        if (changed(bigCache[1], rate)) drawTile(bigC, BIG_W, BAR_H + BIG_H, "RATE", "spm", rate, true, th->accent);
+        if (changed(smallCache[4], dist)) drawTile(smallC, 0, PIP_INFO_Y, "DISTANCE", "m", dist, false, th->fg);
+        if (changed(smallCache[5], elapsed)) drawTile(smallC, SMALL_W, PIP_INFO_Y, "TIME", "", elapsed, false, th->fg);
+        drawSmallRow(v);
+        return;
+    }
+
+    if (changed(bigCache[0], split)) drawTile(bigC, 0, BAR_H, "SPLIT", "/500m", split, true, th->fg);
+    if (changed(bigCache[1], rate)) drawTile(bigC, BIG_W, BAR_H, "RATE", "spm", rate, true, th->accent);
+    if (changed(bigCache[2], dist)) drawTile(bigC, 0, BAR_H + BIG_H, "DISTANCE", "m", dist, true, th->fg);
+    if (changed(bigCache[3], elapsed)) drawTile(bigC, BIG_W, BAR_H + BIG_H, "TIME", "", elapsed, true, th->fg);
+    drawSmallRow(v);
+}
+
+void drawSmallRow(const metrics::View& v) {
+    char buf[24];
+    if (v.dps > 0) snprintf(buf, sizeof(buf), "%.1f", v.dps);
+    else snprintf(buf, sizeof(buf), "--");
+    if (changed(smallCache[0], buf))
+        drawTile(smallC, 0, SMALL_Y, "DIST/STROKE", v.dpsFused ? "m*" : "m", buf, false, th->fg);
+
+    fmtSplit(buf, sizeof(buf), v.avgSplit);
+    if (changed(smallCache[1], buf)) drawTile(smallC, SMALL_W, SMALL_Y, "AVG SPLIT", "/500m", buf, false, th->fg);
+
+    snprintf(buf, sizeof(buf), "%d", v.strokes);
+    if (changed(smallCache[2], buf)) drawTile(smallC, 2 * SMALL_W, SMALL_Y, "STROKES", "", buf, false, th->fg);
+
+    if (v.ratio > 0) snprintf(buf, sizeof(buf), "%.1f", v.ratio);
+    else snprintf(buf, sizeof(buf), "--");
+    if (changed(smallCache[3], buf)) drawTile(smallC, 3 * SMALL_W, SMALL_Y, "REC:DRIVE", "", buf, false, th->fg);
+}
+
+// ---- live plot screen ------------------------------------------------------
+
+int plotY(float g) {
+    float y = PLOT_H / 2 - g * (PLOT_H / 2 - 10) / PLOT_RANGE_G;
+    return (int)fmaxf(0, fminf(PLOT_H - 1, y));
+}
+
+void drawPlot(const metrics::View& v) {
+    if (millis() - lastPlot >= 80 || forceRedraw) {
+        lastPlot = millis();
+        int n = imu::copyPlot(plotBuf, PLOT_POINTS);
+        plotC.fillSprite(th->bg);
+        plotC.setFont(&fonts::FreeSans9pt7b);
+        plotC.setTextSize(1);
+        plotC.setTextDatum(middle_left);
+        plotC.setTextColor(th->label);
+        for (float g : {-0.5f, -0.25f, 0.0f, 0.25f, 0.5f}) {
+            int y = plotY(g);
+            plotC.drawFastHLine(0, y, W, g == 0 ? th->label : th->dim);
+            char lbl[12];
+            snprintf(lbl, sizeof(lbl), "%+.2f g", g);
+            plotC.drawString(lbl, 6, y - 10);
+        }
+        for (int i = 0; i < n; i++) {
+            int x = i * (W - 1) / (PLOT_POINTS - 1);
+            if (plotBuf[i].flags & 1) plotC.drawFastVLine(x, 0, PLOT_H, th->ok);
+            if (plotBuf[i].flags & 2) plotC.drawFastVLine(x, PLOT_H / 2 - 40, 80, TFT_CYAN);
+        }
+        for (int i = 1; i < n; i++) {
+            int x0 = (i - 1) * (W - 1) / (PLOT_POINTS - 1), x1 = i * (W - 1) / (PLOT_POINTS - 1);
+            plotC.drawLine(x0, plotY(plotBuf[i - 1].threshold), x1, plotY(plotBuf[i].threshold), th->warn);
+            int y0 = plotY(plotBuf[i - 1].surge), y1 = plotY(plotBuf[i].surge);
+            plotC.drawLine(x0, y0, x1, y1, th->accent);
+            plotC.drawLine(x0, y0 + 1, x1, y1 + 1, th->accent);
+        }
+        plotC.setFont(&fonts::FreeSansBold12pt7b);
+        plotC.setTextDatum(top_right);
+        int lx = W - 12;
+        const std::pair<const char*, uint16_t> legend[] = {
+            {"finish", TFT_CYAN}, {"catch   ", th->ok}, {"threshold   ", th->warn}, {"surge (g)   ", th->accent}};
+        for (const auto& item : legend) {
+            plotC.setTextColor(item.second);
+            plotC.drawString(item.first, lx, 8);
+            lx -= plotC.textWidth(item.first);
+        }
+        fb::push(plotC, 0, BAR_H);
+    }
+
+    imu::Live l = imu::live();
+    char a[96], b[96];
+    snprintf(a, sizeof(a), "IMU %.1f Hz  overruns %lu   axis (%+.2f %+.2f %+.2f) sign %+d", l.sampleHz,
+             (unsigned long)l.overruns, l.axis[0], l.axis[1], l.axis[2], l.sign);
+    snprintf(b, sizeof(b), "rms %.3f g   threshold %.3f g   skew %+.2f", l.rms, l.threshold, l.skew);
+    drawRow(0, BAR_H + PLOT_H, a, b, th->fg);
+    snprintf(a, sizeof(a), "rate %.1f spm   strokes %lu   check %.0f mg   bounce %.0f mg", l.rate,
+             (unsigned long)l.strokes, v.checkMg, v.bounceMg);
+    snprintf(b, sizeof(b), "GPS %.2f m/s   fused %s%.2f m/s   log drops %lu", v.speed,
+             l.fusionActive ? "" : "(off) ", l.fusedSpeed, (unsigned long)logger::dropped());
+    drawRow(1, BAR_H + PLOT_H + ROW_H, a, b, th->fg);
+}
+
+// ---- settings screen -------------------------------------------------------
+
+enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_COUNT };
+constexpr int SET_ROW_H = 54;
+constexpr int SET_MINUS_X = 860, SET_PLUS_X = 1050, SET_BTN_W = 170;
+
+bool isNumeric(int row) { return row == S_K || row == S_FLOOR || row == S_BRIGHT; }
+
+void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
+    const Settings& s = settings::get();
+    switch (row) {
+        case S_K: snprintf(label, ln, "Catch threshold factor (x RMS)"); snprintf(value, vn, "%.1f", s.thresholdK); break;
+        case S_FLOOR: snprintf(label, ln, "Catch threshold floor"); snprintf(value, vn, "%.2f g", s.thresholdFloorG); break;
+        case S_MINIMA: snprintf(label, ln, "Threshold from last 5 catch depths"); snprintf(value, vn, "%s", s.useMinimaThreshold ? "ON" : "OFF"); break;
+        case S_RAW: snprintf(label, ln, "Raw IMU logging (100 Hz)"); snprintf(value, vn, "%s", s.rawLog ? "ON" : "OFF"); break;
+        case S_FUSION: snprintf(label, ln, "GPS+IMU fusion for distance/stroke"); snprintf(value, vn, "%s", s.fusion ? "ON" : "OFF"); break;
+        case S_CAM_MIRROR: snprintf(label, ln, "Camera mirror image (like a mirror)"); snprintf(value, vn, "%s", s.camMirror ? "ON" : "OFF"); break;
+        case S_THEME: snprintf(label, ln, "Theme"); snprintf(value, vn, "%s", s.dayTheme ? "DAY" : "NIGHT"); break;
+        case S_FLIP: snprintf(label, ln, "Rotate screen 180"); snprintf(value, vn, "%s", s.flip ? "ON" : "OFF"); break;
+        case S_BRIGHT: snprintf(label, ln, "Brightness"); snprintf(value, vn, "%d%%", s.brightness * 100 / 255); break;
+    }
+}
+
+void drawSettings() {
+    for (int r = 0; r < S_COUNT; r++) {
+        char label[48], value[16], key[96];
+        settingText(r, label, sizeof(label), value, sizeof(value));
+        snprintf(key, sizeof(key), "%s|%s", label, value);
+        if (!changed(rowCache[r], key)) continue;
+        M5Canvas& c = setC;
+        c.fillSprite(th->bg);
+        c.drawFastHLine(0, SET_ROW_H - 1, W, th->dim);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextSize(1);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        c.drawString(label, 24, SET_ROW_H / 2);
+        c.setTextDatum(middle_center);
+        c.setTextColor(th->accent);
+        c.drawString(value, 740, SET_ROW_H / 2);
+        c.setTextColor(th->btnText);
+        if (isNumeric(r)) {
+            c.fillRoundRect(SET_MINUS_X, 5, SET_BTN_W, SET_ROW_H - 10, 12, th->btn);
+            c.fillRoundRect(SET_PLUS_X, 5, SET_BTN_W, SET_ROW_H - 10, 12, th->btn);
+            c.drawString("-", SET_MINUS_X + SET_BTN_W / 2, SET_ROW_H / 2);
+            c.drawString("+", SET_PLUS_X + SET_BTN_W / 2, SET_ROW_H / 2);
+        } else {
+            c.fillRoundRect(SET_MINUS_X, 5, SET_PLUS_X + SET_BTN_W - SET_MINUS_X, SET_ROW_H - 10, 12, th->btn);
+            c.drawString("TOGGLE", (SET_MINUS_X + SET_PLUS_X + SET_BTN_W) / 2, SET_ROW_H / 2);
+        }
+        fb::push(c, 0, BAR_H + r * SET_ROW_H);
+    }
+
+    char info[96];
+    snprintf(info, sizeof(info), "SD card: %s   log drops: %lu", logger::sdReady() ? "OK" : "not found",
+             (unsigned long)logger::dropped());
+    drawRow(S_COUNT, BAR_H + S_COUNT * SET_ROW_H, info,
+#if SIM_MODE
+            "build: SIMULATION",
+#else
+            "build: hardware",
+#endif
+            th->label);
+}
+
+void applySettings(bool full);
+
+void onSettingsTap(int x, int y) {
+    int row = (y - BAR_H) / SET_ROW_H;
+    if (row < 0 || row >= S_COUNT) return;
+    bool minus = x >= SET_MINUS_X && x < SET_MINUS_X + SET_BTN_W;
+    bool plus = x >= SET_PLUS_X && x < SET_PLUS_X + SET_BTN_W;
+    bool toggle = x >= SET_MINUS_X && x < SET_PLUS_X + SET_BTN_W;
+    Settings& s = settings::get();
+    bool full = false;
+    switch (row) {
+        case S_K:
+            if (minus) s.thresholdK = fmaxf(1.0f, s.thresholdK - 0.1f);
+            if (plus) s.thresholdK = fminf(3.5f, s.thresholdK + 0.1f);
+            break;
+        case S_FLOOR:
+            if (minus) s.thresholdFloorG = fmaxf(0.04f, s.thresholdFloorG - 0.01f);
+            if (plus) s.thresholdFloorG = fminf(0.40f, s.thresholdFloorG + 0.01f);
+            break;
+        case S_BRIGHT:
+            if (minus) s.brightness = (uint8_t)max(20, s.brightness - 25);
+            if (plus) s.brightness = (uint8_t)min(255, s.brightness + 25);
+            break;
+        case S_MINIMA: if (toggle) s.useMinimaThreshold = !s.useMinimaThreshold; break;
+        case S_RAW: if (toggle) s.rawLog = !s.rawLog; break;
+        case S_FUSION: if (toggle) s.fusion = !s.fusion; break;
+        case S_CAM_MIRROR: if (toggle) s.camMirror = !s.camMirror; break;
+        case S_THEME: if (toggle) { s.dayTheme = !s.dayTheme; full = true; } break;
+        case S_FLIP: if (toggle) { s.flip = !s.flip; full = true; } break;
+    }
+    if (minus || plus || toggle) {
+        settings::save();
+        applySettings(full);
+    }
+}
+
+// ---- camera & map content --------------------------------------------------
+
+void clearScreen();
+
+PipMode pipMode() { return (PipMode)settings::get().pipMode; }
+
+bool cameraVisible() { return screen == Screen::Main && pipMode() == PipCamera; }
+bool mapOnMain() { return screen == Screen::Main && pipMode() == PipMap; }
+
+// Rectangle of the Main-screen corner content (camera or PIP map).
+void contentRect(int& x, int& y, int& w, int& h) {
+    if (settings::get().camFull) {
+        x = 0, y = FULL_CAM_Y, w = W, h = FULL_CAM_H;
+    } else {
+        x = 0, y = BAR_H, w = PIP_W, h = PIP_H;
+    }
+}
+
+bool inContentRect(int px, int py) {
+    if (!(cameraVisible() || mapOnMain())) return false;
+    int x, y, w, h;
+    contentRect(x, y, w, h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+void updateCamera() {
+    camera::setActive(cameraVisible());
+    camShown = camera::Status::Off;
+}
+
+void drawCamera() {
+    if (!cameraVisible()) return;
+    int x, y, w, h;
+    contentRect(x, y, w, h);
+    camera::Status st = camera::status();
+    if (st != camera::Status::Running && (st != camShown || forceRedraw)) {
+        M5.Display.fillRect(x, y, w, h, TFT_BLACK);
+        M5.Display.setFont(&fonts::FreeSansBold18pt7b);
+        M5.Display.setTextSize(1);
+        M5.Display.setTextDatum(middle_center);
+        M5.Display.setTextColor(st == camera::Status::Failed ? TFT_RED : TFT_WHITE, TFT_BLACK);
+        M5.Display.drawString(st == camera::Status::Failed ? "Camera not available" : "Camera starting...",
+                              x + w / 2, y + h / 2);
+    }
+    camShown = st;
+    const Settings& s = settings::get();
+    // The sensor is fixed to the case, so a flipped display needs a flipped image.
+    camera::draw(x, y, w, h, s.camMirror, s.flip != cfg::CAM_ROTATE_180);
+}
+
+// The map canvas and its screen position for the current layout, or nullptr.
+M5Canvas* mapCanvasFor(int& sx, int& sy, bool& full) {
+    if (screen == Screen::Map) {
+        sx = 0, sy = FULL_CAM_Y, full = true;
+        return &mapC;
+    }
+    if (mapOnMain()) {
+        if (settings::get().camFull) {
+            sx = 0, sy = FULL_CAM_Y, full = true;
+            return &mapC;
+        }
+        sx = 0, sy = BAR_H, full = false;
+        return &mapPipC;
+    }
+    return nullptr;
+}
+
+bool mapFullShown() { return screen == Screen::Map || (mapOnMain() && settings::get().camFull); }
+
+// Downloads are refused while recording, so the Maps screen is only offered between sessions.
+bool mapsButtonShown() { return screen == Screen::Map && metrics::view().state != metrics::State::Running; }
+
+void drawMapContent() {
+    int sx, sy;
+    bool full;
+    M5Canvas* cv = mapCanvasFor(sx, sy, full);
+    if (!cv) return;
+    if (!forceRedraw && millis() - lastMap < cfg::MAP_FRAME_MS) return;
+    lastMap = millis();
+    const Settings& s = settings::get();
+    gps::Snapshot g = gps::get();
+    mapview::View mv;
+    mv.lat = g.lat;
+    mv.lon = g.lon;
+    mv.course = g.course;
+    mv.haveFix = g.fix;
+    mv.headUp = s.mapHeadUp;
+    mv.showControls = full;
+    int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
+    mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
+    mapview::render(*cv, mv);
+    if (mapsButtonShown()) {
+        cv->fillRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, TFT_WHITE);
+        cv->drawRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, TFT_DARKGREY);
+        cv->setFont(&fonts::FreeSansBold12pt7b);
+        cv->setTextSize(1);
+        cv->setTextColor(TFT_BLACK);
+        cv->setTextDatum(middle_center);
+        cv->drawString("MAPS", MAPS_BTN_X + MAPS_BTN_W / 2, MAPS_BTN_Y + MAPS_BTN_H / 2);
+    }
+    fb::push(*cv, sx, sy);
+}
+
+void cyclePip() {
+    Settings& s = settings::get();
+    s.pipMode = (uint8_t)((s.pipMode + 1) % 3);
+    settings::save();
+    clearScreen();
+    updateCamera();
+}
+
+void togglePipFull() {
+    Settings& s = settings::get();
+    s.camFull = !s.camFull;
+    settings::save();
+    clearScreen();
+    updateCamera();
+}
+
+void toggleHeadUp() {
+    Settings& s = settings::get();
+    s.mapHeadUp = !s.mapHeadUp;
+    settings::save();
+    clearScreen();
+}
+
+void adjustZoom(int delta) {
+    Settings& s = settings::get();
+    int z = (int)s.mapZoom + delta;
+    if (z < 0) z = 0;
+    if (z >= cfg::MAP_ZOOM_COUNT) z = cfg::MAP_ZOOM_COUNT - 1;
+    if (z != s.mapZoom) {
+        s.mapZoom = (uint8_t)z;
+        settings::save();
+        forceRedraw = true;
+        lastMap = 0;
+    }
+}
+
+// If the tap hit an on-map zoom button, handle it. Returns true if consumed.
+bool handleMapZoomTap(int px, int py) {
+    if (!mapFullShown()) return false;
+    int bx, by, bw, bh;
+    mapview::zoomInRect(mapC, bx, by, bw, bh);
+    if (px >= bx && px < bx + bw && py >= FULL_CAM_Y + by && py < FULL_CAM_Y + by + bh) {
+        adjustZoom(-1);  // smaller span = closer in
+        return true;
+    }
+    mapview::zoomOutRect(mapC, bx, by, bw, bh);
+    if (px >= bx && px < bx + bw && py >= FULL_CAM_Y + by && py < FULL_CAM_Y + by + bh) {
+        adjustZoom(+1);  // larger span = further out
+        return true;
+    }
+    return false;
+}
+
+// ---- input -----------------------------------------------------------------
+
+void clearScreen() {
+    M5.Display.fillScreen(th->bg);
+    forceRedraw = true;
+}
+
+void setScreen(Screen next) {
+    if (next == screen) return;
+    if (screen == Screen::Maps) {
+        mapsui::leave();
+        // Wi-Fi is only for downloading maps; keep it while a download or the setup page runs.
+        if (!mapjob::busy() && !net::setupActive()) net::disconnect();
+    }
+    screen = next;
+    if (screen == Screen::Maps) {
+        mapsui::enter();
+        if (net::state() == net::State::Off && net::hasStoredNetwork()) net::connect(nullptr, nullptr, Serial);
+    }
+    dragging = false;
+    clearScreen();
+    updateCamera();
+}
+
+void nextScreen() {
+    setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + 1) % CYCLE));
+}
+
+void onWifiButton() {
+    if (net::setupActive()) {
+        net::stopSetup();
+    } else if (net::connected() || net::state() == net::State::Connecting) {
+        net::disconnect();
+    } else if (net::hasStoredNetwork()) {
+        net::connect(nullptr, nullptr, Serial);
+    } else {
+        net::startSetup(Serial);
+    }
+    forceRedraw = true;
+}
+
+void onMapsTap(int x, int y) {
+    if (y < BTN_Y) {
+        mapsui::tap(x, y);
+        return;
+    }
+    switch (x / BTN_W) {
+        case 0: mapsui::setView(mapsui::View::Library); break;
+        case 1: mapsui::setView(mapsui::View::Draw); break;
+        case 2: mapsui::setView(mapsui::View::OnCard); break;
+        case 3: onWifiButton(); break;
+        case 4: nextScreen(); break;
+    }
+    forceRedraw = true;
+}
+
+void onTap(int x, int y) {
+    using metrics::State;
+    if (screen == Screen::Maps) {
+        onMapsTap(x, y);
+        return;
+    }
+    metrics::View v = metrics::view();
+    if (screen == Screen::Map && mapsButtonShown() && x >= MAPS_BTN_X && x < MAPS_BTN_X + MAPS_BTN_W &&
+        y >= FULL_CAM_Y + MAPS_BTN_Y && y < FULL_CAM_Y + MAPS_BTN_Y + MAPS_BTN_H) {
+        setScreen(Screen::Maps);
+        return;
+    }
+    if (y >= BTN_Y) {
+        switch (x / BTN_W) {
+            case 0:
+                if (v.state == State::Running) showHint("Hold to stop");
+                else metrics::start();
+                break;
+            case 1: metrics::lap(); break;
+            case 2:
+                if (v.state == State::Stopped) showHint("Hold to reset");
+                break;
+            case 3:
+                if (screen == Screen::Main) cyclePip();
+                else if (screen == Screen::Map) toggleHeadUp();
+                break;
+            case 4: nextScreen(); break;
+        }
+        return;
+    }
+    if (handleMapZoomTap(x, y)) return;
+    if (screen == Screen::Map) return;  // full map: only the zoom buttons react
+    if (inContentRect(x, y)) togglePipFull();
+    if (screen == Screen::Settings) onSettingsTap(x, y);
+}
+
+void onHold(int x, int y) {
+    if (y < BTN_Y) return;
+    int idx = x / BTN_W;
+    if (screen == Screen::Maps) {
+        // Hold WIFI to set up a different network.
+        if (idx == 3 && !net::setupActive()) {
+            net::startSetup(Serial);
+            forceRedraw = true;
+        }
+        return;
+    }
+    if (idx == 0) metrics::stop();
+    if (idx == 2) metrics::reset();
+}
+
+void applySettings(bool full) {
+    const Settings& s = settings::get();
+    imu::setParams(s.strokeParams());
+    imu::setFusionEnabled(s.fusion);
+    logger::setRawEnabled(s.rawLog);
+    {
+        board::I2CLock lock;
+        M5.Display.setBrightness(s.brightness);
+    }
+    th = s.dayTheme ? &DAY : &NIGHT;
+    mapsui::setColors({th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok});
+    if (full) {
+        M5.Display.setRotation(s.flip ? 1 : 3);
+        clearScreen();
+    }
+    updateCamera();
+}
+
+void handleDrag(const m5::touch_detail_t& t) {
+    if (screen != Screen::Maps) return;
+    if (t.isPressed()) {
+        if (!dragging && (abs(t.distanceX()) > 12 || abs(t.distanceY()) > 12)) {
+            dragging = true;
+            mapsui::dragStart(t.base_x, t.base_y);
+        }
+        if (dragging) mapsui::dragMove(t.x, t.y);
+    } else if (dragging) {
+        dragging = false;
+        mapsui::dragEnd(t.x, t.y);
+    }
+}
+
+}  // namespace
+
+void begin() {
+    const Settings& s = settings::get();
+    th = s.dayTheme ? &DAY : &NIGHT;
+    M5.Display.setRotation(s.flip ? 1 : 3);
+    Serial.printf("[ui] display %d x %d\n", M5.Display.width(), M5.Display.height());
+    M5.Touch.setHoldThresh(cfg::TOUCH_HOLD_MS);
+
+    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &mapC, &mapPipC}) {
+        c->setColorDepth(16);
+        c->setPsram(true);
+    }
+    bigC.createSprite(BIG_W, BIG_H);
+    smallC.createSprite(SMALL_W, SMALL_H);
+    barC.createSprite(W, BAR_H);
+    rowC.createSprite(W, ROW_H);
+    plotC.createSprite(W, PLOT_H);
+    btnC.createSprite(BTN_W, BTN_H);
+    setC.createSprite(W, SET_ROW_H);
+    mapC.createSprite(W, FULL_CAM_H);
+    mapPipC.createSprite(PIP_W, PIP_H);
+
+    camera::begin();
+    mapview::begin();
+    mapsui::begin(0, BAR_H, W, BTN_Y - BAR_H);
+    applySettings(false);
+    clearScreen();
+}
+
+void tap(int x, int y) { onTap(x, y); }
+void hold(int x, int y) { onHold(x, y); }
+
+void drag(int x0, int y0, int x1, int y1) {
+    if (screen != Screen::Maps) return;
+    mapsui::dragStart(x0, y0);
+    for (int i = 1; i <= 8; i++) mapsui::dragMove(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
+    mapsui::dragEnd(x1, y1);
+}
+
+void command(char c) {
+    switch (c) {
+        case 'N': nextScreen(); break;
+        case 'M':
+            if (metrics::view().state != metrics::State::Running) setScreen(Screen::Maps);
+            break;
+        case 'C':
+            if (screen == Screen::Main) cyclePip();
+            break;
+        case 'V':
+            if (cameraVisible() || mapOnMain()) togglePipFull();
+            break;
+        case 'H':
+            if (mapFullShown() || mapOnMain()) toggleHeadUp();
+            break;
+        case '+':
+            if (mapFullShown() || mapOnMain()) adjustZoom(-1);  // zoom in
+            break;
+        case '-':
+            if (mapFullShown() || mapOnMain()) adjustZoom(+1);  // zoom out
+            break;
+        case 'G': metrics::start(); break;
+        case 'X': metrics::stop(); break;
+        case 'L': metrics::lap(); break;
+        case 'R': metrics::reset(); break;
+    }
+}
+
+void loop() {
+    auto t = M5.Touch.getDetail();
+    handleDrag(t);
+    if (t.wasClicked() && !dragging) onTap(t.x, t.y);
+    else if (t.wasHold() && !dragging) onHold(t.x, t.y);
+
+    // A finished download: rescan the card and show the new map.
+    if (mapjob::takeCompleted()) {
+        char path[48];
+        mapjob::pathFor(mapjob::status().name, path, sizeof(path));
+        mapdata::begin();
+        mapdata::show(path);
+        forceRedraw = true;
+    }
+
+    if (millis() - lastBattery > 5000 || lastBattery == 0) {
+        lastBattery = millis();
+        int level;
+        {
+            board::I2CLock lock;
+            level = M5.Power.getBatteryLevel();
+        }
+        metrics::setBattery(level);
+    }
+
+    // Keep the loaded map area in sync with position, and record the track.
+    if (millis() - lastMapScan > 1000) {
+        lastMapScan = millis();
+        gps::Snapshot g = gps::get();
+        mapdata::update(g.lat, g.lon, g.fix);
+    }
+    track::update();
+
+    drawCamera();
+    drawMapContent();
+    if (screen == Screen::Maps) mapsui::draw(forceRedraw);
+    if (millis() - lastFrame < cfg::UI_FRAME_MS && !forceRedraw) return;
+    lastFrame = millis();
+
+    metrics::View v = metrics::view();
+    drawTopBar(v);
+    switch (screen) {
+        case Screen::Main: drawMain(v); break;
+        case Screen::Map: drawTopTiles(v); break;
+        case Screen::Plot: drawPlot(v); break;
+        case Screen::Settings: drawSettings(); break;
+        case Screen::Maps: break;
+    }
+    drawButtons(v);
+    forceRedraw = false;
+}
+
+}  // namespace ui

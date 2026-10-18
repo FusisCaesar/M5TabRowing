@@ -1,0 +1,377 @@
+#include "map_view.h"
+
+#include <esp_heap_caps.h>
+#include <math.h>
+
+#include "config.h"
+#include "map_data.h"
+#include "track.h"
+
+namespace mapview {
+
+namespace {
+
+// Palette (RGB565 via color565 at use).
+uint16_t COL_LAND, COL_WATER, COL_BRIDGE, COL_LOCK, COL_WEIR, COL_PIER, COL_CLUB, COL_TRACK, COL_BOAT,
+    COL_TEXT, COL_SHADE;
+bool paletteReady = false;
+
+// Reusable scratch for transformed feature points.
+constexpr int SCRATCH = 20000;
+float* sxBuf = nullptr;
+float* syBuf = nullptr;
+constexpr int MAX_RINGS = 512;
+int ringStart[MAX_RINGS];
+int ringCnt[MAX_RINGS];
+constexpr int MAX_XINTS = 512;
+float xints[MAX_XINTS];
+
+constexpr int ZOOM_BTN = 64;
+constexpr int ZOOM_MARGIN = 12;
+
+void initPalette(M5Canvas& c) {
+    COL_LAND = c.color565(228, 224, 214);
+    COL_WATER = c.color565(120, 172, 220);
+    COL_BRIDGE = c.color565(92, 92, 98);
+    COL_LOCK = c.color565(205, 70, 70);
+    COL_WEIR = c.color565(170, 110, 50);
+    COL_PIER = c.color565(140, 140, 140);
+    COL_CLUB = c.color565(210, 60, 60);
+    COL_TRACK = c.color565(245, 120, 25);
+    COL_BOAT = c.color565(255, 210, 0);
+    COL_TEXT = c.color565(40, 40, 40);
+    COL_SHADE = c.color565(255, 255, 255);
+    paletteReady = true;
+}
+
+uint16_t featureColor(uint8_t kind) {
+    switch (kind) {
+        case mapdata::WaterArea:
+        case mapdata::WaterLine: return COL_WATER;
+        case mapdata::Bridge: return COL_BRIDGE;
+        case mapdata::Lock: return COL_LOCK;
+        case mapdata::Weir: return COL_WEIR;
+        case mapdata::Pier: return COL_PIER;
+        case mapdata::Club: return COL_CLUB;
+    }
+    return COL_BRIDGE;
+}
+
+struct Xform {
+    float bx, by;        // boat position, decimetres
+    float cosB, sinB;    // rotation
+    float invmpp;        // pixels per metre
+    float cx, cy;        // canvas centre for the boat
+    void toScreen(int32_t px, int32_t py, float& sx, float& sy) const {
+        float dx = (px - bx) * 0.1f;  // metres
+        float dy = (py - by) * 0.1f;
+        float xr = dx * cosB - dy * sinB;
+        float yr = dx * sinB + dy * cosB;
+        sx = cx + xr * invmpp;
+        sy = cy - yr * invmpp;  // world y up -> screen y down
+    }
+};
+
+// Even-odd scanline fill of all rings currently in the scratch buffers.
+void fillRings(M5Canvas& c, int nr, uint16_t color) {
+    int h = c.height(), w = c.width();
+    float minY = 1e9f, maxY = -1e9f;
+    for (int r = 0; r < nr; r++) {
+        for (int i = 0; i < ringCnt[r]; i++) {
+            float y = syBuf[ringStart[r] + i];
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+    int y0 = (int)fmaxf(0, floorf(minY));
+    int y1 = (int)fminf(h - 1, ceilf(maxY));
+    for (int y = y0; y <= y1; y++) {
+        float yc = y + 0.5f;
+        int n = 0;
+        for (int r = 0; r < nr && n < MAX_XINTS; r++) {
+            int s = ringStart[r], cnt = ringCnt[r];
+            for (int k = 0; k < cnt; k++) {
+                int a = s + k, b = s + (k + 1) % cnt;
+                float ya = syBuf[a], yb = syBuf[b];
+                if ((ya <= yc) == (yb <= yc)) continue;  // no crossing
+                float t = (yc - ya) / (yb - ya);
+                if (n < MAX_XINTS) xints[n++] = sxBuf[a] + t * (sxBuf[b] - sxBuf[a]);
+            }
+        }
+        if (n < 2) continue;
+        // insertion sort (spans are short)
+        for (int i = 1; i < n; i++) {
+            float v = xints[i];
+            int j = i - 1;
+            while (j >= 0 && xints[j] > v) {
+                xints[j + 1] = xints[j];
+                j--;
+            }
+            xints[j + 1] = v;
+        }
+        for (int i = 0; i + 1 < n; i += 2) {
+            int xa = (int)ceilf(xints[i]);
+            int xb = (int)floorf(xints[i + 1]);
+            if (xb < 0 || xa > w - 1) continue;
+            xa = max(xa, 0);
+            xb = min(xb, w - 1);
+            if (xb >= xa) c.drawFastHLine(xa, y, xb - xa + 1, color);
+        }
+    }
+}
+
+// Transforms one feature's rings into the scratch buffers. Returns ring count, or
+// -1 if it does not fit.
+int transformFeature(const mapdata::Map& m, const mapdata::Feature& ft, const Xform& xf) {
+    int nr = 0, total = 0;
+    for (int r = 0; r < ft.ringCount && nr < MAX_RINGS; r++) {
+        const mapdata::Ring& ring = m.rings[ft.ringFirst + r];
+        if (total + (int)ring.count > SCRATCH) break;
+        ringStart[nr] = total;
+        ringCnt[nr] = ring.count;
+        const int32_t* pts = &m.points[ring.first * 2];
+        for (uint32_t i = 0; i < ring.count; i++) {
+            xf.toScreen(pts[i * 2], pts[i * 2 + 1], sxBuf[total], syBuf[total]);
+            total++;
+        }
+        nr++;
+    }
+    return nr;
+}
+
+void drawLineFeature(M5Canvas& c, int nr, float widthPx, uint16_t color) {
+    int wi = (int)fmaxf(1.0f, widthPx);
+    for (int r = 0; r < nr; r++) {
+        int s = ringStart[r], cnt = ringCnt[r];
+        for (int k = 0; k + 1 < cnt; k++) {
+            c.drawWideLine(sxBuf[s + k], syBuf[s + k], sxBuf[s + k + 1], syBuf[s + k + 1], wi, color);
+        }
+    }
+}
+
+bool boxOverlap(const int32_t* a, float minX, float minY, float maxX, float maxY) {
+    return !(a[2] < minX || a[0] > maxX || a[3] < minY || a[1] > maxY);
+}
+
+void drawScaleBar(M5Canvas& c, float mpp) {
+    const int nice[] = {10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
+    float target = c.width() * 0.22f * mpp;
+    int meters = nice[0];
+    for (int v : nice)
+        if (v <= target) meters = v;
+    int px = (int)(meters / mpp);
+    int x = 16, y = c.height() - 18;
+    c.drawFastHLine(x, y, px, COL_TEXT);
+    c.drawFastVLine(x, y - 5, 10, COL_TEXT);
+    c.drawFastVLine(x + px, y - 5, 10, COL_TEXT);
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(bottom_left);
+    c.setTextColor(COL_TEXT);
+    char buf[16];
+    if (meters >= 1000) snprintf(buf, sizeof(buf), "%.1f km", meters / 1000.0f);
+    else snprintf(buf, sizeof(buf), "%d m", meters);
+    c.drawString(buf, x + 4, y - 4);
+}
+
+void drawNorthArrow(M5Canvas& c, const Xform& xf) {
+    // North (world +y) direction on screen.
+    float nx = -xf.sinB, ny = -xf.cosB;
+    float cx = c.width() - 30, cy = 34, L = 16;
+    c.drawWideLine(cx - nx * L, cy - ny * L, cx + nx * L, cy + ny * L, 3, COL_LOCK);
+    c.fillCircle(cx + nx * L, cy + ny * L, 4, COL_LOCK);
+    c.setFont(&fonts::FreeSansBold9pt7b);
+    c.setTextDatum(middle_center);
+    c.setTextColor(COL_TEXT);
+    c.drawString("N", cx + nx * (L + 10), cy + ny * (L + 10));
+}
+
+void drawBoat(M5Canvas& c, const Xform& xf, float courseDeg, bool headUp) {
+    float bearing = headUp ? 0.0f : courseDeg;
+    float a = bearing * (float)M_PI / 180.0f;
+    float dirx = sinf(a), diry = -cosf(a);  // screen: up is -y
+    float perpx = -diry, perpy = dirx;
+    float cx = xf.cx, cy = xf.cy, L = 16, Wd = 9;
+    float tipx = cx + dirx * L, tipy = cy + diry * L;
+    float blx = cx - dirx * (L * 0.6f) + perpx * Wd, bly = cy - diry * (L * 0.6f) + perpy * Wd;
+    float brx = cx - dirx * (L * 0.6f) - perpx * Wd, bry = cy - diry * (L * 0.6f) - perpy * Wd;
+    c.fillTriangle(tipx, tipy, blx, bly, brx, bry, COL_BOAT);
+    c.drawTriangle(tipx, tipy, blx, bly, brx, bry, COL_TEXT);
+}
+
+void drawZoomButtons(M5Canvas& c) {
+    int x = c.width() - ZOOM_BTN - ZOOM_MARGIN;
+    int yIn = c.height() - 2 * ZOOM_BTN - ZOOM_MARGIN - 8;
+    int yOut = c.height() - ZOOM_BTN - ZOOM_MARGIN;
+    for (int i = 0; i < 2; i++) {
+        int y = i == 0 ? yIn : yOut;
+        c.fillRoundRect(x, y, ZOOM_BTN, ZOOM_BTN, 12, COL_SHADE);
+        c.drawRoundRect(x, y, ZOOM_BTN, ZOOM_BTN, 12, COL_TEXT);
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextSize(1);
+        c.setTextDatum(middle_center);
+        c.setTextColor(COL_TEXT);
+        c.drawString(i == 0 ? "+" : "-", x + ZOOM_BTN / 2, y + ZOOM_BTN / 2 - 2);
+    }
+}
+
+void drawStatus(M5Canvas& c, const char* msg) {
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_center);
+    c.setTextColor(COL_TEXT);
+    c.drawString(msg, c.width() / 2, c.height() / 2);
+}
+
+}  // namespace
+
+void begin() {
+    sxBuf = (float*)heap_caps_malloc(sizeof(float) * SCRATCH, MALLOC_CAP_SPIRAM);
+    syBuf = (float*)heap_caps_malloc(sizeof(float) * SCRATCH, MALLOC_CAP_SPIRAM);
+    if (!sxBuf || !syBuf) Serial.println("[mapview] scratch alloc failed");
+}
+
+bool zoomInRect(const M5Canvas& c, int& x, int& y, int& w, int& h) {
+    x = c.width() - ZOOM_BTN - ZOOM_MARGIN;
+    y = c.height() - 2 * ZOOM_BTN - ZOOM_MARGIN - 8;
+    w = h = ZOOM_BTN;
+    return true;
+}
+
+bool zoomOutRect(const M5Canvas& c, int& x, int& y, int& w, int& h) {
+    x = c.width() - ZOOM_BTN - ZOOM_MARGIN;
+    y = c.height() - ZOOM_BTN - ZOOM_MARGIN;
+    w = h = ZOOM_BTN;
+    return true;
+}
+
+void render(M5Canvas& c, const View& v) {
+    if (!paletteReady) initPalette(c);
+    c.fillSprite(COL_LAND);
+
+    const mapdata::Map& m = mapdata::current();
+    if (!mapdata::loaded()) {
+        drawStatus(c, mapdata::fileCount() == 0 ? "No map yet - tap MAPS to download one" : "Loading map...");
+        return;
+    }
+
+    // Boat position in map coordinates; fall back to map centre with no fix.
+    double blat = v.lat, blon = v.lon;
+    if (!v.haveFix) mapdata::centerLatLon(blat, blon);
+    int32_t bxi, byi;
+    mapdata::project(blat, blon, bxi, byi);
+
+    Xform xf;
+    xf.bx = bxi;
+    xf.by = byi;
+    float B = v.headUp ? v.course : 0.0f;
+    float a = B * (float)M_PI / 180.0f;
+    xf.cosB = cosf(a);
+    xf.sinB = sinf(a);
+    xf.invmpp = 1.0f / v.metersPerPixel;
+    xf.cx = c.width() / 2.0f;
+    xf.cy = v.headUp ? c.height() * 0.62f : c.height() / 2.0f;
+
+    // World (decimetre) bounding box of the canvas, for culling.
+    float minVX = 1e18f, minVY = 1e18f, maxVX = -1e18f, maxVY = -1e18f;
+    const float corners[4][2] = {{0, 0}, {(float)c.width(), 0}, {0, (float)c.height()},
+                                 {(float)c.width(), (float)c.height()}};
+    for (auto& cn : corners) {
+        float xr = (cn[0] - xf.cx) * v.metersPerPixel;
+        float yr = (xf.cy - cn[1]) * v.metersPerPixel;
+        float dx = xr * xf.cosB + yr * xf.sinB;   // inverse rotation
+        float dy = -xr * xf.sinB + yr * xf.cosB;
+        float wx = xf.bx + dx * 10.0f;
+        float wy = xf.by + dy * 10.0f;
+        minVX = fminf(minVX, wx);
+        maxVX = fmaxf(maxVX, wx);
+        minVY = fminf(minVY, wy);
+        maxVY = fmaxf(maxVY, wy);
+    }
+
+    // Draw by kind so areas sit under lines and markers.
+    const uint8_t order[] = {mapdata::WaterArea, mapdata::WaterLine, mapdata::Pier,
+                             mapdata::Weir,      mapdata::Bridge,    mapdata::Lock};
+    for (uint8_t kind : order) {
+        for (int i = 0; i < m.featureCount; i++) {
+            const mapdata::Feature& ft = m.features[i];
+            if (ft.kind != kind) continue;
+            if (!boxOverlap(ft.bbox, minVX, minVY, maxVX, maxVY)) continue;
+            int nr = transformFeature(m, ft, xf);
+            if (nr <= 0) continue;
+            if (ft.flags & mapdata::F_POINT) continue;
+            if (ft.flags & mapdata::F_LINE) {
+                float wpx;
+                switch (kind) {
+                    case mapdata::WaterLine: wpx = (ft.widthDm * 0.1f) * xf.invmpp; break;
+                    case mapdata::Bridge: wpx = 5; break;
+                    case mapdata::Weir: wpx = 4; break;
+                    case mapdata::Lock: wpx = 4; break;
+                    default: wpx = 2; break;
+                }
+                drawLineFeature(c, nr, wpx, featureColor(kind));
+            } else {
+                fillRings(c, nr, featureColor(kind));
+            }
+        }
+    }
+
+    // Track breadcrumb.
+    int tn = track::count();
+    if (tn > 1) {
+        float px = 0, py = 0;
+        bool have = false;
+        for (int i = 0; i < tn; i++) {
+            track::Point tp = track::get(i);
+            int32_t tx, ty;
+            mapdata::project(tp.lat, tp.lon, tx, ty);
+            float sx, sy;
+            xf.toScreen(tx, ty, sx, sy);
+            if (have) c.drawWideLine(px, py, sx, sy, 3, COL_TRACK);
+            px = sx;
+            py = sy;
+            have = true;
+        }
+    }
+
+    // Boat club markers and names (only when zoomed in enough to be useful).
+    bool labels = v.metersPerPixel < 1.2f;
+    for (int i = 0; i < m.featureCount; i++) {
+        const mapdata::Feature& ft = m.features[i];
+        if (ft.kind != mapdata::Club || !(ft.flags & mapdata::F_POINT)) continue;
+        if (!boxOverlap(ft.bbox, minVX, minVY, maxVX, maxVY)) continue;
+        const mapdata::Ring& ring = m.rings[ft.ringFirst];
+        const int32_t* pts = &m.points[ring.first * 2];
+        float sx, sy;
+        xf.toScreen(pts[0], pts[1], sx, sy);
+        c.fillCircle(sx, sy, 5, COL_CLUB);
+        c.drawCircle(sx, sy, 5, COL_TEXT);
+        if (labels && ft.name[0]) {
+            c.setFont(&fonts::FreeSans9pt7b);
+            c.setTextSize(1);
+            c.setTextDatum(middle_left);
+            c.setTextColor(COL_TEXT);
+            c.drawString(ft.name, sx + 9, sy);
+        }
+    }
+
+    drawBoat(c, xf, v.course, v.headUp);
+    drawScaleBar(c, v.metersPerPixel);
+    if (v.headUp) drawNorthArrow(c, xf);
+
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(bottom_right);
+    c.setTextColor(COL_TEXT);
+    c.drawString("(c) OpenStreetMap", c.width() - 6, c.height() - 4);
+
+    if (!v.haveFix) {
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(top_center);
+        c.setTextColor(COL_LOCK);
+        c.drawString("Waiting for GPS", c.width() / 2, 8);
+    }
+    if (v.showControls) drawZoomButtons(c);
+}
+
+}  // namespace mapview
