@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "display_fb.h"
+#include "icons.h"
 #include "keyboard.h"
 #include "map_data.h"
 #include "map_view.h"
@@ -16,10 +17,9 @@ namespace sessionsui {
 namespace {
 
 constexpr int HEADER_H = 52;
-// Row buttons as on the Settings screen: 90 px rows, 74 px tall, right-aligned; 190 px wide so
-// RENAME and CONFIRM fit in the large font.
+// Rows as on the Settings screen: 90 px, with right-aligned 74 px icon buttons.
 constexpr int ROW_H = 90;
-constexpr int BTN_W = 190, BTN2_X = 1280 - 20 - BTN_W, BTN1_X = BTN2_X - 20 - BTN_W;
+constexpr int BTN_W = 74, BTN2_X = 1280 - 20 - BTN_W, BTN1_X = BTN2_X - 16 - BTN_W;
 constexpr int REV_MAP_W = 760;
 constexpr uint32_t FRAME_MS = 100;
 
@@ -76,6 +76,12 @@ void button(const Rect& r, const char* label, bool lit = false, uint16_t fill = 
     cv.drawString(label, r.x + r.w / 2, r.y + r.h / 2);
 }
 
+void iconButton(const Rect& r, icons::Icon icon, uint16_t fill = 0) {
+    uint16_t bg = fill ? fill : c.btn;
+    cv.fillSmoothRoundRect(r.x, r.y, r.w, r.h, 16, bg);
+    icons::draw(cv, icon, r.x + r.w / 2, r.y + r.h / 2, 36, fill ? c.bg : c.btnText, bg);
+}
+
 void fmtBytes(char* out, size_t n, uint32_t b) {
     if (b >= 1024 * 1024) snprintf(out, n, "%.1f MB", b / 1048576.0);
     else snprintf(out, n, "%u KB", (unsigned)((b + 512) / 1024));
@@ -124,8 +130,8 @@ void drawHeader() {
 
 int rows() { return std::max(1, recordings::count()); }
 int maxScroll() { return std::max(0, rows() * ROW_H - bodyH()); }
-Rect deleteBtn(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
-Rect renameBtn(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
+Rect deleteBtn(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + (ROW_H - BTN_W) / 2, BTN_W, BTN_W}; }
+Rect renameBtn(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + (ROW_H - BTN_W) / 2, BTN_W, BTN_W}; }
 
 void drawList() {
     cv.fillRect(0, HEADER_H, W, bodyH(), c.bg);
@@ -143,28 +149,29 @@ void drawList() {
         if (y + ROW_H < HEADER_H || y > H) continue;
         recordings::Info ri;
         if (!recordings::get(r, ri)) continue;
-        int cy = y + ROW_H / 2;
-        char a[64], b[64];
+        char a[64], b[96];
+        bool confirm = r == confirmIdx;
         cv.setTextDatum(middle_left);
-        cv.setFont(&fonts::FreeSansBold12pt7b);
+        cv.setFont(&fonts::FreeSansBold18pt7b);
         cv.setTextColor(c.fg);
         if (ri.label[0]) snprintf(a, sizeof(a), "%s", ri.label);
         else snprintf(a, sizeof(a), "Session %d", ri.number);
-        cv.drawString(a, 24, cy);
+        cv.drawString(a, 24, y + 30);
         cv.setFont(&fonts::FreeSans12pt7b);
-        cv.setTextColor(c.label);
-        snprintf(b, sizeof(b), "S%04d  %s", ri.number, ri.start);
-        cv.drawString(b, 390, cy);
-        char size[16], dur[16] = "";
-        fmtBytes(size, sizeof(size), ri.bytes);
-        if (ri.durationS > 0) fmtDuration(dur, sizeof(dur), ri.durationS);
-        snprintf(b, sizeof(b), "%s  %s", dur, size);
-        cv.setTextDatum(middle_right);
-        cv.drawString(b, renameBtn(r).x - 16, cy);
+        if (confirm) {
+            cv.setTextColor(c.warn);
+            snprintf(b, sizeof(b), "Tap the red button again to delete this session");
+        } else {
+            char size[16], dur[16] = "";
+            fmtBytes(size, sizeof(size), ri.bytes);
+            if (ri.durationS > 0) fmtDuration(dur, sizeof(dur), ri.durationS);
+            cv.setTextColor(c.label);
+            snprintf(b, sizeof(b), "S%04d   %s%s%s   %s", ri.number, ri.start, ri.start[0] ? "   " : "", dur, size);
+        }
+        cv.drawString(b, 24, y + 66);
         cv.drawFastHLine(0, y + ROW_H - 1, W, c.dim);
-        bool confirm = r == confirmIdx;
-        button(renameBtn(r), "RENAME");
-        button(deleteBtn(r), confirm ? "CONFIRM" : "DELETE", false, confirm ? c.warn : 0);
+        iconButton(renameBtn(r), icons::Icon::Pencil);
+        iconButton(deleteBtn(r), icons::Icon::Trash, confirm ? c.warn : 0);
     }
     cv.clearClipRect();
     int ms = maxScroll();

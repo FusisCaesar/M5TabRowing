@@ -9,6 +9,7 @@
 #include "efficiency.h"
 #include "gps_nav.h"
 #include "hr.h"
+#include "icons.h"
 #include "imu_stroke.h"
 #include "logger.h"
 #include "map_data.h"
@@ -729,7 +730,8 @@ void drawPlot(const metrics::View& v) {
 
 enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_COUNT };
 constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 4;
-constexpr int SET_BTN_W = 170, SET_PLUS_X = W - 20 - SET_BTN_W, SET_MINUS_X = SET_PLUS_X - 20 - SET_BTN_W;
+constexpr int SET_ICON = 74, SET_PLUS_X = W - 20 - SET_ICON, SET_MINUS_X = SET_PLUS_X - 16 - SET_ICON;
+constexpr int SET_SWITCH_W = 130, SET_SWITCH_H = 60, SET_TEXT_BTN_W = 190;
 
 struct SettingsTab {
     const char* name;
@@ -823,31 +825,37 @@ void drawSettingRow(int slot, int r) {
     M5Canvas& c = setC;
     c.fillSprite(th->bg);
     if (r >= 0) {
-        int mid = SET_ROW_H / 2, bh = SET_ROW_H - 16;
+        int mid = SET_ROW_H / 2, by = (SET_ROW_H - SET_ICON) / 2;
         c.drawFastHLine(0, SET_ROW_H - 1, W, th->dim);
-        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setFont(&fonts::FreeSansBold18pt7b);
         c.setTextSize(1);
         c.setTextDatum(middle_left);
         c.setTextColor(th->fg);
         c.drawString(label, 24, mid);
-        c.setTextDatum(middle_center);
-        if (isNumeric(r) || r == S_HR) {
-            c.setTextColor(th->accent);
-            c.drawString(value, 740, mid);
-        }
-        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_right);
+        c.setTextColor(th->accent);
+        auto iconButton = [&](int x, icons::Icon icon) {
+            c.fillSmoothRoundRect(x, by, SET_ICON, SET_ICON, 16, th->btn);
+            icons::draw(c, icon, x + SET_ICON / 2, by + SET_ICON / 2, 34, th->btnText, th->btn);
+        };
         if (isNumeric(r)) {
+            c.drawString(value, SET_MINUS_X - 24, mid);
+            iconButton(SET_MINUS_X, icons::Icon::Minus);
+            iconButton(SET_PLUS_X, icons::Icon::Plus);
+        } else if (r == S_THEME) {
+            bool day = settings::get().dayTheme;
+            c.drawString(day ? "Day" : "Night", SET_PLUS_X - 24, mid);
+            iconButton(SET_PLUS_X, day ? icons::Icon::Sun : icons::Icon::Moon);
+        } else if (r == S_HR) {
+            int bx = W - 20 - SET_TEXT_BTN_W;
+            c.drawString(value, bx - 24, mid);
+            c.fillSmoothRoundRect(bx, by, SET_TEXT_BTN_W, SET_ICON, 16, th->btn);
+            c.setTextDatum(middle_center);
             c.setTextColor(th->btnText);
-            c.fillRoundRect(SET_MINUS_X, 8, SET_BTN_W, bh, 16, th->btn);
-            c.fillRoundRect(SET_PLUS_X, 8, SET_BTN_W, bh, 16, th->btn);
-            c.setFont(&fonts::FreeSansBold24pt7b);
-            c.drawString("-", SET_MINUS_X + SET_BTN_W / 2, mid);
-            c.drawString("+", SET_PLUS_X + SET_BTN_W / 2, mid);
+            c.drawString(settingButton(r), bx + SET_TEXT_BTN_W / 2, mid);
         } else {
-            bool lit = switchState(r) == 1;
-            c.fillRoundRect(SET_MINUS_X, 8, SET_PLUS_X + SET_BTN_W - SET_MINUS_X, bh, 16, lit ? th->accent : th->btn);
-            c.setTextColor(lit ? th->bg : th->btnText);
-            c.drawString(settingButton(r), (SET_MINUS_X + SET_PLUS_X + SET_BTN_W) / 2, mid);
+            icons::drawSwitch(c, W - 20 - SET_SWITCH_W, (SET_ROW_H - SET_SWITCH_H) / 2, SET_SWITCH_W, SET_SWITCH_H,
+                              switchState(r) == 1, th->accent, th->btn, th->bg);
         }
     }
     fb::push(c, 0, BAR_H + SET_TAB_H + slot * SET_ROW_H);
@@ -880,9 +888,9 @@ void onSettingsTap(int x, int y) {
     if (y < BAR_H + SET_TAB_H || slot >= SET_ROWS) return;
     int row = SET_TABS[settingsTab].rows[slot];
     if (row < 0) return;
-    bool minus = x >= SET_MINUS_X && x < SET_MINUS_X + SET_BTN_W;
-    bool plus = x >= SET_PLUS_X && x < SET_PLUS_X + SET_BTN_W;
-    bool toggle = x >= SET_MINUS_X && x < SET_PLUS_X + SET_BTN_W;
+    bool minus = x >= SET_MINUS_X - 8 && x < SET_MINUS_X + SET_ICON + 8;
+    bool plus = x >= SET_PLUS_X - 8;
+    bool toggle = x >= W / 2;  // the whole right half of a switch row
     Settings& s = settings::get();
     bool full = false;
     switch (row) {

@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "display_fb.h"
+#include "icons.h"
 #include "gps_nav.h"
 #include "keyboard.h"
 #include "map_data.h"
@@ -18,11 +19,9 @@ namespace mapsui {
 namespace {
 
 constexpr int HEADER_H = 52;
-// Row buttons as on the Settings screen: 90 px rows, 74 px tall, right-aligned; 190 px wide so
-// RENAME and CONFIRM fit in the large font (one wide button where a row has a single action).
+// Rows as on the Settings screen: 90 px, with right-aligned 74 px icon buttons.
 constexpr int ROW_H = 90;
-constexpr int BTN_W = 190, BTN2_X = 1280 - 20 - BTN_W, BTN1_X = BTN2_X - 20 - BTN_W;
-constexpr int ROW_BTN_W = BTN2_X + BTN_W - BTN1_X;
+constexpr int BTN_W = 74, BTN2_X = 1280 - 20 - BTN_W, BTN1_X = BTN2_X - 16 - BTN_W;
 constexpr int MIN_ZOOM = 3, MAX_ZOOM = 17;
 constexpr uint32_t FRAME_MS = 100;
 
@@ -113,6 +112,24 @@ void button(const Rect& r, const char* label, bool enabled, bool lit = false, ui
     cv.setTextDatum(middle_center);
     cv.setTextColor(lit || fill ? c.bg : enabled ? c.btnText : c.dim);
     cv.drawString(label, r.x + r.w / 2, r.y + r.h / 2);
+}
+
+void iconButton(const Rect& r, icons::Icon icon, bool enabled = true, uint16_t fill = 0) {
+    uint16_t bg = fill ? fill : enabled ? c.btn : c.bg;
+    cv.fillSmoothRoundRect(r.x, r.y, r.w, r.h, 16, bg);
+    if (!enabled && !fill) cv.drawRoundRect(r.x, r.y, r.w, r.h, 16, c.dim);
+    icons::draw(cv, icon, r.x + r.w / 2, r.y + r.h / 2, 36, fill ? c.bg : enabled ? c.btnText : c.dim, bg);
+}
+
+// Name on the first line of a list row, details below it.
+void rowText(int y, const char* name, const char* details, uint16_t detailColor) {
+    cv.setTextDatum(middle_left);
+    cv.setFont(&fonts::FreeSansBold18pt7b);
+    cv.setTextColor(c.fg);
+    cv.drawString(name, 24, y + 30);
+    cv.setFont(&fonts::FreeSans12pt7b);
+    cv.setTextColor(detailColor);
+    cv.drawString(details, 24, y + 66);
 }
 
 void fmtBytes(char* out, size_t n, uint32_t b) {
@@ -245,7 +262,7 @@ void drawSetup() {
 
 int maxScroll(int rows) { return std::max(0, rows * ROW_H - bodyH()); }
 
-Rect rowButton(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + 8, ROW_BTN_W, ROW_H - 16}; }
+Rect rowButton(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + (ROW_H - BTN_W) / 2, BTN_W, BTN_W}; }
 
 void drawLibrary() {
     cv.fillRect(0, HEADER_H, W, bodyH(), c.bg);
@@ -257,27 +274,16 @@ void drawLibrary() {
         if (y + ROW_H < HEADER_H || y > H) continue;
         const maplib::Entry& e = maplib::ENTRIES[i];
         cv.drawFastHLine(0, y + ROW_H - 1, W, c.dim);
-        cv.setTextDatum(middle_left);
-        cv.setFont(&fonts::FreeSansBold12pt7b);
-        cv.setTextColor(c.fg);
-        cv.drawString(e.name, 24, y + ROW_H / 2);
-        cv.setFont(&fonts::FreeSans12pt7b);
-        cv.setTextColor(c.label);
-        cv.drawString(e.region, 360, y + ROW_H / 2);
-        char size[24];
-        snprintf(size, sizeof(size), "%.0f x %.0f km", e.radiusKm * 2, e.radiusKm * 2);
-        cv.drawString(size, 610, y + ROW_H / 2);
-
         char path[48];
         mapjob::pathFor(e.name, path, sizeof(path));
         bool have = onCard(path);
         bool thisJob = jobBusy && strcmp(js.name, e.name) == 0;
-        if (have) {
-            cv.setTextColor(c.ok);
-            cv.setTextDatum(middle_right);
-            cv.drawString("on card", BTN1_X - 20, y + ROW_H / 2);
-        }
-        button(rowButton(i), thisJob ? "..." : have ? "UPDATE" : "DOWNLOAD", !jobBusy, thisJob);
+        char details[96];
+        snprintf(details, sizeof(details), "%s   %.0f x %.0f km%s", e.region, e.radiusKm * 2, e.radiusKm * 2,
+                 thisJob ? "   downloading..." : have ? "   on card" : "");
+        rowText(y, e.name, details, have || thisJob ? c.ok : c.label);
+        if (thisJob) button(rowButton(i), "...", true, true);
+        else iconButton(rowButton(i), have ? icons::Icon::Refresh : icons::Icon::Download, !jobBusy);
     }
     cv.clearClipRect();
     int ms = maxScroll(maplib::COUNT);
@@ -303,8 +309,8 @@ void tapLibrary(int x, int y) {
 
 int cardRows() { return std::max(1, mapdata::fileCount()); }
 
-Rect deleteBtn(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
-Rect renameBtn(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
+Rect deleteBtn(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + (ROW_H - BTN_W) / 2, BTN_W, BTN_W}; }
+Rect renameBtn(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + (ROW_H - BTN_W) / 2, BTN_W, BTN_W}; }
 
 void drawOnCard() {
     cv.fillRect(0, HEADER_H, W, bodyH(), c.bg);
@@ -322,28 +328,18 @@ void drawOnCard() {
         if (y + ROW_H < HEADER_H || y > H) continue;
         mapdata::FileInfo fi;
         if (!mapdata::fileInfo(r, fi)) continue;
-        int cy = y + ROW_H / 2;
-        char a[64];
-        cv.setTextDatum(middle_left);
-        cv.setFont(&fonts::FreeSansBold12pt7b);
-        cv.setTextColor(c.fg);
-        cv.drawString(fi.name, 24, cy);
-        cv.setFont(&fonts::FreeSans12pt7b);
-        cv.setTextColor(c.label);
+        char a[96];
         char size[16];
         double wKm, hKm;
         areaKm(fi.south, fi.west, fi.north, fi.east, wKm, hKm);
         fmtBytes(size, sizeof(size), fi.bytes);
-        snprintf(a, sizeof(a), "%.1f x %.1f km   %s", wKm, hKm, size);
-        cv.drawString(a, 390, cy);
-        if (fi.loaded) {
-            cv.setTextColor(c.ok);
-            cv.drawString("showing", 700, cy);
-        }
-        cv.drawFastHLine(0, y + ROW_H - 1, W, c.dim);
         bool confirm = r == confirmIdx;
-        button(renameBtn(r), "RENAME", true);
-        button(deleteBtn(r), confirm ? "CONFIRM" : "DELETE", true, false, confirm ? c.warn : 0);
+        if (confirm) snprintf(a, sizeof(a), "Tap the red button again to delete this map");
+        else snprintf(a, sizeof(a), "%.1f x %.1f km   %s%s", wKm, hKm, size, fi.loaded ? "   showing" : "");
+        rowText(y, fi.name, a, confirm ? c.warn : fi.loaded ? c.ok : c.label);
+        cv.drawFastHLine(0, y + ROW_H - 1, W, c.dim);
+        iconButton(renameBtn(r), icons::Icon::Pencil);
+        iconButton(deleteBtn(r), icons::Icon::Trash, true, confirm ? c.warn : 0);
     }
     cv.clearClipRect();
     int rows = cardRows();
