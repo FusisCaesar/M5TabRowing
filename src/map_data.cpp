@@ -272,6 +272,22 @@ bool removeFile(int i) {
     return ok;
 }
 
+bool renameFile(int i, const char* name) {
+    if (i < 0 || i >= nFiles || !name[0]) return false;
+    constexpr size_t NAME_OFFSET = 40;  // magic, version, flags, origin, bbox
+    char field[32] = {0};
+    strncpy(field, name, sizeof(field) - 1);
+    File f = SD_MMC.open(files[i].path, "r+");
+    bool ok = f && f.seek(NAME_OFFSET) && f.write((const uint8_t*)field, sizeof(field)) == sizeof(field);
+    if (f) f.close();
+    if (ok) {
+        strlcpy(files[i].name, field, sizeof(files[i].name));
+        if (i == curIndex) strlcpy(cur.name, field, sizeof(cur.name));
+    }
+    Serial.printf("[map] rename %s to '%s': %s\n", files[i].path, field, ok ? "OK" : "failed");
+    return ok;
+}
+
 bool show(const char* path) {
     for (int i = 0; i < nFiles; i++)
         if (strcmp(files[i].path, path) == 0) return i == curIndex || loadFile(i);

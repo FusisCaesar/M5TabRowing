@@ -6,7 +6,8 @@
 
 namespace logger {
 
-enum class Stream : uint8_t { Strokes = 0, Seconds, Laps, Raw, Count };
+// Raw must stay last: it is the only stream that is opened lazily.
+enum class Stream : uint8_t { Strokes = 0, Seconds, Laps, Info, Raw, Count };
 
 bool begin();
 bool sdReady();
@@ -31,6 +32,10 @@ void listFiles(Print& out, int headLines);
 // creating parent directories. Verifies the CRC32 and reports progress/result to
 // `out`. Refuses while a session is open. Returns true on success.
 bool receiveFile(::Stream& in, const char* path, uint32_t size, uint32_t expectCrc, Print& out);
+
+// Sends a file from the SD card to `io` in CRC-checked chunks driven by the host
+// (see tools/fetch.py). Refuses while a session is open.
+bool sendFile(::Stream& io, const char* path);
 
 // Erases the card: one FAT32 partition over the whole card. Restart afterwards to remount.
 bool formatCard(Print& out);

@@ -59,7 +59,7 @@ Five screens; the right-most bottom button cycles through them.
 | Main | split /500m, stroke rate, distance, time; distance per stroke, average split, strokes, recovery:drive with a SLOWER / GOOD / QUICKER indicator |
 | Map | offline waterway map with your position, heading and track; head-up/north-up toggle and zoom buttons |
 | Efficiency | distance per stroke against rate with your best line, efficiency score, ratio/check/bounce gauges and a coaching hint |
-| Plot | last 6 s of the forward acceleration with threshold, catch and finish markers, and drive/recovery/check/bounce stats |
+| Plot | last 6 s of the forward acceleration with threshold, catch and finish markers, and drive/recovery/check/bounce stats; shows `REC S####` while a session records |
 | Settings | threshold K and floor, minima threshold, raw IMU logging, GPS+IMU fusion, rec:drive target shift, camera mirror image, day/night theme, flip display, brightness |
 
 Bottom buttons: **START** starts a session, **LAP** splits a lap, **hold STOP**
@@ -136,10 +136,75 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 
 | File | One row per | Contents |
 | --- | --- | --- |
-| `_strokes.csv` | stroke | rate, drive/recovery time, split, speed, distance per stroke, distance, catch depth, check, bounce, position |
+| `_strokes.csv` | stroke | rate, drive/recovery time, split, speed, distance per stroke, distance, catch depth, check, bounce, position, catch time (`t_s`) |
 | `_seconds.csv` | second | UTC, position, speed, split, distance, rate, HDOP, satellites, battery |
 | `_laps.csv` | lap | lap time, distance, average split and rate, strokes |
-| `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered surge, threshold, catch flag, GPS speed (only with raw logging on) |
+| `_info.csv` | setting | build, start time, and the detector settings in use, so a session can be replayed exactly |
+| `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed (only with raw logging on) |
+
+`t_s` is the same clock in every file, so strokes and IMU samples line up.
+Raw logging takes about 13 MB per hour.
+
+Dates and times in the files are UTC from the Tab5's battery-backed clock (RTC).
+The clock is set from internet time whenever Wi-Fi is connected and from the GPS
+once it has a fix, and keeps time while the Tab5 is off. `_info.csv` records
+where the time came from (`time_source`: NTP, GPS or RTC). The top bar and the
+recordings list show local time (`cfg::TIMEZONE`, Amsterdam by default).
+
+## Exporting to Strava or Garmin Connect
+
+Fetch the session (or copy it with a card reader), then write GPX and TCX files
+next to it:
+
+```powershell
+python tools\fetch.py COM10 latest
+python tools\export.py 21                    # recordings\S0021.gpx and S0021.tcx
+python tools\export.py all --format gpx --out exports
+```
+
+- **GPX**: track, time, speed and stroke rate (as cadence), marked as rowing.
+  Strava recognises the type; upload it at strava.com/upload/select.
+- **TCX**: also distance and one lap per **LAP** press. TCX has no rowing sport,
+  so pick rowing after uploading.
+
+Seconds without a GPS fix are left out of the GPX track.
+
+## Recording strokes for detector tuning
+
+1. Check **Raw IMU logging** is ON in Settings (it is by default) and press **START**.
+2. The **Plot** screen says `REC S####` while it records.
+3. Row a mix: steady state, rate changes, starts, easy paddling, rough water,
+   stopping and restarting. Row at least a few minutes so the detector has
+   settled, and keep the Tab5 firmly mounted: tilting it mixes gravity into the
+   signal.
+4. **Hold STOP** when done. Name the session under **MAPS > ON CARD** if you
+   like. Then copy the files with a card reader (`/rowing/` on the card), or over
+   USB:
+
+   ```powershell
+   python tools\fetch.py COM10                 # list the sessions on the card
+   python tools\fetch.py COM10 latest          # download the newest into recordings\
+   python tools\fetch.py COM10 7 9             # or specific sessions; 'all' for everything
+   ```
+
+   About 550 KB/s, so an hour of rowing downloads in under half a minute. Files
+   already in `recordings\` are skipped.
+5. Analyse a session (needs `pip install numpy matplotlib`):
+
+   ```powershell
+   python tools\analyse.py recordings\S0007
+   python tools\analyse.py recordings\S0007 --replay --k 2.0 --floor 0.10
+   ```
+
+   This writes `recordings\S0007_analysis\` with a `summary.txt`, an overview
+   (rate, stroke interval and GPS speed over the session), all strokes overlaid at
+   the catch with the average stroke shape per rate band, the detector's view of
+   the whole session one minute per page, and a close-up around every suspicious
+   stroke (an interval far from its neighbours: probably a missed catch or a
+   double count). `--replay` also runs the offline
+   detector from `replay.py`, with the session's settings or the ones you give,
+   and shows its catches as orange triangles, so you can see whether other
+   settings fix a problem.
 
 ## Serial tools
 
@@ -157,6 +222,8 @@ python tools\send.py COM10 'T 640 360'                    # tap at x y; 'P x y' 
 python tools\send.py COM10 'W MyNetwork|MyPassword'       # join Wi-Fi and remember it; 'W ' reconnects
 python tools\serial_log.py COM10 5 --send "1:D"           # list SD session files and /map files with their first lines
 python tools\serial_log.py COM10 40 --send "1:F,2:Y"      # erase the SD card: one FAT32 partition, then restart
+python tools\fetch.py COM10 latest                        # download the newest session (B path on the wire)
+python tools\export.py 21                                 # GPX + TCX of a fetched session
 python tools\screenshot.py COM10 shots\main.png           # needs Pillow
 ```
 
@@ -176,7 +243,23 @@ screen is open and off again when you leave it.
 - **DRAW AREA**: an OpenStreetMap background centred on your position. Drag to
   pan, +/- to zoom, tap SELECT AREA and drag a rectangle over the water you row
   on (up to 8 x 8 km), then DOWNLOAD AREA.
-- **ON CARD**: the maps on the SD card with their size; DELETE, then CONFIRM.
+- **ON CARD**: what is on the SD card, in two lists.
+  - **Maps**, with their size. A map you drew is named after its centre
+    (`Area 52.226 5.072`); tap **RENAME** to give it a proper name with the
+    on-screen keyboard. The file name on the card stays the same.
+  - **Recordings**: every session with its number, start date and time (local),
+    duration and size. **RENAME** gives it a name such as
+    `Bosbaan intervals`; the session's files become
+    `S0022_Bosbaan_intervals_imu.csv` and so on, and `fetch.py` and
+    `analyse.py` understand both forms.
+  - Tap a recording's name to review it: the GPS track on the offline map,
+    coloured from red (slow) to green (fast) with a start dot and a finish
+    square, plus distance, time, average split, fastest 500 m, average rate,
+    strokes, distance per stroke, top speed, and graphs of split and rate over
+    the session. Drag the map to pan, +/- to zoom, tap the map to fit the whole
+    track again; **ON CARD** returns to the list. The track is drawn without a
+    map when no map on the card covers it.
+  - **DELETE**, then **CONFIRM**, removes a map or all files of a recording.
 
 A download takes 30-60 s, mostly waiting for the Overpass map server; the header
 shows progress. The Tab5 then converts the data itself (about 2 s) and shows the

@@ -16,6 +16,7 @@
 #include "maps_ui.h"
 #include "net.h"
 #include "metrics.h"
+#include "rtclock.h"
 #include "settings.h"
 #include "track.h"
 
@@ -212,7 +213,7 @@ void drawRow(int idx, int y, const char* left, const char* right, uint16_t color
 // ---- top bar and buttons ---------------------------------------------------
 
 void drawTopBar(const metrics::View& v) {
-    char left[32], mid[80], right[32];
+    char left[32], mid[80], right[48];
     switch (v.state) {
         case metrics::State::Ready: snprintf(left, sizeof(left), "READY"); break;
         case metrics::State::Running:
@@ -250,8 +251,15 @@ void drawTopBar(const metrics::View& v) {
         case net::State::Failed: wifi = "NO WIFI  "; break;
         case net::State::Off: break;
     }
-    if (v.battery >= 0) snprintf(right, sizeof(right), "%s%sBAT %d%%", wifi, sim, v.battery);
-    else snprintf(right, sizeof(right), "%s%s", wifi, sim);
+    char clock[16] = "";
+    if (rtclock::valid()) {
+        time_t t = time(nullptr);
+        tm l;
+        localtime_r(&t, &l);
+        strftime(clock, sizeof(clock), "%H:%M  ", &l);
+    }
+    if (v.battery >= 0) snprintf(right, sizeof(right), "%s%s%sBAT %d%%", wifi, sim, clock, v.battery);
+    else snprintf(right, sizeof(right), "%s%s%s", wifi, sim, clock);
 
     char key[160];
     snprintf(key, sizeof(key), "%s|%s|%s", left, mid, right);
@@ -650,6 +658,19 @@ void drawPlot(const metrics::View& v) {
             plotC.drawString(item.first, lx, 8);
             lx -= plotC.textWidth(item.first);
         }
+        char rec[64];
+        plotC.setTextDatum(top_left);
+        if (v.state == metrics::State::Running && v.session >= 0) {
+            snprintf(rec, sizeof(rec), "REC S%04d%s", v.session, logger::rawActive() ? "   raw IMU 100 Hz" : "");
+            plotC.setTextColor(th->warn);
+        } else if (v.state == metrics::State::Running) {
+            snprintf(rec, sizeof(rec), "NOT RECORDING: no SD card");
+            plotC.setTextColor(th->warn);
+        } else {
+            snprintf(rec, sizeof(rec), "Press START to record");
+            plotC.setTextColor(th->label);
+        }
+        plotC.drawString(rec, 12, 8);
         fb::push(plotC, 0, BAR_H);
     }
 
@@ -1168,7 +1189,7 @@ void loop() {
     }
 
     // Keep the loaded map area in sync with position, and record the track.
-    if (millis() - lastMapScan > 1000) {
+    if (millis() - lastMapScan > 1000 && !mapsui::reviewing()) {
         lastMapScan = millis();
         gps::Snapshot g = gps::get();
         mapdata::update(g.lat, g.lon, g.fix);

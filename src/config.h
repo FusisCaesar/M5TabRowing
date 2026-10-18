@@ -21,6 +21,12 @@ constexpr int SD_D2_PIN = 41;
 constexpr int SD_D3_PIN = 42;
 constexpr int SD_FREQ_KHZ = 20000;
 
+// ---- Clock --------------------------------------------------------------
+// Logs are in UTC; the screen shows local time in this POSIX time zone (Europe/Amsterdam).
+constexpr const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";
+constexpr const char* NTP_SERVER_1 = "pool.ntp.org";
+constexpr const char* NTP_SERVER_2 = "time.google.com";
+
 // ---- IMU / stroke detection -------------------------------------------
 constexpr float IMU_RATE_HZ = 100.0f;
 constexpr float IMU_DT_S = 1.0f / IMU_RATE_HZ;

@@ -8,6 +8,7 @@
 #include "gps_nav.h"
 #include "imu_stroke.h"
 #include "logger.h"
+#include "rtclock.h"
 #include "settings.h"
 
 namespace metrics {
@@ -132,16 +133,16 @@ void onStroke(const StrokeEvent& ev) {
     char line[200];
     float elapsed = (float)((catchUs - startUs) * 1e-6);
     snprintf(line, sizeof(line),
-             "%.2f,%d,%.1f,%.3f,%.3f,%.3f,%.2f,%.1f,%.2f,%.2f,%.1f,%.3f,%.1f,%.1f,%.7f,%.7f\n",
+             "%.2f,%d,%.1f,%.3f,%.3f,%.3f,%.2f,%.1f,%.2f,%.2f,%.1f,%.3f,%.1f,%.1f,%.7f,%.7f,%.3f\n",
              elapsed, v.strokes, ev.rateSpm, ev.interval, ev.driveTime, ev.recoveryTime, ratio,
              strokeSplit, meanV > 0 ? meanV : 0, dps, v.distance, ev.peakDecelG, ev.checkMg,
-             ev.bounceMg, gpsNow.lat, gpsNow.lon);
+             ev.bounceMg, gpsNow.lat, gpsNow.lon, ev.catchTime);
     logger::write(logger::Stream::Strokes, line);
 }
 
 void logSecond(int second) {
     char utc[24] = "";
-    if (gpsNow.timeValid) {
+    if (!rtclock::isoUtc(utc, sizeof(utc)) && gpsNow.timeValid) {
         snprintf(utc, sizeof(utc), "%04u-%02u-%02uT%02u:%02u:%02uZ", gpsNow.year, gpsNow.month,
                  gpsNow.day, gpsNow.hour, gpsNow.minute, gpsNow.second);
     }
@@ -191,6 +192,51 @@ void clearSession() {
     rateCount = 0;
     lastLoggedSecond = -1;
     efficiency::reset();
+}
+
+void logInfo(const char* key, const char* fmt, ...) {
+    char value[96], line[160];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(value, sizeof(value), fmt, args);
+    va_end(args);
+    snprintf(line, sizeof(line), "%s,%s\n", key, value);
+    logger::write(logger::Stream::Info, line);
+}
+
+// Everything needed to replay this session offline with the same detector settings.
+void logSessionInfo(int session) {
+    const Settings& s = settings::get();
+    gps::Snapshot g = gps::get();
+#if SIM_MODE
+    logInfo("build", "simulation");
+#else
+    logInfo("build", "hardware");
+#endif
+    logInfo("compiled", "%s %s", __DATE__, __TIME__);
+    logInfo("session", "%d", session);
+    logInfo("start_t_s", "%.3f", startUs * 1e-6);
+    char utc[24];
+    if (rtclock::isoUtc(utc, sizeof(utc))) {
+        logInfo("start_utc", "%s", utc);
+        logInfo("time_source", "%s", rtclock::source());
+    } else if (g.timeValid) {
+        logInfo("start_utc", "%04u-%02u-%02uT%02u:%02u:%02uZ", g.year, g.month, g.day, g.hour, g.minute,
+                g.second);
+        logInfo("time_source", "GPS");
+    }
+    logInfo("imu_rate_hz", "%.0f", cfg::IMU_RATE_HZ);
+    logInfo("threshold_k", "%.2f", s.thresholdK);
+    logInfo("threshold_floor_g", "%.3f", s.thresholdFloorG);
+    logInfo("minima_threshold", "%d", s.useMinimaThreshold ? 1 : 0);
+    logInfo("fusion", "%d", s.fusion ? 1 : 0);
+    logInfo("raw_log", "%d", s.rawLog ? 1 : 0);
+    logInfo("ratio_shift", "%.1f", s.ratioShift);
+    logInfo("screen_flipped", "%d", s.flip ? 1 : 0);
+    logInfo("bandpass_hz", "%.2f-%.2f", cfg::BANDPASS_LOW_HZ, cfg::BANDPASS_HIGH_HZ);
+    logInfo("min_stroke_interval_s", "%.2f", cfg::MIN_STROKE_INTERVAL_S);
+    logInfo("max_dip_duration_s", "%.2f", cfg::MAX_DIP_DURATION_S);
+    logInfo("finish_fraction", "%.2f", cfg::FINISH_FRACTION);
 }
 
 }  // namespace
@@ -255,6 +301,7 @@ void start() {
     lapRateSum = 0;
     lapRateCount = 0;
     int s = logger::startSession();
+    if (s >= 0) logSessionInfo(s);
     v.state = State::Running;
     Serial.printf("[session] start, log session %d\n", s);
 }

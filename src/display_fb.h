@@ -26,4 +26,7 @@ ppa_srm_rotation_angle_t angle(const Target& t, int extraQuarterTurns = 0);
 // Same as canvas.pushSprite(x, y), done by the PPA.
 void push(M5Canvas& canvas, int x, int y);
 
+// The PPA writes the framebuffer behind the CPU cache; call before reading pixels back.
+void syncForRead();
+
 }  // namespace fb

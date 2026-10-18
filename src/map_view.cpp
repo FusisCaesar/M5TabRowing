@@ -250,16 +250,27 @@ void render(M5Canvas& c, const View& v) {
     c.fillSprite(COL_LAND);
 
     const mapdata::Map& m = mapdata::current();
-    if (!mapdata::loaded()) {
+    bool review = v.trackCount > 0;
+    bool haveMap = mapdata::loaded();
+    if (!haveMap && !review) {
         drawStatus(c, mapdata::fileCount() == 0 ? "No map yet - tap MAPS to download one" : "Loading map...");
         return;
     }
 
     // Boat position in map coordinates; fall back to map centre with no fix.
     double blat = v.lat, blon = v.lon;
-    if (!v.haveFix) mapdata::centerLatLon(blat, blon);
+    if (!v.haveFix && !review) mapdata::centerLatLon(blat, blon);
+    // Without a map file, project around the view centre instead of the map's origin.
+    auto project = [&](double lat, double lon, int32_t& x, int32_t& y) {
+        if (haveMap) {
+            mapdata::project(lat, lon, x, y);
+        } else {
+            x = (int32_t)lround((lon - blon) * 111320.0 * cos(blat * M_PI / 180.0) * 10.0);
+            y = (int32_t)lround((lat - blat) * 111320.0 * 10.0);
+        }
+    };
     int32_t bxi, byi;
-    mapdata::project(blat, blon, bxi, byi);
+    project(blat, blon, bxi, byi);
 
     Xform xf;
     xf.bx = bxi;
@@ -293,7 +304,7 @@ void render(M5Canvas& c, const View& v) {
     const uint8_t order[] = {mapdata::WaterArea, mapdata::WaterLine, mapdata::Pier,
                              mapdata::Weir,      mapdata::Bridge,    mapdata::Lock};
     for (uint8_t kind : order) {
-        for (int i = 0; i < m.featureCount; i++) {
+        for (int i = 0; haveMap && i < m.featureCount; i++) {
             const mapdata::Feature& ft = m.features[i];
             if (ft.kind != kind) continue;
             if (!boxOverlap(ft.bbox, minVX, minVY, maxVX, maxVY)) continue;
@@ -316,8 +327,31 @@ void render(M5Canvas& c, const View& v) {
         }
     }
 
+    // Recorded track in speed colours, with start and finish markers.
+    if (review) {
+        float px = 0, py = 0;
+        for (int i = 0; i < v.trackCount; i++) {
+            int32_t tx, ty;
+            project(v.trackLat[i], v.trackLon[i], tx, ty);
+            float sx, sy;
+            xf.toScreen(tx, ty, sx, sy);
+            if (i && fabsf(sx - px) + fabsf(sy - py) < 2 && i < v.trackCount - 1) continue;
+            if (i) c.drawWideLine(px, py, sx, sy, 4, v.trackColor[i]);
+            px = sx;
+            py = sy;
+        }
+        float sx, sy;
+        int32_t tx, ty;
+        project(v.trackLat[0], v.trackLon[0], tx, ty);
+        xf.toScreen(tx, ty, sx, sy);
+        c.fillCircle(sx, sy, 8, TFT_WHITE);
+        c.fillCircle(sx, sy, 6, TFT_DARKGREEN);
+        c.fillRect(px - 6, py - 6, 13, 13, TFT_WHITE);
+        c.fillRect(px - 4, py - 4, 9, 9, TFT_BLACK);
+    }
+
     // Track breadcrumb.
-    int tn = track::count();
+    int tn = review ? 0 : track::count();
     if (tn > 1) {
         float px = 0, py = 0;
         bool have = false;
@@ -336,7 +370,7 @@ void render(M5Canvas& c, const View& v) {
 
     // Boat club markers and names (only when zoomed in enough to be useful).
     bool labels = v.metersPerPixel < 1.2f;
-    for (int i = 0; i < m.featureCount; i++) {
+    for (int i = 0; haveMap && i < m.featureCount; i++) {
         const mapdata::Feature& ft = m.features[i];
         if (ft.kind != mapdata::Club || !(ft.flags & mapdata::F_POINT)) continue;
         if (!boxOverlap(ft.bbox, minVX, minVY, maxVX, maxVY)) continue;
@@ -355,7 +389,7 @@ void render(M5Canvas& c, const View& v) {
         }
     }
 
-    drawBoat(c, xf, v.course, v.headUp);
+    if (!review) drawBoat(c, xf, v.course, v.headUp);
     drawScaleBar(c, v.metersPerPixel);
     if (v.headUp) drawNorthArrow(c, xf);
 
@@ -365,7 +399,7 @@ void render(M5Canvas& c, const View& v) {
     c.setTextColor(COL_TEXT);
     c.drawString("(c) OpenStreetMap", c.width() - 6, c.height() - 4);
 
-    if (!v.haveFix) {
+    if (!v.haveFix && !review) {
         c.setFont(&fonts::FreeSansBold12pt7b);
         c.setTextDatum(top_center);
         c.setTextColor(COL_LOCK);

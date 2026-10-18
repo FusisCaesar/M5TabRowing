@@ -1,5 +1,6 @@
 #include "display_fb.h"
 
+#include <esp_cache.h>
 #include <lgfx/v1/panel/Panel_FrameBufferBase.hpp>
 
 #include <utility>
@@ -87,6 +88,12 @@ void push(M5Canvas& canvas, int x, int y) {
     op.byte_swap = true;  // M5GFX canvases hold RGB565 big-endian; the panel wants little-endian
     op.mode = PPA_TRANS_MODE_BLOCKING;
     if (ppa_do_scale_rotate_mirror(ppa, &op) != ESP_OK) canvas.pushSprite(x, y);
+}
+
+void syncForRead() {
+    Target t;
+    if (!map(0, 0, M5.Display.width(), M5.Display.height(), t)) return;
+    esp_cache_msync(t.buffer, t.size, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 }
 
 }  // namespace fb

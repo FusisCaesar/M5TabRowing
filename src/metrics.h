@@ -39,7 +39,6 @@ struct View {
 
     int battery = -1;
     int session = -1;
-
     int lapNumber = 1;
     bool hasLap = false;
     Lap lastLap;

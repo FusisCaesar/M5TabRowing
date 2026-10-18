@@ -67,6 +67,8 @@ struct FileInfo {
 bool fileInfo(int i, FileInfo& out);
 // Deletes the file from the card and rescans.
 bool removeFile(int i);
+// Changes the name stored in the file's header (up to 31 characters); the file name stays.
+bool renameFile(int i, const char* name);
 // Loads this file now (e.g. a fresh download); update() still switches by position later.
 bool show(const char* path);
 

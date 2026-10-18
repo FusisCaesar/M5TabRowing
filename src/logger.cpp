@@ -27,14 +27,17 @@ struct Msg {
     char text[MAX_LINE_LEN];
 };
 
-const char* const SUFFIX[] = {"strokes", "seconds", "laps", "imu"};
+const char* const SUFFIX[] = {"strokes", "seconds", "laps", "info", "imu"};
 const char* const HEADER[] = {
     "elapsed_s,stroke,rate_spm,interval_s,drive_s,recovery_s,ratio,split_s,speed_mps,dps_m,"
-    "distance_m,peak_decel_g,check_mg,bounce_mg,lat,lon\n",
+    "distance_m,peak_decel_g,check_mg,bounce_mg,lat,lon,t_s\n",
     "elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,hdop,sats,battery_pct\n",
     "lap,elapsed_s,lap_time_s,lap_distance_m,avg_split_s,avg_rate_spm,strokes\n",
-    "t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,surge_g,threshold_g,catch,gps_mps\n",
+    "key,value\n",
+    "t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,surge_g,threshold_g,catch,gps_mps,surge_lin_g,vert_g,finish\n",
 };
+static_assert(sizeof(SUFFIX) / sizeof(SUFFIX[0]) == (int)Stream::Count, "one suffix per stream");
+static_assert(sizeof(HEADER) / sizeof(HEADER[0]) == (int)Stream::Count, "one header per stream");
 
 QueueHandle_t queue = nullptr;
 bool sdOk = false;
@@ -127,7 +130,8 @@ bool begin() {
     SD_MMC.setPowerChannel(-1);
     SD_MMC.setPins(cfg::SD_CLK_PIN, cfg::SD_CMD_PIN, cfg::SD_D0_PIN, cfg::SD_D1_PIN, cfg::SD_D2_PIN,
                    cfg::SD_D3_PIN);
-    sdOk = SD_MMC.begin("/sdcard", false, false, cfg::SD_FREQ_KHZ);
+    // One file per stream stays open during a session, plus room for map loading and downloads.
+    sdOk = SD_MMC.begin("/sdcard", false, false, cfg::SD_FREQ_KHZ, (int)Stream::Count + 4);
     if (sdOk) {
         if (!SD_MMC.exists(DIR)) SD_MMC.mkdir(DIR);
         nextSession = scanNextSession();
@@ -304,6 +308,59 @@ bool receiveFile(::Stream& in, const char* path, uint32_t size, uint32_t expectC
     }
     out.printf("[upload] OK %s %lu bytes\n", path, (unsigned long)size);
     return true;
+}
+
+bool sendFile(::Stream& io, const char* path) {
+    // The host asks for each chunk: 'N' next, 'R' resend the last one, 'Q' done. Every chunk is
+    // followed by its CRC32 (little endian), so bytes the USB link drops are caught and re-sent.
+    constexpr size_t CHUNK = 4096;
+    constexpr uint32_t IDLE_MS = 10000;
+    if (!sdOk) {
+        io.println("[fetch] ERR no SD card");
+        return false;
+    }
+    if (open) {
+        io.println("[fetch] ERR session open");
+        return false;
+    }
+    File f = SD_MMC.open(path, FILE_READ);
+    if (!f || f.isDirectory()) {
+        io.printf("[fetch] ERR cannot open %s\n", path);
+        return false;
+    }
+    static uint8_t buf[CHUNK];
+    size_t len = 0;
+    uint32_t sent = 0, total = (uint32_t)f.size();
+    io.printf("[fetch] SIZE %lu\n", (unsigned long)total);
+    uint32_t lastMs = millis();
+    while (millis() - lastMs < IDLE_MS) {
+        int c = io.read();
+        if (c < 0) {
+            delay(1);
+            continue;
+        }
+        lastMs = millis();
+        if (c == 'Q') break;
+        if (c == 'N') {
+            len = f.read(buf, CHUNK);
+            sent += len;
+        } else if (c != 'R') {
+            continue;
+        }
+        uint32_t crc = esp_rom_crc32_le(0, buf, len);
+        const uint8_t* p = buf;
+        size_t left = len;
+        while (left) {
+            size_t n = io.write(p, left);
+            p += n;
+            left -= n;
+            if (!n) delay(1);
+        }
+        io.write((const uint8_t*)&crc, sizeof(crc));
+        io.flush();
+    }
+    f.close();
+    return sent == total;
 }
 
 }  // namespace logger

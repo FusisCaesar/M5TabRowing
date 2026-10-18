@@ -1,13 +1,17 @@
 #include <M5Unified.h>
+#include <BLEDevice.h>
+#include "esp32-hal-hosted.h"
 
 #include "board.h"
 #include "camera.h"
+#include "display_fb.h"
 #include "gps_nav.h"
 #include "imu_stroke.h"
 #include "logger.h"
 #include "map_data.h"
 #include "metrics.h"
 #include "net.h"
+#include "rtclock.h"
 #include "settings.h"
 #include "track.h"
 #include "ui.h"
@@ -30,6 +34,7 @@ void setup() {
     M5.Power.setExtOutput(true);
     M5.Ex_I2C.release();
 
+    rtclock::begin();
     settings::begin();
     const Settings& s = settings::get();
     logger::begin();
@@ -60,14 +65,45 @@ static void printStatus() {
                   (int)esp_reset_reason());
 }
 
+// Binary transfers need writes to wait for buffer space; with no timeout the USB driver drops what doesn't fit.
+static constexpr uint32_t BINARY_TX_TIMEOUT_MS = 200;
+
 // 'S' sends the screen as raw RGB565 (see tools/screenshot.py), 'D' lists the SD session files,
 // 'U path size crc' uploads a file (see tools/send_file.py), 'W ssid password' joins Wi-Fi,
-// 'T x y' / 'P x y' / 'Z x0 y0 x1 y1' simulate a tap / hold / drag, 'F' then 'Y' within 10 s formats the SD card;
-// other keys go to ui::command.
+// 'T x y' / 'P x y' / 'Z x0 y0 x1 y1' simulate a tap / hold / drag, 'F' then 'Y' within 10 s formats the SD card,
+// 'B path' downloads a file (see tools/fetch.py); other keys go to ui::command.
+static void bleProbe() {
+    Serial.println("[probe] BLEDevice::init");
+    if (!BLEDevice::getInitialized() && !BLEDevice::init("TabRowing")) {
+        Serial.println("[probe] ERR BLE init failed");
+        return;
+    }
+    uint32_t ma, mi, pa, hma, hmi, hpa;
+    hostedGetSlaveVersion(&ma, &mi, &pa);
+    hostedGetHostVersion(&hma, &hmi, &hpa);
+    Serial.printf("[probe] hosted host %lu.%lu.%lu slave %lu.%lu.%lu\n", hma, hmi, hpa, ma, mi, pa);
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(true);
+    BLEScanResults* r = scan->start(5, false);
+    int n = r ? r->getCount() : -1;
+    Serial.printf("[probe] %d devices\n", n);
+    for (int i = 0; i < n; i++) {
+        BLEAdvertisedDevice d = r->getDevice(i);
+        Serial.printf("[probe] %s type %d rssi %d hrs %d name '%s'\n", d.getAddress().toString().c_str(),
+                      d.getAddressType(), d.getRSSI(), d.isAdvertisingService(BLEUUID((uint16_t)0x180D)),
+                      d.getName().c_str());
+    }
+    scan->clearResults();
+}
+
 static void serialCommands() {
     static uint32_t formatArmedMs = 0;
     while (Serial.available()) {
         char c = Serial.read();
+        if (c == 'H') {
+            bleProbe();
+            continue;
+        }
         if (c == 'D') {
             logger::listFiles(Serial, 3);
             continue;
@@ -84,6 +120,14 @@ static void serialCommands() {
             } else {
                 Serial.println("[upload] ERR bad header");
             }
+            continue;
+        }
+        if (c == 'B') {
+            String line = Serial.readStringUntil('\n');
+            line.trim();
+            Serial.setTxTimeoutMs(BINARY_TX_TIMEOUT_MS);
+            logger::sendFile(Serial, line.c_str());
+            Serial.setTxTimeoutMs(0);
             continue;
         }
         if (c == 'W') {
@@ -129,6 +173,8 @@ static void serialCommands() {
         }
         int w = M5.Display.width(), h = M5.Display.height();
         static uint16_t row[1280];
+        fb::syncForRead();
+        Serial.setTxTimeoutMs(BINARY_TX_TIMEOUT_MS);
         Serial.printf("SCREENSHOT %d %d\n", w, h);
         for (int y = 0; y < h; y++) {
             M5.Display.readRect(0, y, w, 1, row);
@@ -142,6 +188,7 @@ static void serialCommands() {
             }
         }
         Serial.flush();
+        Serial.setTxTimeoutMs(0);
     }
 }
 
@@ -150,6 +197,7 @@ void loop() {
         board::I2CLock lock;
         M5.update();
     }
+    rtclock::update();
     metrics::update();
     ui::loop();
     printStatus();

@@ -14,6 +14,13 @@ struct View {
     float metersPerPixel = 1;  // zoom
     bool headUp = false;       // rotate so the course points up (else north up)
     bool showControls = true;  // draw on-map zoom buttons
+
+    // Review: draw this recorded track (one colour per point) centred on lat/lon instead of
+    // the live track and boat. Works without a map file for the area.
+    const double* trackLat = nullptr;
+    const double* trackLon = nullptr;
+    const uint16_t* trackColor = nullptr;
+    int trackCount = 0;
 };
 
 void begin();  // allocates scratch buffers in PSRAM

@@ -22,7 +22,10 @@ void leave();
 void draw(bool force);
 
 View view();
-void setView(View v);
+void setView(View v);  // also closes a session review, even for the current view
+
+// True while a recorded session is shown; the live map should not follow the GPS then.
+bool reviewing();
 
 // Screen coordinates. A tap is a touch without movement; drags pan or select.
 void tap(int x, int y);

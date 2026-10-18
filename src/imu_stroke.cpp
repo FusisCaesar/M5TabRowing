@@ -88,9 +88,9 @@ void task(void*) {
         plotHead.store(head + 1, std::memory_order_release);
 
         if (logger::rawActive()) {
-            snprintf(line, sizeof(line), "%.3f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.4f,%.4f,%d,%.2f\n", t,
-                     ax, ay, az, gx, gy, gz, out.surge, out.threshold, out.catchDetected ? 1 : 0,
-                     gpsOk ? gpsV : -1.0f);
+            snprintf(line, sizeof(line), "%.3f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.4f,%.4f,%d,%.2f,%.4f,%.4f,%d\n",
+                     t, ax, ay, az, gx, gy, gz, out.surge, out.threshold, out.catchDetected ? 1 : 0,
+                     gpsOk ? gpsV : -1.0f, out.surgeLinear, out.vertical, out.finishDetected ? 1 : 0);
             logger::write(logger::Stream::Raw, line);
         }
 
