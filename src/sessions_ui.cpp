@@ -16,8 +16,10 @@ namespace sessionsui {
 namespace {
 
 constexpr int HEADER_H = 52;
-constexpr int ROW_H = 64;
-constexpr int BTN_W = 150;
+// Row buttons as on the Settings screen: 90 px rows, 74 px tall, right-aligned; 190 px wide so
+// RENAME and CONFIRM fit in the large font.
+constexpr int ROW_H = 90;
+constexpr int BTN_W = 190, BTN2_X = 1280 - 20 - BTN_W, BTN1_X = BTN2_X - 20 - BTN_W;
 constexpr int REV_MAP_W = 760;
 constexpr uint32_t FRAME_MS = 100;
 
@@ -63,10 +65,12 @@ void message(const char* text) {
 
 void button(const Rect& r, const char* label, bool lit = false, uint16_t fill = 0) {
     uint16_t bg = lit ? c.accent : fill ? fill : c.btn;
-    cv.fillRoundRect(r.x, r.y, r.w, r.h, 12, bg);
-    cv.drawRoundRect(r.x, r.y, r.w, r.h, 12, c.dim);
-    cv.setFont(&fonts::FreeSansBold12pt7b);
+    int rad = r.h >= 60 ? 16 : 12;
+    cv.fillRoundRect(r.x, r.y, r.w, r.h, rad, bg);
+    cv.drawRoundRect(r.x, r.y, r.w, r.h, rad, c.dim);
     cv.setTextSize(1);
+    cv.setFont(&fonts::FreeSansBold18pt7b);
+    if (r.h < 60 || cv.textWidth(label) > r.w - 12) cv.setFont(&fonts::FreeSansBold12pt7b);
     cv.setTextDatum(middle_center);
     cv.setTextColor(lit || fill ? c.bg : c.btnText);
     cv.drawString(label, r.x + r.w / 2, r.y + r.h / 2);
@@ -120,8 +124,8 @@ void drawHeader() {
 
 int rows() { return std::max(1, recordings::count()); }
 int maxScroll() { return std::max(0, rows() * ROW_H - bodyH()); }
-Rect deleteBtn(int row) { return {W - BTN_W - 20, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
-Rect renameBtn(int row) { return {W - 2 * BTN_W - 36, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
+Rect deleteBtn(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
+Rect renameBtn(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
 
 void drawList() {
     cv.fillRect(0, HEADER_H, W, bodyH(), c.bg);
@@ -150,7 +154,7 @@ void drawList() {
         cv.setFont(&fonts::FreeSans12pt7b);
         cv.setTextColor(c.label);
         snprintf(b, sizeof(b), "S%04d  %s", ri.number, ri.start);
-        cv.drawString(b, 470, cy);
+        cv.drawString(b, 390, cy);
         char size[16], dur[16] = "";
         fmtBytes(size, sizeof(size), ri.bytes);
         if (ri.durationS > 0) fmtDuration(dur, sizeof(dur), ri.durationS);

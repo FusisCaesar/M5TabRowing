@@ -729,7 +729,7 @@ void drawPlot(const metrics::View& v) {
 
 enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_COUNT };
 constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 4;
-constexpr int SET_MINUS_X = 860, SET_PLUS_X = 1050, SET_BTN_W = 170;
+constexpr int SET_BTN_W = 170, SET_PLUS_X = W - 20 - SET_BTN_W, SET_MINUS_X = SET_PLUS_X - 20 - SET_BTN_W;
 
 struct SettingsTab {
     const char* name;

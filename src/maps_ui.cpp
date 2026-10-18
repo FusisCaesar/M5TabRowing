@@ -18,8 +18,11 @@ namespace mapsui {
 namespace {
 
 constexpr int HEADER_H = 52;
-constexpr int ROW_H = 64;
-constexpr int ROW_BTN_W = 196;
+// Row buttons as on the Settings screen: 90 px rows, 74 px tall, right-aligned; 190 px wide so
+// RENAME and CONFIRM fit in the large font (one wide button where a row has a single action).
+constexpr int ROW_H = 90;
+constexpr int BTN_W = 190, BTN2_X = 1280 - 20 - BTN_W, BTN1_X = BTN2_X - 20 - BTN_W;
+constexpr int ROW_BTN_W = BTN2_X + BTN_W - BTN1_X;
 constexpr int MIN_ZOOM = 3, MAX_ZOOM = 17;
 constexpr uint32_t FRAME_MS = 100;
 
@@ -101,10 +104,12 @@ bool selValid() {
 
 void button(const Rect& r, const char* label, bool enabled, bool lit = false, uint16_t fill = 0) {
     uint16_t bg = lit ? c.accent : fill ? fill : enabled ? c.btn : c.bg;
-    cv.fillRoundRect(r.x, r.y, r.w, r.h, 12, bg);
-    cv.drawRoundRect(r.x, r.y, r.w, r.h, 12, c.dim);
-    cv.setFont(&fonts::FreeSansBold12pt7b);
+    int rad = r.h >= 60 ? 16 : 12;
+    cv.fillRoundRect(r.x, r.y, r.w, r.h, rad, bg);
+    cv.drawRoundRect(r.x, r.y, r.w, r.h, rad, c.dim);
     cv.setTextSize(1);
+    cv.setFont(&fonts::FreeSansBold18pt7b);
+    if (r.h < 60 || cv.textWidth(label) > r.w - 12) cv.setFont(&fonts::FreeSansBold12pt7b);
     cv.setTextDatum(middle_center);
     cv.setTextColor(lit || fill ? c.bg : enabled ? c.btnText : c.dim);
     cv.drawString(label, r.x + r.w / 2, r.y + r.h / 2);
@@ -240,7 +245,7 @@ void drawSetup() {
 
 int maxScroll(int rows) { return std::max(0, rows * ROW_H - bodyH()); }
 
-Rect rowButton(int row) { return {W - ROW_BTN_W - 20, HEADER_H + row * ROW_H - scroll + 8, ROW_BTN_W, ROW_H - 16}; }
+Rect rowButton(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + 8, ROW_BTN_W, ROW_H - 16}; }
 
 void drawLibrary() {
     cv.fillRect(0, HEADER_H, W, bodyH(), c.bg);
@@ -258,10 +263,10 @@ void drawLibrary() {
         cv.drawString(e.name, 24, y + ROW_H / 2);
         cv.setFont(&fonts::FreeSans12pt7b);
         cv.setTextColor(c.label);
-        cv.drawString(e.region, 430, y + ROW_H / 2);
+        cv.drawString(e.region, 360, y + ROW_H / 2);
         char size[24];
         snprintf(size, sizeof(size), "%.0f x %.0f km", e.radiusKm * 2, e.radiusKm * 2);
-        cv.drawString(size, 760, y + ROW_H / 2);
+        cv.drawString(size, 610, y + ROW_H / 2);
 
         char path[48];
         mapjob::pathFor(e.name, path, sizeof(path));
@@ -270,7 +275,7 @@ void drawLibrary() {
         if (have) {
             cv.setTextColor(c.ok);
             cv.setTextDatum(middle_right);
-            cv.drawString("on card", W - ROW_BTN_W - 40, y + ROW_H / 2);
+            cv.drawString("on card", BTN1_X - 20, y + ROW_H / 2);
         }
         button(rowButton(i), thisJob ? "..." : have ? "UPDATE" : "DOWNLOAD", !jobBusy, thisJob);
     }
@@ -298,9 +303,8 @@ void tapLibrary(int x, int y) {
 
 int cardRows() { return std::max(1, mapdata::fileCount()); }
 
-constexpr int CARD_BTN_W = 150;
-Rect deleteBtn(int row) { return {W - CARD_BTN_W - 20, HEADER_H + row * ROW_H - scroll + 8, CARD_BTN_W, ROW_H - 16}; }
-Rect renameBtn(int row) { return {W - 2 * CARD_BTN_W - 36, HEADER_H + row * ROW_H - scroll + 8, CARD_BTN_W, ROW_H - 16}; }
+Rect deleteBtn(int row) { return {BTN2_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
+Rect renameBtn(int row) { return {BTN1_X, HEADER_H + row * ROW_H - scroll + 8, BTN_W, ROW_H - 16}; }
 
 void drawOnCard() {
     cv.fillRect(0, HEADER_H, W, bodyH(), c.bg);
@@ -331,10 +335,10 @@ void drawOnCard() {
         areaKm(fi.south, fi.west, fi.north, fi.east, wKm, hKm);
         fmtBytes(size, sizeof(size), fi.bytes);
         snprintf(a, sizeof(a), "%.1f x %.1f km   %s", wKm, hKm, size);
-        cv.drawString(a, 470, cy);
+        cv.drawString(a, 390, cy);
         if (fi.loaded) {
             cv.setTextColor(c.ok);
-            cv.drawString("showing", 760, cy);
+            cv.drawString("showing", 700, cy);
         }
         cv.drawFastHLine(0, y + ROW_H - 1, W, c.dim);
         bool confirm = r == confirmIdx;
