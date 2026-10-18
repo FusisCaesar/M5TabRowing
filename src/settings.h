@@ -18,6 +18,7 @@ struct Settings {
     uint8_t pipMode;    // Main-screen corner content: 0 off, 1 camera, 2 map
     uint8_t mapZoom;    // index into cfg::MAP_ZOOM_M
     bool mapHeadUp;     // rotate the map so the course points up
+    float ratioShift;   // added to the rate-based recovery:drive target
 
     StrokeParams strokeParams() const {
         StrokeParams p;

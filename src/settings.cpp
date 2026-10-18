@@ -27,6 +27,7 @@ void begin() {
     s.pipMode = prefs.getUChar("pipMode", 0);
     s.mapZoom = prefs.getUChar("mapZoom", cfg::MAP_ZOOM_DEFAULT);
     s.mapHeadUp = prefs.getBool("mapHeadUp", true);
+    s.ratioShift = prefs.getFloat("ratioShift", 0.0f);
     prefs.end();
 }
 
@@ -47,6 +48,7 @@ void save() {
     prefs.putUChar("pipMode", s.pipMode);
     prefs.putUChar("mapZoom", s.mapZoom);
     prefs.putBool("mapHeadUp", s.mapHeadUp);
+    prefs.putFloat("ratioShift", s.ratioShift);
     prefs.end();
 }
 

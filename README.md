@@ -52,14 +52,15 @@ Windows notes:
 
 ## Using it
 
-Four screens; the right-most bottom button cycles through them.
+Five screens; the right-most bottom button cycles through them.
 
 | Screen | Content |
 | --- | --- |
-| Main | split /500m, stroke rate, distance, time; distance per stroke, average split, strokes, recovery:drive |
+| Main | split /500m, stroke rate, distance, time; distance per stroke, average split, strokes, recovery:drive with a SLOWER / GOOD / QUICKER indicator |
 | Map | offline waterway map with your position, heading and track; head-up/north-up toggle and zoom buttons |
+| Efficiency | distance per stroke against rate with your best line, efficiency score, ratio/check/bounce gauges and a coaching hint |
 | Plot | last 6 s of the forward acceleration with threshold, catch and finish markers, and drive/recovery/check/bounce stats |
-| Settings | threshold K and floor, minima threshold, raw IMU logging, GPS+IMU fusion, camera mirror image, day/night theme, flip display, brightness |
+| Settings | threshold K and floor, minima threshold, raw IMU logging, GPS+IMU fusion, rec:drive target shift, camera mirror image, day/night theme, flip display, brightness |
 
 Bottom buttons: **START** starts a session, **LAP** splits a lap, **hold STOP**
 ends the session, **hold RESET** clears it. Stroke rate and split show before
@@ -95,6 +96,36 @@ map file covers your position, so you can keep several areas on the card.
 
 ![Map screen](shots/map_screen.png)
 ![Map in picture-in-picture](shots/main_pip_small.png)
+
+### Rhythm and efficiency
+
+**REC:DRIVE** is recovery time divided by drive time, averaged over 5 strokes.
+The target follows the stroke rate: about 2.5 at 20 spm, falling to about 1.3
+at 34 spm (a long, calm recovery at low rates; at race pace the recovery has to
+shrink). Within 15% of the target the tile is green with **GOOD**; below it,
+orange **SLOWER** means you are rushing the slide; above it, **QUICKER** means
+the recovery drags. Red means more than 30% off. If your coach wants a
+different rhythm, shift the whole target up or down in Settings.
+
+The **Efficiency** screen compares each stroke with your own best in this
+session at the same rate:
+
+- The chart plots metres per stroke against stroke rate. The blue line is your
+  best (3-stroke average, so a single GPS jump does not count), the big dot is
+  now. The thin curves are lines of equal split: getting the same split at a
+  lower rate means longer strokes, so aim to push your best line up and right.
+- **EFFICIENCY** is your current distance per stroke as a percentage of that best
+  (it needs about 5 strokes at a rate before it scores).
+- The gauges show recovery:drive against its target band, and check and bounce
+  against your usual values in this session (lower is better).
+- The line above the buttons gives one hint, in order of priority: rhythm,
+  then a rough slide (check), then stroke length.
+
+Wind and current change distance per stroke, so the best line is per session:
+it clears when you start a new session, and **hold CLEAR** clears it after you
+turn into the wind.
+
+![Efficiency screen](shots/efficiency.png)
 
 ![Plot screen](shots/plot.png)
 ![Settings screen](shots/settings.png)

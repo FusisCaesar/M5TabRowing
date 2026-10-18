@@ -6,6 +6,7 @@
 #include "camera.h"
 #include "display_fb.h"
 #include "config.h"
+#include "efficiency.h"
 #include "gps_nav.h"
 #include "imu_stroke.h"
 #include "logger.h"
@@ -45,15 +46,18 @@ constexpr int PLOT_POINTS = 600;   // 6 s at 100 Hz
 constexpr float PLOT_RANGE_G = 0.6f;
 
 // The NEXT button cycles through the first CYCLE screens; Maps opens from the Map screen.
-enum class Screen { Main, Map, Plot, Settings, Maps };
-constexpr int CYCLE = 4;
+enum class Screen { Main, Map, Efficiency, Plot, Settings, Maps };
+constexpr int CYCLE = 5;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
+// Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
+constexpr int EFF_H = BTN_Y - ROW_H - BAR_H;
+constexpr int EFF_CHART_W = 800, EFF_PANEL_W = W - EFF_CHART_W;
 
 struct Theme {
-    uint16_t bg, fg, label, accent, dim, btn, btnText, warn, ok;
+    uint16_t bg, fg, label, accent, dim, btn, btnText, warn, ok, caution;
 };
-const Theme NIGHT = {TFT_BLACK, TFT_WHITE, 0xAD55, TFT_YELLOW, 0x39E7, 0x2124, TFT_WHITE, TFT_RED, TFT_GREEN};
-const Theme DAY = {TFT_WHITE, TFT_BLACK, 0x31A6, 0x001F, 0xC618, 0xDEFB, TFT_BLACK, 0xC000, 0x0400};
+const Theme NIGHT = {TFT_BLACK, TFT_WHITE, 0xAD55, TFT_YELLOW, 0x39E7, 0x2124, TFT_WHITE, TFT_RED, TFT_GREEN, TFT_ORANGE};
+const Theme DAY = {TFT_WHITE, TFT_BLACK, 0x31A6, 0x001F, 0xC618, 0xDEFB, TFT_BLACK, 0xC000, 0x0400, 0xCB20};
 
 M5Canvas bigC(&M5.Display);
 M5Canvas smallC(&M5.Display);
@@ -64,6 +68,8 @@ M5Canvas btnC(&M5.Display);
 M5Canvas setC(&M5.Display);
 M5Canvas mapC(&M5.Display);     // full-size map area (Map screen or full-on-Main)
 M5Canvas mapPipC(&M5.Display);  // picture-in-picture map
+M5Canvas effC(&M5.Display);     // efficiency chart
+M5Canvas effP(&M5.Display);     // efficiency score and technique panel
 
 Screen screen = Screen::Main;
 const Theme* th = &NIGHT;
@@ -78,12 +84,13 @@ constexpr int MAPS_BTN_X = 16, MAPS_BTN_Y = 16, MAPS_BTN_W = 170, MAPS_BTN_H = 6
 struct Cache {
     char text[96];
 };
-Cache bigCache[4], smallCache[6], btnCache[BTN_COUNT], barCache, rowCache[10];
+Cache bigCache[4], smallCache[6], btnCache[BTN_COUNT], barCache, rowCache[12];
 
 char hint[48] = "";
 uint32_t hintUntil = 0;
 uint32_t lastFrame = 0;
 uint32_t lastPlot = 0;
+uint32_t lastEff = 0, effVersion = 0;
 uint32_t lastBattery = 0;
 
 imu::PlotPoint plotBuf[PLOT_POINTS];
@@ -107,6 +114,24 @@ void fmtTime(char* out, size_t n, float s) {
         int sec = (int)s;
         snprintf(out, n, "%d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60);
     }
+}
+
+uint16_t adviceColor(const efficiency::RatioCheck& rc) {
+    switch (rc.advice) {
+        case efficiency::Advice::None: return th->fg;
+        case efficiency::Advice::Good: return th->ok;
+        default: return rc.far ? th->warn : th->caution;
+    }
+}
+
+// Green near the rower's usual value, orange above it, red well above it (lower is better).
+uint16_t usualColor(float value, float usual) {
+    if (usual <= 0 || value <= 0) return th->fg;
+    return value <= 1.1f * usual ? th->ok : value <= 1.25f * usual ? th->caution : th->warn;
+}
+
+uint16_t scoreColor(int score) {
+    return score <= 0 ? th->fg : score >= 93 ? th->ok : score >= 85 ? th->caution : th->warn;
 }
 
 bool changed(Cache& c, const char* text) {
@@ -137,7 +162,7 @@ void drawValue(M5Canvas& c, const char* value, int top, float maxScale, uint16_t
 }
 
 void drawTile(M5Canvas& c, int x, int y, const char* label, const char* unit, const char* value,
-              bool big, uint16_t color) {
+              bool big, uint16_t color, int unitColor = -1) {
     c.fillSprite(th->bg);
     c.drawRoundRect(4, 4, c.width() - 8, c.height() - 8, 14, th->dim);
     c.setFont(big ? &fonts::FreeSansBold18pt7b : &fonts::FreeSansBold12pt7b);
@@ -145,6 +170,7 @@ void drawTile(M5Canvas& c, int x, int y, const char* label, const char* unit, co
     c.setTextColor(th->label);
     c.setTextDatum(top_left);
     c.drawString(label, 20, big ? 16 : 12);
+    if (unitColor >= 0) c.setTextColor((uint16_t)unitColor);
     c.setTextDatum(top_right);
     c.drawString(unit, c.width() - 20, big ? 16 : 12);
     drawValue(c, value, big ? 56 : 38, big ? 3.6f : 1.15f, color);
@@ -284,14 +310,17 @@ void drawButtons(const metrics::View& v) {
         drawButton(3, pip, true, s.pipMode != PipOff);
     } else if (screen == Screen::Map) {
         drawButton(3, s.mapHeadUp ? "HEAD UP" : "NORTH UP", true, s.mapHeadUp);
+    } else if (screen == Screen::Efficiency) {
+        drawButton(3, "HOLD: CLEAR", efficiency::strokeCount() > 0);
     } else {
         drawButton(3, "", false);
     }
 
-    const char* next = screen == Screen::Main   ? "MAP"
-                       : screen == Screen::Map  ? "PLOT"
-                       : screen == Screen::Plot ? "SETTINGS"
-                                                : "METRICS";
+    const char* next = screen == Screen::Main         ? "MAP"
+                       : screen == Screen::Map        ? "EFFICIENCY"
+                       : screen == Screen::Efficiency ? "PLOT"
+                       : screen == Screen::Plot       ? "SETTINGS"
+                                                      : "METRICS";
     drawButton(4, next, true);
 }
 
@@ -359,9 +388,221 @@ void drawSmallRow(const metrics::View& v) {
     snprintf(buf, sizeof(buf), "%d", v.strokes);
     if (changed(smallCache[2], buf)) drawTile(smallC, 2 * SMALL_W, SMALL_Y, "STROKES", "", buf, false, th->fg);
 
+    efficiency::RatioCheck rc = efficiency::checkRatio(v.ratio, v.rate);
+    const char* word = efficiency::adviceWord(rc.advice);
     if (v.ratio > 0) snprintf(buf, sizeof(buf), "%.1f", v.ratio);
     else snprintf(buf, sizeof(buf), "--");
-    if (changed(smallCache[3], buf)) drawTile(smallC, 3 * SMALL_W, SMALL_Y, "REC:DRIVE", "", buf, false, th->fg);
+    char key[32];
+    snprintf(key, sizeof(key), "%s|%s", buf, word);
+    uint16_t col = adviceColor(rc);
+    if (changed(smallCache[3], key)) drawTile(smallC, 3 * SMALL_W, SMALL_Y, "REC:DRIVE", word, buf, false, col, col);
+}
+
+// ---- efficiency screen -----------------------------------------------------
+
+constexpr int EFF_RATE_LO = 16, EFF_RATE_HI = 40;
+
+void drawEffChart(const efficiency::Summary& s) {
+    M5Canvas& c = effC;
+    c.fillSprite(th->bg);
+    const int L = 64, R = EFF_CHART_W - 24, T = 44, B = EFF_H - 46;
+
+    int n = efficiency::strokeCount();
+    int first = max(0, n - 400);
+    float lo = 1e9f, hi = 0;
+    for (int i = first; i < n; i++) {
+        float d = efficiency::stroke(i).dps;
+        if (d > 0) lo = fminf(lo, d), hi = fmaxf(hi, d);
+    }
+    if (hi <= 0) {
+        lo = 4, hi = 12;
+    } else {
+        lo = fmaxf(0, floorf(lo) - 1);
+        hi = fmaxf(ceilf(hi) + 1, lo + 4);
+    }
+    auto X = [&](float r) { return (int)lroundf(L + (r - EFF_RATE_LO) * (R - L) / (EFF_RATE_HI - EFF_RATE_LO)); };
+    auto Y = [&](float d) { return (int)lroundf(B - (d - lo) * (B - T) / (hi - lo)); };
+
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextSize(1);
+    c.setTextColor(th->label);
+    c.setTextDatum(top_center);
+    for (int r = EFF_RATE_LO; r <= EFF_RATE_HI; r += 2) {
+        c.drawFastVLine(X(r), T, B - T, th->dim);
+        char t[8];
+        snprintf(t, sizeof(t), "%d", r);
+        c.drawString(t, X(r), B + 6);
+    }
+    c.setTextDatum(middle_right);
+    int step = hi - lo > 10 ? 2 : 1;
+    for (int d = (int)ceilf(lo); d <= (int)hi; d += step) {
+        c.drawFastHLine(L, Y(d), R - L, th->dim);
+        char t[8];
+        snprintf(t, sizeof(t), "%d", d);
+        c.drawString(t, L - 8, Y(d));
+    }
+
+    c.setClipRect(L, T, R - L + 1, B - T + 1);
+    // Lines of equal split: the same boat speed at a lower rate means longer, more efficient strokes.
+    float split = s.dps > 0 && s.rate > 0 ? 500.0f / (s.dps * s.rate / 60.0f) : 130.0f;
+    int base = (int)lroundf(split / 10.0f) * 10;
+    c.setTextDatum(bottom_right);
+    for (int k = -2; k <= 2; k++) {
+        float sp = base + 10.0f * k;
+        if (sp < 60) continue;
+        float v = 500.0f / sp;
+        int px = -1, py = -1, lx = -1, ly = -1;
+        for (float r = EFF_RATE_LO; r <= EFF_RATE_HI; r += 0.25f) {
+            int x = X(r), y = Y(v * 60.0f / r);
+            if (px >= 0) c.drawLine(px, py, x, y, th->label);
+            if (y >= T + 18 && y <= B) lx = x, ly = y;
+            px = x, py = y;
+        }
+        if (lx >= 0) {
+            char t[12];
+            int sec = (int)sp;
+            snprintf(t, sizeof(t), "%d:%02d", sec / 60, sec % 60);
+            c.drawString(t, lx - 2, ly - 4);
+        }
+    }
+
+    for (int i = first; i < n; i++) {
+        const efficiency::Stroke& st = efficiency::stroke(i);
+        if (st.dps <= 0) continue;
+        c.fillCircle(X(st.rate), Y(st.dps), 3, i >= n - 30 ? th->fg : th->dim);
+    }
+
+    int px = -1, py = -1;
+    for (int r = efficiency::MIN_RATE; r <= efficiency::MAX_RATE; r++) {
+        float b = efficiency::bestAt(r);
+        if (b <= 0) {
+            px = -1;
+            continue;
+        }
+        int x = X(r), y = Y(b);
+        if (px >= 0)
+            for (int o = -1; o <= 1; o++) c.drawLine(px, py + o, x, y + o, th->accent);
+        c.fillCircle(x, y, 5, th->accent);
+        px = x, py = y;
+    }
+
+    if (s.dps > 0) {
+        int x = X(s.rate), y = Y(s.dps);
+        c.fillCircle(x, y, 13, th->fg);
+        c.fillCircle(x, y, 10, scoreColor(s.score));
+    }
+    c.clearClipRect();
+
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(top_left);
+    c.setTextColor(th->label);
+    c.drawString("METRES PER STROKE", 16, 10);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->accent);
+    c.drawString("your best", R - 150, 10);
+    c.setTextColor(th->label);
+    c.drawString("equal split", R, 10);
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextDatum(bottom_right);
+    c.drawString("stroke rate (spm)", R, EFF_H - 4);
+    fb::push(c, 0, BAR_H);
+}
+
+// A horizontal gauge; `frac` is 0..1 along the track.
+void effBar(M5Canvas& c, int y, float frac, uint16_t color) {
+    const int x = 24, w = EFF_PANEL_W - 48, h = 22;
+    c.drawRoundRect(x, y, w, h, 6, th->dim);
+    int fw = (int)(fmaxf(0, fminf(1, frac)) * (w - 4));
+    if (fw > 0) c.fillRoundRect(x + 2, y + 2, fw, h - 4, 4, color);
+}
+
+void effSection(M5Canvas& c, int y, const char* label, const char* value, uint16_t valueColor) {
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(top_left);
+    c.setTextColor(th->label);
+    c.drawString(label, 24, y);
+    c.setTextDatum(top_right);
+    c.setTextColor(valueColor);
+    c.drawString(value, EFF_PANEL_W - 24, y);
+}
+
+void drawEffPanel(const efficiency::Summary& s) {
+    M5Canvas& c = effP;
+    c.fillSprite(th->bg);
+    c.drawFastVLine(0, 0, EFF_H, th->dim);
+    char a[48], b[64];
+
+    effSection(c, 12, "EFFICIENCY", "", th->fg);
+    uint16_t sc = scoreColor(s.score);
+    if (s.score > 0) snprintf(a, sizeof(a), "%d", s.score);
+    else snprintf(a, sizeof(a), "--");
+    c.setFont(&fonts::Font7);
+    c.setTextSize(2);
+    c.setTextColor(sc);
+    c.setTextDatum(middle_right);
+    c.drawString(a, EFF_PANEL_W / 2 + 90, 100);
+    c.setFont(&fonts::FreeSansBold24pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_left);
+    c.drawString("%", EFF_PANEL_W / 2 + 100, 112);
+    c.setFont(&fonts::FreeSans12pt7b);
+    c.setTextDatum(top_center);
+    c.setTextColor(th->label);
+    if (s.score > 0) snprintf(b, sizeof(b), "of your best %.1f m at %d spm", s.best, (int)lroundf(s.rate));
+    else if (s.rate > 0) snprintf(b, sizeof(b), "learning your best at %d spm", (int)lroundf(s.rate));
+    else snprintf(b, sizeof(b), "distance per stroke vs your best");
+    c.drawString(b, EFF_PANEL_W / 2, 152);
+    c.drawFastHLine(16, 188, EFF_PANEL_W - 32, th->dim);
+
+    // Recovery:drive against the target band.
+    const efficiency::RatioCheck& rc = s.ratioCheck;
+    uint16_t rcol = adviceColor(rc);
+    if (rc.target > 0) snprintf(a, sizeof(a), "%.1f  aim %.1f", s.ratio, rc.target);
+    else snprintf(a, sizeof(a), "--");
+    effSection(c, 200, "REC:DRIVE", a, rcol);
+    const float RLO = 0.5f, RHI = 3.5f;
+    const int bx = 24, bw = EFF_PANEL_W - 48, by = 236;
+    auto rx = [&](float r) { return bx + (int)((fmaxf(RLO, fminf(RHI, r)) - RLO) / (RHI - RLO) * bw); };
+    c.drawRoundRect(bx, by, bw, 22, 6, th->dim);
+    if (rc.target > 0) {
+        int b0 = rx(rc.target * (1 - efficiency::RATIO_TOLERANCE)), b1 = rx(rc.target * (1 + efficiency::RATIO_TOLERANCE));
+        c.fillRect(b0, by + 2, b1 - b0, 18, th->dim);
+        c.drawRect(b0, by + 2, b1 - b0, 18, th->ok);
+        int mx = rx(s.ratio);
+        c.fillRect(mx - 4, by - 6, 8, 34, rcol);
+    }
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_center);
+    c.setTextColor(rcol);
+    c.drawString(efficiency::adviceWord(rc.advice), EFF_PANEL_W / 2, 270);
+    c.drawFastHLine(16, 318, EFF_PANEL_W - 32, th->dim);
+
+    // Check and bounce relative to this session's usual values (lower is better).
+    auto usualSection = [&](int y, const char* label, float v, float usual) {
+        if (v <= 0) snprintf(a, sizeof(a), "--");
+        else if (usual > 0) snprintf(a, sizeof(a), "%.0f mg  usual %.0f", v, usual);
+        else snprintf(a, sizeof(a), "%.0f mg", v);
+        uint16_t col = usualColor(v, usual);
+        effSection(c, y, label, a, col);
+        float scale = usual > 0 ? 2 * usual : fmaxf(v, 1) * 1.5f;
+        effBar(c, y + 36, v / scale, col);
+    };
+    usualSection(332, "CHECK", s.checkMg, s.checkUsualMg);
+    usualSection(414, "BOUNCE", s.bounceMg, s.bounceUsualMg);
+    fb::push(c, EFF_CHART_W, BAR_H);
+}
+
+void drawEfficiency(const metrics::View& v) {
+    uint32_t ver = efficiency::version();
+    if (!forceRedraw && ver == effVersion && millis() - lastEff < 1000) return;
+    effVersion = ver;
+    lastEff = millis();
+    efficiency::Summary s = efficiency::summary(v.rate);
+    drawEffChart(s);
+    drawEffPanel(s);
+    char right[32];
+    snprintf(right, sizeof(right), "%d strokes", efficiency::strokeCount());
+    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg);
 }
 
 // ---- live plot screen ------------------------------------------------------
@@ -427,11 +668,11 @@ void drawPlot(const metrics::View& v) {
 
 // ---- settings screen -------------------------------------------------------
 
-enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_COUNT };
-constexpr int SET_ROW_H = 54;
+enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_COUNT };
+constexpr int SET_ROW_H = 49;
 constexpr int SET_MINUS_X = 860, SET_PLUS_X = 1050, SET_BTN_W = 170;
 
-bool isNumeric(int row) { return row == S_K || row == S_FLOOR || row == S_BRIGHT; }
+bool isNumeric(int row) { return row == S_K || row == S_FLOOR || row == S_RATIO || row == S_BRIGHT; }
 
 void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
     const Settings& s = settings::get();
@@ -441,6 +682,7 @@ void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
         case S_MINIMA: snprintf(label, ln, "Threshold from last 5 catch depths"); snprintf(value, vn, "%s", s.useMinimaThreshold ? "ON" : "OFF"); break;
         case S_RAW: snprintf(label, ln, "Raw IMU logging (100 Hz)"); snprintf(value, vn, "%s", s.rawLog ? "ON" : "OFF"); break;
         case S_FUSION: snprintf(label, ln, "GPS+IMU fusion for distance/stroke"); snprintf(value, vn, "%s", s.fusion ? "ON" : "OFF"); break;
+        case S_RATIO: snprintf(label, ln, "Rec:drive target shift (2.5 at 20 spm)"); snprintf(value, vn, "%+.1f", s.ratioShift); break;
         case S_CAM_MIRROR: snprintf(label, ln, "Camera mirror image (like a mirror)"); snprintf(value, vn, "%s", s.camMirror ? "ON" : "OFF"); break;
         case S_THEME: snprintf(label, ln, "Theme"); snprintf(value, vn, "%s", s.dayTheme ? "DAY" : "NIGHT"); break;
         case S_FLIP: snprintf(label, ln, "Rotate screen 180"); snprintf(value, vn, "%s", s.flip ? "ON" : "OFF"); break;
@@ -508,6 +750,10 @@ void onSettingsTap(int x, int y) {
         case S_FLOOR:
             if (minus) s.thresholdFloorG = fmaxf(0.04f, s.thresholdFloorG - 0.01f);
             if (plus) s.thresholdFloorG = fminf(0.40f, s.thresholdFloorG + 0.01f);
+            break;
+        case S_RATIO:
+            if (minus) s.ratioShift = fmaxf(-0.8f, roundf((s.ratioShift - 0.1f) * 10) / 10);
+            if (plus) s.ratioShift = fminf(0.8f, roundf((s.ratioShift + 0.1f) * 10) / 10);
             break;
         case S_BRIGHT:
             if (minus) s.brightness = (uint8_t)max(20, s.brightness - 25);
@@ -763,6 +1009,7 @@ void onTap(int x, int y) {
             case 3:
                 if (screen == Screen::Main) cyclePip();
                 else if (screen == Screen::Map) toggleHeadUp();
+                else if (screen == Screen::Efficiency) showHint("Hold to clear the chart and your best line");
                 break;
             case 4: nextScreen(); break;
         }
@@ -787,6 +1034,10 @@ void onHold(int x, int y) {
     }
     if (idx == 0) metrics::stop();
     if (idx == 2) metrics::reset();
+    if (idx == 3 && screen == Screen::Efficiency) {
+        efficiency::reset();
+        forceRedraw = true;
+    }
 }
 
 void applySettings(bool full) {
@@ -830,7 +1081,7 @@ void begin() {
     Serial.printf("[ui] display %d x %d\n", M5.Display.width(), M5.Display.height());
     M5.Touch.setHoldThresh(cfg::TOUCH_HOLD_MS);
 
-    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &mapC, &mapPipC}) {
+    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &mapC, &mapPipC, &effC, &effP}) {
         c->setColorDepth(16);
         c->setPsram(true);
     }
@@ -843,6 +1094,8 @@ void begin() {
     setC.createSprite(W, SET_ROW_H);
     mapC.createSprite(W, FULL_CAM_H);
     mapPipC.createSprite(PIP_W, PIP_H);
+    effC.createSprite(EFF_CHART_W, EFF_H);
+    effP.createSprite(EFF_PANEL_W, EFF_H);
 
     camera::begin();
     mapview::begin();
@@ -933,6 +1186,7 @@ void loop() {
     switch (screen) {
         case Screen::Main: drawMain(v); break;
         case Screen::Map: drawTopTiles(v); break;
+        case Screen::Efficiency: drawEfficiency(v); break;
         case Screen::Plot: drawPlot(v); break;
         case Screen::Settings: drawSettings(); break;
         case Screen::Maps: break;

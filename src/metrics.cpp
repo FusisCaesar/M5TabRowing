@@ -4,6 +4,7 @@
 
 #include "board.h"
 #include "config.h"
+#include "efficiency.h"
 #include "gps_nav.h"
 #include "imu_stroke.h"
 #include "logger.h"
@@ -113,6 +114,7 @@ void onStroke(const StrokeEvent& ev) {
     v.ratio = avgOf(ratios);
     v.checkMg = avgOf(checks);
     v.bounceMg = avgOf(bounces);
+    if (ev.interval > 0) efficiency::addStroke({ev.rateSpm, dps, ratio, ev.checkMg, ev.bounceMg});
 
     Serial.printf("[stroke] #%lu rate %.1f int %.2fs drive %.2f rec %.2f split %.1f dps %.2f%s\n",
                   (unsigned long)ev.seq, ev.rateSpm, ev.interval, ev.driveTime, ev.recoveryTime,
@@ -188,6 +190,7 @@ void clearSession() {
     rateSum = 0;
     rateCount = 0;
     lastLoggedSecond = -1;
+    efficiency::reset();
 }
 
 }  // namespace
