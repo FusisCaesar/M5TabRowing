@@ -31,8 +31,8 @@ const char* const SUFFIX[] = {"strokes", "seconds", "laps", "info", "imu"};
 const char* const HEADER[] = {
     "elapsed_s,stroke,rate_spm,interval_s,drive_s,recovery_s,ratio,split_s,speed_mps,dps_m,"
     "distance_m,peak_decel_g,check_mg,bounce_mg,lat,lon,t_s\n",
-    "elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,hdop,sats,battery_pct\n",
-    "lap,elapsed_s,lap_time_s,lap_distance_m,avg_split_s,avg_rate_spm,strokes\n",
+    "elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,hdop,sats,battery_pct,hr_bpm\n",
+    "lap,elapsed_s,lap_time_s,lap_distance_m,avg_split_s,avg_rate_spm,strokes,avg_hr_bpm,max_hr_bpm\n",
     "key,value\n",
     "t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,surge_g,threshold_g,catch,gps_mps,surge_lin_g,vert_g,finish\n",
 };

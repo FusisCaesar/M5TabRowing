@@ -52,7 +52,7 @@ Windows notes:
 
 ## Using it
 
-Five screens; the right-most bottom button cycles through them.
+Six screens; the right-most bottom button cycles through them.
 
 | Screen | Content |
 | --- | --- |
@@ -60,7 +60,8 @@ Five screens; the right-most bottom button cycles through them.
 | Map | offline waterway map with your position, heading and track; head-up/north-up toggle and zoom buttons |
 | Efficiency | distance per stroke against rate with your best line, efficiency score, ratio/check/bounce gauges and a coaching hint |
 | Plot | last 6 s of the forward acceleration with threshold, catch and finish markers, and drive/recovery/check/bounce stats; shows `REC S####` while a session records |
-| Settings | threshold K and floor, minima threshold, raw IMU logging, GPS+IMU fusion, rec:drive target shift, camera mirror image, day/night theme, flip display, brightness |
+| Settings | three tabs. **STROKE**: threshold K and floor, minima threshold, rec:drive target shift. **DISPLAY**: day/night theme, brightness, flip display, camera mirror image. **SENSORS**: heart rate sensor, GPS+IMU fusion, raw IMU logging |
+| Sessions | the recorded sessions on the SD card, to review, rename or delete (see below) |
 
 Bottom buttons: **START** starts a session, **LAP** splits a lap, **hold STOP**
 ends the session, **hold RESET** clears it. Stroke rate and split show before
@@ -79,6 +80,26 @@ time in a strip above it).
 
 ![Camera picture-in-picture](shots/cam_pip.png)
 ![Camera full width](shots/cam_full.png)
+
+### Heart rate
+
+Any Bluetooth heart rate sensor works: a chest strap (Polar H10, Garmin HRM,
+Wahoo TICKR, ...) or a Garmin watch with **Broadcast Heart Rate** switched on
+(controls menu, or "broadcast during activity" in the sensor settings), so you
+can keep recording on the watch too. ANT+ is not supported.
+
+In Settings, tap **PAIR** on the heart rate row while the sensor is on and
+close by; the strongest one in range is saved. The Tab5 reconnects to it by
+itself at every start and whenever it drops out. **FORGET** removes it, after
+which you can pair another.
+
+With a sensor paired, the **STROKES** tile on the Main screen shows **HEART
+RATE** instead (orange `--` while there is no reading), the full-width strip
+shows it next to the time, and the top bar shows `HR`, `HR...` (connecting) or
+`NO HR`. The lap banner adds the lap's average heart rate.
+
+A chest strap reads much more reliably than a watch while rowing: grip tension
+and wrist flexion make optical wrist readings lag or drop out at high rates.
 
 ### Map screen
 
@@ -137,8 +158,8 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 | File | One row per | Contents |
 | --- | --- | --- |
 | `_strokes.csv` | stroke | rate, drive/recovery time, split, speed, distance per stroke, distance, catch depth, check, bounce, position, catch time (`t_s`) |
-| `_seconds.csv` | second | UTC, position, speed, split, distance, rate, HDOP, satellites, battery |
-| `_laps.csv` | lap | lap time, distance, average split and rate, strokes |
+| `_seconds.csv` | second | UTC, position, speed, split, distance, rate, HDOP, satellites, battery, heart rate (empty without a sensor) |
+| `_laps.csv` | lap | lap time, distance, average split and rate, strokes, average and maximum heart rate |
 | `_info.csv` | setting | build, start time, and the detector settings in use, so a session can be replayed exactly |
 | `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed (only with raw logging on) |
 
@@ -149,7 +170,27 @@ Dates and times in the files are UTC from the Tab5's battery-backed clock (RTC).
 The clock is set from internet time whenever Wi-Fi is connected and from the GPS
 once it has a fix, and keeps time while the Tab5 is off. `_info.csv` records
 where the time came from (`time_source`: NTP, GPS or RTC). The top bar and the
-recordings list show local time (`cfg::TIMEZONE`, Amsterdam by default).
+Sessions screen show local time (`cfg::TIMEZONE`, Amsterdam by default).
+
+### Sessions screen
+
+Lists every session on the card with its number, start date and time, duration
+and size.
+
+- **RENAME** gives a session a name such as `Bosbaan intervals`. Its files
+  become `S0022_Bosbaan_intervals_imu.csv` and so on, and `fetch.py` and
+  `analyse.py` understand both forms.
+- Tap a session's name to review it: the GPS track on the offline map, coloured
+  from red (slow) to green (fast) with a start dot and a finish square, plus
+  distance, time, average split, fastest 500 m, average rate, strokes, distance
+  per stroke, top speed, average and maximum heart rate, and graphs of split,
+  rate and heart rate over the session. Drag the map to pan, +/- to zoom, tap
+  the map to fit the whole track again; **BACK** returns to the list. The track
+  is drawn without a map when no map on the card covers it.
+- A session without a GPS fix still shows what was recorded: time, average
+  rate, strokes, laps, average and maximum heart rate, and the rate and heart
+  rate graphs.
+- **DELETE**, then **CONFIRM**, removes all files of a session.
 
 ## Exporting to Strava or Garmin Connect
 
@@ -162,7 +203,7 @@ python tools\export.py 21                    # recordings\S0021.gpx and S0021.tc
 python tools\export.py all --format gpx --out exports
 ```
 
-- **GPX**: track, time, speed and stroke rate (as cadence), marked as rowing.
+- **GPX**: track, time, speed, stroke rate (as cadence) and heart rate, marked as rowing.
   Strava recognises the type; upload it at strava.com/upload/select.
 - **TCX**: also distance and one lap per **LAP** press. TCX has no rowing sport,
   so pick rowing after uploading.
@@ -177,7 +218,7 @@ Seconds without a GPS fix are left out of the GPX track.
    stopping and restarting. Row at least a few minutes so the detector has
    settled, and keep the Tab5 firmly mounted: tilting it mixes gravity into the
    signal.
-4. **Hold STOP** when done. Name the session under **MAPS > ON CARD** if you
+4. **Hold STOP** when done. Name the session on the **Sessions** screen if you
    like. Then copy the files with a card reader (`/rowing/` on the card), or over
    USB:
 
@@ -218,6 +259,7 @@ python tools\send.py COM10 N                              # N next screen, G sta
 python tools\send.py COM10 C                              # C cycle PIP off/camera/map, V picture-in-picture/full width
 python tools\send.py COM10 H                              # H map head-up/north-up; +/- zoom the map
 python tools\send.py COM10 M                              # M open the Maps screen (download maps)
+python tools\send.py COM10 h                              # h pair the strongest heart rate sensor in range
 python tools\send.py COM10 'T 640 360'                    # tap at x y; 'P x y' hold, 'Z x0 y0 x1 y1' drag
 python tools\send.py COM10 'W MyNetwork|MyPassword'       # join Wi-Fi and remember it; 'W ' reconnects
 python tools\serial_log.py COM10 5 --send "1:D"           # list SD session files and /map files with their first lines
@@ -243,23 +285,11 @@ screen is open and off again when you leave it.
 - **DRAW AREA**: an OpenStreetMap background centred on your position. Drag to
   pan, +/- to zoom, tap SELECT AREA and drag a rectangle over the water you row
   on (up to 8 x 8 km), then DOWNLOAD AREA.
-- **ON CARD**: what is on the SD card, in two lists.
-  - **Maps**, with their size. A map you drew is named after its centre
-    (`Area 52.226 5.072`); tap **RENAME** to give it a proper name with the
-    on-screen keyboard. The file name on the card stays the same.
-  - **Recordings**: every session with its number, start date and time (local),
-    duration and size. **RENAME** gives it a name such as
-    `Bosbaan intervals`; the session's files become
-    `S0022_Bosbaan_intervals_imu.csv` and so on, and `fetch.py` and
-    `analyse.py` understand both forms.
-  - Tap a recording's name to review it: the GPS track on the offline map,
-    coloured from red (slow) to green (fast) with a start dot and a finish
-    square, plus distance, time, average split, fastest 500 m, average rate,
-    strokes, distance per stroke, top speed, and graphs of split and rate over
-    the session. Drag the map to pan, +/- to zoom, tap the map to fit the whole
-    track again; **ON CARD** returns to the list. The track is drawn without a
-    map when no map on the card covers it.
-  - **DELETE**, then **CONFIRM**, removes a map or all files of a recording.
+- **ON CARD**: the maps on the SD card with their size. A map you drew is named
+  after its centre (`Area 52.226 5.072`); tap **RENAME** to give it a proper
+  name with the on-screen keyboard. The file name on the card stays the same.
+  **DELETE**, then **CONFIRM**, removes a map. Recorded sessions are on the
+  **Sessions** screen.
 
 A download takes 30-60 s, mostly waiting for the Overpass map server; the header
 shows progress. The Tab5 then converts the data itself (about 2 s) and shows the

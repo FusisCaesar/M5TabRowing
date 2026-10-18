@@ -6,7 +6,7 @@ Usage:
   python tools/export.py all --dir recordings --out exports
 
 Fetch the session first (python tools/fetch.py COM10 21) or copy it from the card.
-GPX carries position, time, speed and stroke rate (as cadence) and is marked as rowing,
+GPX carries position, time, speed, stroke rate (as cadence) and heart rate and is marked as rowing,
 which Strava picks up. TCX adds distance and one lap per LAP press; set the sport to
 rowing after the upload, TCX has no rowing type.
 """
@@ -88,6 +88,7 @@ def load(prefix):
             "speed": num(r, "speed_mps"),
             "distance": num(r, "distance_m"),
             "rate": num(r, "rate_spm"),
+            "hr": num(r, "hr_bpm"),
         })
     return {"start": start, "points": points, "laps": laps}
 
@@ -105,10 +106,11 @@ def write_gpx(path, name, s):
         if not p["fix"]:
             continue
         n += 1
+        hr = f"<gpxtpx:hr>{round(p['hr'])}</gpxtpx:hr>" if p["hr"] > 0 else ""
         out.append(
             f'    <trkpt lat="{p["lat"]:.7f}" lon="{p["lon"]:.7f}"><time>{iso(p["time"])}</time>'
-            f"<extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>{p['speed']:.2f}</gpxtpx:speed>"
-            f"<gpxtpx:cad>{round(p['rate'])}</gpxtpx:cad></gpxtpx:TrackPointExtension></extensions></trkpt>"
+            f"<extensions><gpxtpx:TrackPointExtension>{hr}<gpxtpx:cad>{round(p['rate'])}</gpxtpx:cad>"
+            f"<gpxtpx:speed>{p['speed']:.2f}</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions></trkpt>"
         )
     out += ["  </trkseg></trk>", "</gpx>", ""]
     with open(path, "w", encoding="utf-8") as f:
@@ -141,14 +143,20 @@ def write_tcx(path, name, s):
         dist = lap[-1]["distance"] - prev_dist
         prev_dist = lap[-1]["distance"]
         rates = [p["rate"] for p in lap if p["rate"] > 0]
+        hrs = [p["hr"] for p in lap if p["hr"] > 0]
         out += [
             f'      <Lap StartTime="{iso(lap[0]["time"])}">',
             f"        <TotalTimeSeconds>{lap[-1]['elapsed'] - lap[0]['elapsed'] + 1:.1f}</TotalTimeSeconds>",
             f"        <DistanceMeters>{dist:.1f}</DistanceMeters>",
             f"        <MaximumSpeed>{max(p['speed'] for p in lap):.2f}</MaximumSpeed>",
             "        <Calories>0</Calories>",
-            "        <Intensity>Active</Intensity>",
         ]
+        if hrs:
+            out += [
+                f"        <AverageHeartRateBpm><Value>{round(sum(hrs) / len(hrs))}</Value></AverageHeartRateBpm>",
+                f"        <MaximumHeartRateBpm><Value>{round(max(hrs))}</Value></MaximumHeartRateBpm>",
+            ]
+        out.append("        <Intensity>Active</Intensity>")
         if rates:
             out.append(f"        <Cadence>{round(sum(rates) / len(rates))}</Cadence>")
         out += ["        <TriggerMethod>Manual</TriggerMethod>", "        <Track>"]
@@ -156,9 +164,10 @@ def write_tcx(path, name, s):
             pos = (f"<Position><LatitudeDegrees>{p['lat']:.7f}</LatitudeDegrees>"
                    f"<LongitudeDegrees>{p['lon']:.7f}</LongitudeDegrees></Position>") if p["fix"] else ""
             cad = f"<Cadence>{round(p['rate'])}</Cadence>" if p["rate"] > 0 else ""
+            hr = f"<HeartRateBpm><Value>{round(p['hr'])}</Value></HeartRateBpm>" if p["hr"] > 0 else ""
             out.append(
                 f"          <Trackpoint><Time>{iso(p['time'])}</Time>{pos}"
-                f"<DistanceMeters>{p['distance']:.1f}</DistanceMeters>{cad}"
+                f"<DistanceMeters>{p['distance']:.1f}</DistanceMeters>{hr}{cad}"
                 f"<Extensions><ns3:TPX><ns3:Speed>{p['speed']:.2f}</ns3:Speed></ns3:TPX></Extensions></Trackpoint>"
             )
         out += ["        </Track>", "      </Lap>"]

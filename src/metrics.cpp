@@ -48,6 +48,10 @@ int lapStrokes = 0;
 double lapRateSum = 0;
 int lapRateCount = 0;
 
+// Heart rate, one sample per logged second.
+double hrSum = 0, lapHrSum = 0;
+int hrCount = 0, lapHrCount = 0, lapMaxHr = 0;
+
 void pushSpeed(int64_t t, float s, bool valid) {
     speeds[speedHead] = {t, s, valid};
     speedHead = (speedHead + 1) % cfg::SPEED_HISTORY;
@@ -140,16 +144,29 @@ void onStroke(const StrokeEvent& ev) {
     logger::write(logger::Stream::Strokes, line);
 }
 
+void addHrSecond() {
+    if (v.hr <= 0) return;
+    hrSum += v.hr;
+    hrCount++;
+    lapHrSum += v.hr;
+    lapHrCount++;
+    if (v.hr > v.maxHr) v.maxHr = v.hr;
+    if (v.hr > lapMaxHr) lapMaxHr = v.hr;
+    v.avgHr = (float)(hrSum / hrCount);
+}
+
 void logSecond(int second) {
     char utc[24] = "";
     if (!rtclock::isoUtc(utc, sizeof(utc)) && gpsNow.timeValid) {
         snprintf(utc, sizeof(utc), "%04u-%02u-%02uT%02u:%02u:%02uZ", gpsNow.year, gpsNow.month,
                  gpsNow.day, gpsNow.hour, gpsNow.minute, gpsNow.second);
     }
+    char hrText[8] = "";
+    if (v.hr > 0) snprintf(hrText, sizeof(hrText), "%d", v.hr);
     char line[200];
-    snprintf(line, sizeof(line), "%d,%s,%.7f,%.7f,%.2f,%.1f,%.1f,%.1f,%.1f,%d,%d\n", second, utc,
+    snprintf(line, sizeof(line), "%d,%s,%.7f,%.7f,%.2f,%.1f,%.1f,%.1f,%.1f,%d,%d,%s\n", second, utc,
              gpsNow.lat, gpsNow.lon, gpsNow.speed, v.split, v.distance, v.rate, gpsNow.hdop,
-             gpsNow.sats, v.battery);
+             gpsNow.sats, v.battery, hrText);
     logger::write(logger::Stream::Seconds, line);
 }
 
@@ -161,16 +178,20 @@ void closeLap(int64_t nowUs) {
     l.avgSplit = l.distance > 1 ? l.time * 500.0f / l.distance : 0;
     l.avgRate = lapRateCount ? (float)(lapRateSum / lapRateCount) : 0;
     l.strokes = lapStrokes;
+    l.avgHr = lapHrCount ? (float)(lapHrSum / lapHrCount) : 0;
+    l.maxHr = lapMaxHr;
     v.lastLap = l;
     v.hasLap = true;
     v.lapShownMs = millis();
 
+    char hrText[16] = ",";
+    if (l.avgHr > 0) snprintf(hrText, sizeof(hrText), "%.0f,%d", l.avgHr, l.maxHr);
     char line[160];
-    snprintf(line, sizeof(line), "%d,%.1f,%.1f,%.1f,%.1f,%.1f,%d\n", l.number, v.elapsed, l.time,
-             l.distance, l.avgSplit, l.avgRate, l.strokes);
+    snprintf(line, sizeof(line), "%d,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%s\n", l.number, v.elapsed, l.time,
+             l.distance, l.avgSplit, l.avgRate, l.strokes, hrText);
     logger::write(logger::Stream::Laps, line);
-    Serial.printf("[lap] %d time %.1f dist %.1f split %.1f rate %.1f\n", l.number, l.time,
-                  l.distance, l.avgSplit, l.avgRate);
+    Serial.printf("[lap] %d time %.1f dist %.1f split %.1f rate %.1f hr %.0f/%d\n", l.number, l.time,
+                  l.distance, l.avgSplit, l.avgRate, l.avgHr, l.maxHr);
 
     v.lapNumber++;
     lapStartUs = nowUs;
@@ -178,6 +199,9 @@ void closeLap(int64_t nowUs) {
     lapStrokes = 0;
     lapRateSum = 0;
     lapRateCount = 0;
+    lapHrSum = 0;
+    lapHrCount = 0;
+    lapMaxHr = 0;
 }
 
 void clearSession() {
@@ -190,6 +214,10 @@ void clearSession() {
     v.hasLap = false;
     rateSum = 0;
     rateCount = 0;
+    v.avgHr = 0;
+    v.maxHr = 0;
+    hrSum = 0;
+    hrCount = 0;
     lastLoggedSecond = -1;
     efficiency::reset();
 }
@@ -237,6 +265,8 @@ void logSessionInfo(int session) {
     logInfo("min_stroke_interval_s", "%.2f", cfg::MIN_STROKE_INTERVAL_S);
     logInfo("max_dip_duration_s", "%.2f", cfg::MAX_DIP_DURATION_S);
     logInfo("finish_fraction", "%.2f", cfg::FINISH_FRACTION);
+    hr::Snapshot h = hr::get();
+    if (h.name[0]) logInfo("hr_sensor", "%s", h.name);
 }
 
 }  // namespace
@@ -277,6 +307,11 @@ void update() {
     v.gpsHz = gpsNow.updateHz;
     v.session = logger::sessionOpen() ? logger::sessionNumber() : -1;
 
+    hr::Snapshot h = hr::get();
+    v.hrState = h.state;
+    v.hrConnected = h.state == hr::State::Connected;
+    v.hr = h.bpm;
+
     if (v.state == State::Running) {
         v.elapsed = (float)((now - startUs) * 1e-6);
         v.distance = (float)(gpsNow.distance - startDistance);
@@ -285,6 +320,7 @@ void update() {
         int sec = (int)v.elapsed;
         if (sec != lastLoggedSecond) {
             lastLoggedSecond = sec;
+            addHrSecond();
             logSecond(sec);
         }
     }
@@ -300,6 +336,9 @@ void start() {
     lapStrokes = 0;
     lapRateSum = 0;
     lapRateCount = 0;
+    lapHrSum = 0;
+    lapHrCount = 0;
+    lapMaxHr = 0;
     int s = logger::startSession();
     if (s >= 0) logSessionInfo(s);
     v.state = State::Running;

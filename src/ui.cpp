@@ -8,6 +8,7 @@
 #include "config.h"
 #include "efficiency.h"
 #include "gps_nav.h"
+#include "hr.h"
 #include "imu_stroke.h"
 #include "logger.h"
 #include "map_data.h"
@@ -17,6 +18,7 @@
 #include "net.h"
 #include "metrics.h"
 #include "rtclock.h"
+#include "sessions_ui.h"
 #include "settings.h"
 #include "track.h"
 
@@ -47,8 +49,9 @@ constexpr int PLOT_POINTS = 600;   // 6 s at 100 Hz
 constexpr float PLOT_RANGE_G = 0.6f;
 
 // The NEXT button cycles through the first CYCLE screens; Maps opens from the Map screen.
-enum class Screen { Main, Map, Efficiency, Plot, Settings, Maps };
-constexpr int CYCLE = 5;
+// Screens from Sessions on draw their own content area (sessions_ui, maps_ui).
+enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps };
+constexpr int CYCLE = 6;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
 // Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
 constexpr int EFF_H = BTN_Y - ROW_H - BAR_H;
@@ -67,6 +70,7 @@ M5Canvas rowC(&M5.Display);
 M5Canvas plotC(&M5.Display);
 M5Canvas btnC(&M5.Display);
 M5Canvas setC(&M5.Display);
+M5Canvas setTabC(&M5.Display);
 M5Canvas mapC(&M5.Display);     // full-size map area (Map screen or full-on-Main)
 M5Canvas mapPipC(&M5.Display);  // picture-in-picture map
 M5Canvas effC(&M5.Display);     // efficiency chart
@@ -229,8 +233,10 @@ void drawTopBar(const metrics::View& v) {
         char split[16], t[16];
         fmtSplit(split, sizeof(split), v.lastLap.avgSplit);
         fmtTime(t, sizeof(t), v.lastLap.time);
-        snprintf(mid, sizeof(mid), "LAP %d  %s  %.0f m  %s/500  %.0f spm", v.lastLap.number, t,
-                 v.lastLap.distance, split, v.lastLap.avgRate);
+        int n = snprintf(mid, sizeof(mid), "LAP %d  %s  %.0f m  %s/500  %.0f spm", v.lastLap.number, t,
+                         v.lastLap.distance, split, v.lastLap.avgRate);
+        if (v.lastLap.avgHr > 0 && n > 0 && n < (int)sizeof(mid))
+            snprintf(mid + n, sizeof(mid) - n, "  %.0f bpm", v.lastLap.avgHr);
     } else if (!v.gpsConnected) {
         snprintf(mid, sizeof(mid), "GPS not connected");
     } else if (!v.gpsFix) {
@@ -251,6 +257,16 @@ void drawTopBar(const metrics::View& v) {
         case net::State::Failed: wifi = "NO WIFI  "; break;
         case net::State::Off: break;
     }
+    const char* hrText = "";
+    if (hr::pairing()) hrText = "HR...  ";
+    else if (hr::hasSaved()) {
+        switch (v.hrState) {
+            case hr::State::Connected: hrText = v.hr > 0 ? "HR  " : "HR...  "; break;
+            case hr::State::Scanning:
+            case hr::State::Connecting: hrText = "HR...  "; break;
+            default: hrText = "NO HR  "; break;
+        }
+    }
     char clock[16] = "";
     if (rtclock::valid()) {
         time_t t = time(nullptr);
@@ -258,8 +274,8 @@ void drawTopBar(const metrics::View& v) {
         localtime_r(&t, &l);
         strftime(clock, sizeof(clock), "%H:%M  ", &l);
     }
-    if (v.battery >= 0) snprintf(right, sizeof(right), "%s%s%sBAT %d%%", wifi, sim, clock, v.battery);
-    else snprintf(right, sizeof(right), "%s%s%s", wifi, sim, clock);
+    if (v.battery >= 0) snprintf(right, sizeof(right), "%s%s%s%sBAT %d%%", hrText, wifi, sim, clock, v.battery);
+    else snprintf(right, sizeof(right), "%s%s%s%s", hrText, wifi, sim, clock);
 
     char key[160];
     snprintf(key, sizeof(key), "%s|%s|%s", left, mid, right);
@@ -320,6 +336,9 @@ void drawButtons(const metrics::View& v) {
         drawButton(3, s.mapHeadUp ? "HEAD UP" : "NORTH UP", true, s.mapHeadUp);
     } else if (screen == Screen::Efficiency) {
         drawButton(3, "HOLD: CLEAR", efficiency::strokeCount() > 0);
+    } else if (screen == Screen::Sessions) {
+        bool inner = sessionsui::reviewing() || sessionsui::editing();
+        drawButton(3, inner ? "BACK" : "", inner);
     } else {
         drawButton(3, "", false);
     }
@@ -328,6 +347,7 @@ void drawButtons(const metrics::View& v) {
                        : screen == Screen::Map        ? "EFFICIENCY"
                        : screen == Screen::Efficiency ? "PLOT"
                        : screen == Screen::Plot       ? "SETTINGS"
+                       : screen == Screen::Settings   ? "SESSIONS"
                                                       : "METRICS";
     drawButton(4, next, true);
 }
@@ -347,7 +367,16 @@ void drawTopTiles(const metrics::View& v) {
     if (changed(smallCache[0], split)) drawTile(smallC, 0, BAR_H, "SPLIT", "/500m", split, false, th->fg);
     if (changed(smallCache[1], rate)) drawTile(smallC, SMALL_W, BAR_H, "RATE", "spm", rate, false, th->accent);
     if (changed(smallCache[2], dist)) drawTile(smallC, 2 * SMALL_W, BAR_H, "DISTANCE", "m", dist, false, th->fg);
-    if (changed(smallCache[3], elapsed)) drawTile(smallC, 3 * SMALL_W, BAR_H, "TIME", "", elapsed, false, th->fg);
+    // Heart rate rides along in the TIME tile's unit corner; there is no room for a fifth tile.
+    char hrUnit[16] = "";
+    if (hr::hasSaved()) {
+        if (v.hr > 0) snprintf(hrUnit, sizeof(hrUnit), "%d bpm", v.hr);
+        else snprintf(hrUnit, sizeof(hrUnit), "-- bpm");
+    }
+    char timeKey[32];
+    snprintf(timeKey, sizeof(timeKey), "%s|%s", elapsed, hrUnit);
+    if (changed(smallCache[3], timeKey))
+        drawTile(smallC, 3 * SMALL_W, BAR_H, "TIME", hrUnit, elapsed, false, th->fg, v.hr > 0 ? th->fg : th->warn);
 }
 
 void drawMain(const metrics::View& v) {
@@ -393,8 +422,17 @@ void drawSmallRow(const metrics::View& v) {
     fmtSplit(buf, sizeof(buf), v.avgSplit);
     if (changed(smallCache[1], buf)) drawTile(smallC, SMALL_W, SMALL_Y, "AVG SPLIT", "/500m", buf, false, th->fg);
 
-    snprintf(buf, sizeof(buf), "%d", v.strokes);
-    if (changed(smallCache[2], buf)) drawTile(smallC, 2 * SMALL_W, SMALL_Y, "STROKES", "", buf, false, th->fg);
+    if (hr::hasSaved()) {
+        if (v.hr > 0) snprintf(buf, sizeof(buf), "%d", v.hr);
+        else snprintf(buf, sizeof(buf), "--");
+        char key[32];
+        snprintf(key, sizeof(key), "hr|%s", buf);
+        if (changed(smallCache[2], key))
+            drawTile(smallC, 2 * SMALL_W, SMALL_Y, "HEART RATE", "bpm", buf, false, v.hr > 0 ? th->fg : th->warn);
+    } else {
+        snprintf(buf, sizeof(buf), "%d", v.strokes);
+        if (changed(smallCache[2], buf)) drawTile(smallC, 2 * SMALL_W, SMALL_Y, "STROKES", "", buf, false, th->fg);
+    }
 
     efficiency::RatioCheck rc = efficiency::checkRatio(v.ratio, v.rate);
     const char* word = efficiency::adviceWord(rc.advice);
@@ -689,11 +727,37 @@ void drawPlot(const metrics::View& v) {
 
 // ---- settings screen -------------------------------------------------------
 
-enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_COUNT };
-constexpr int SET_ROW_H = 49;
+enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_COUNT };
+constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 4;
 constexpr int SET_MINUS_X = 860, SET_PLUS_X = 1050, SET_BTN_W = 170;
 
+struct SettingsTab {
+    const char* name;
+    int rows[SET_ROWS];  // -1 = empty slot
+};
+constexpr SettingsTab SET_TABS[] = {
+    {"STROKE", {S_K, S_FLOOR, S_MINIMA, S_RATIO}},
+    {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR}},
+    {"SENSORS", {S_HR, S_FUSION, S_RAW, -1}},
+};
+constexpr int SET_TAB_COUNT = sizeof(SET_TABS) / sizeof(SET_TABS[0]);
+int settingsTab = 0;
+Cache setTabCache, setRowCache[SET_ROWS];
+
 bool isNumeric(int row) { return row == S_K || row == S_FLOOR || row == S_RATIO || row == S_BRIGHT; }
+
+// On/off rows whose button shows the state itself (lit when on).
+int switchState(int row) {
+    const Settings& s = settings::get();
+    switch (row) {
+        case S_MINIMA: return s.useMinimaThreshold;
+        case S_RAW: return s.rawLog;
+        case S_FUSION: return s.fusion;
+        case S_CAM_MIRROR: return s.camMirror;
+        case S_FLIP: return s.flip;
+        default: return -1;
+    }
+}
 
 void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
     const Settings& s = settings::get();
@@ -708,43 +772,95 @@ void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
         case S_THEME: snprintf(label, ln, "Theme"); snprintf(value, vn, "%s", s.dayTheme ? "DAY" : "NIGHT"); break;
         case S_FLIP: snprintf(label, ln, "Rotate screen 180"); snprintf(value, vn, "%s", s.flip ? "ON" : "OFF"); break;
         case S_BRIGHT: snprintf(label, ln, "Brightness"); snprintf(value, vn, "%d%%", s.brightness * 100 / 255); break;
+        case S_HR:
+            snprintf(label, ln, "Heart rate sensor (Bluetooth)");
+            if (hr::pairing()) snprintf(value, vn, "SCAN...");
+            else if (hr::hasSaved()) snprintf(value, vn, "%s", hr::get().name);
+            else snprintf(value, vn, "NONE");
+            break;
     }
 }
 
-void drawSettings() {
-    for (int r = 0; r < S_COUNT; r++) {
-        char label[48], value[16], key[96];
+const char* settingButton(int row) {
+    if (row == S_HR) {
+        if (hr::pairing()) return "...";
+        return hr::hasSaved() ? "FORGET" : "PAIR";
+    }
+    if (row == S_THEME) return settings::get().dayTheme ? "DAY" : "NIGHT";
+    return switchState(row) == 1 ? "ON" : "OFF";
+}
+
+void drawSettingsTabs() {
+    char key[16];
+    snprintf(key, sizeof(key), "tab%d", settingsTab);
+    if (!changed(setTabCache, key)) return;
+    M5Canvas& c = setTabC;
+    c.fillSprite(th->bg);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_center);
+    int tw = W / SET_TAB_COUNT;
+    for (int i = 0; i < SET_TAB_COUNT; i++) {
+        bool on = i == settingsTab;
+        c.fillRoundRect(i * tw + 8, 8, tw - 16, SET_TAB_H - 16, 14, on ? th->accent : th->btn);
+        c.setTextColor(on ? th->bg : th->btnText);
+        c.drawString(SET_TABS[i].name, i * tw + tw / 2, SET_TAB_H / 2);
+    }
+    c.drawFastHLine(0, SET_TAB_H - 1, W, th->dim);
+    fb::push(c, 0, BAR_H);
+}
+
+void drawSettingRow(int slot, int r) {
+    char label[48], value[24], key[96];
+    if (r < 0) {
+        label[0] = value[0] = 0;
+        snprintf(key, sizeof(key), "empty");
+    } else {
         settingText(r, label, sizeof(label), value, sizeof(value));
-        snprintf(key, sizeof(key), "%s|%s", label, value);
-        if (!changed(rowCache[r], key)) continue;
-        M5Canvas& c = setC;
-        c.fillSprite(th->bg);
+        snprintf(key, sizeof(key), "%d|%s|%s|%s", r, label, value, settingButton(r));
+    }
+    if (!changed(setRowCache[slot], key)) return;
+    M5Canvas& c = setC;
+    c.fillSprite(th->bg);
+    if (r >= 0) {
+        int mid = SET_ROW_H / 2, bh = SET_ROW_H - 16;
         c.drawFastHLine(0, SET_ROW_H - 1, W, th->dim);
         c.setFont(&fonts::FreeSansBold12pt7b);
         c.setTextSize(1);
         c.setTextDatum(middle_left);
         c.setTextColor(th->fg);
-        c.drawString(label, 24, SET_ROW_H / 2);
+        c.drawString(label, 24, mid);
         c.setTextDatum(middle_center);
-        c.setTextColor(th->accent);
-        c.drawString(value, 740, SET_ROW_H / 2);
-        c.setTextColor(th->btnText);
-        if (isNumeric(r)) {
-            c.fillRoundRect(SET_MINUS_X, 5, SET_BTN_W, SET_ROW_H - 10, 12, th->btn);
-            c.fillRoundRect(SET_PLUS_X, 5, SET_BTN_W, SET_ROW_H - 10, 12, th->btn);
-            c.drawString("-", SET_MINUS_X + SET_BTN_W / 2, SET_ROW_H / 2);
-            c.drawString("+", SET_PLUS_X + SET_BTN_W / 2, SET_ROW_H / 2);
-        } else {
-            c.fillRoundRect(SET_MINUS_X, 5, SET_PLUS_X + SET_BTN_W - SET_MINUS_X, SET_ROW_H - 10, 12, th->btn);
-            c.drawString("TOGGLE", (SET_MINUS_X + SET_PLUS_X + SET_BTN_W) / 2, SET_ROW_H / 2);
+        if (isNumeric(r) || r == S_HR) {
+            c.setTextColor(th->accent);
+            c.drawString(value, 740, mid);
         }
-        fb::push(c, 0, BAR_H + r * SET_ROW_H);
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        if (isNumeric(r)) {
+            c.setTextColor(th->btnText);
+            c.fillRoundRect(SET_MINUS_X, 8, SET_BTN_W, bh, 16, th->btn);
+            c.fillRoundRect(SET_PLUS_X, 8, SET_BTN_W, bh, 16, th->btn);
+            c.setFont(&fonts::FreeSansBold24pt7b);
+            c.drawString("-", SET_MINUS_X + SET_BTN_W / 2, mid);
+            c.drawString("+", SET_PLUS_X + SET_BTN_W / 2, mid);
+        } else {
+            bool lit = switchState(r) == 1;
+            c.fillRoundRect(SET_MINUS_X, 8, SET_PLUS_X + SET_BTN_W - SET_MINUS_X, bh, 16, lit ? th->accent : th->btn);
+            c.setTextColor(lit ? th->bg : th->btnText);
+            c.drawString(settingButton(r), (SET_MINUS_X + SET_PLUS_X + SET_BTN_W) / 2, mid);
+        }
     }
+    fb::push(c, 0, BAR_H + SET_TAB_H + slot * SET_ROW_H);
+}
+
+void drawSettings() {
+    drawSettingsTabs();
+    for (int i = 0; i < SET_ROWS; i++) drawSettingRow(i, SET_TABS[settingsTab].rows[i]);
 
     char info[96];
     snprintf(info, sizeof(info), "SD card: %s   log drops: %lu", logger::sdReady() ? "OK" : "not found",
              (unsigned long)logger::dropped());
-    drawRow(S_COUNT, BAR_H + S_COUNT * SET_ROW_H, info,
+    drawRow(S_COUNT, BTN_Y - ROW_H, info,
 #if SIM_MODE
             "build: SIMULATION",
 #else
@@ -756,8 +872,14 @@ void drawSettings() {
 void applySettings(bool full);
 
 void onSettingsTap(int x, int y) {
-    int row = (y - BAR_H) / SET_ROW_H;
-    if (row < 0 || row >= S_COUNT) return;
+    if (y >= BAR_H && y < BAR_H + SET_TAB_H) {
+        settingsTab = min(SET_TAB_COUNT - 1, x / (W / SET_TAB_COUNT));
+        return;
+    }
+    int slot = (y - BAR_H - SET_TAB_H) / SET_ROW_H;
+    if (y < BAR_H + SET_TAB_H || slot >= SET_ROWS) return;
+    int row = SET_TABS[settingsTab].rows[slot];
+    if (row < 0) return;
     bool minus = x >= SET_MINUS_X && x < SET_MINUS_X + SET_BTN_W;
     bool plus = x >= SET_PLUS_X && x < SET_PLUS_X + SET_BTN_W;
     bool toggle = x >= SET_MINUS_X && x < SET_PLUS_X + SET_BTN_W;
@@ -786,6 +908,12 @@ void onSettingsTap(int x, int y) {
         case S_CAM_MIRROR: if (toggle) s.camMirror = !s.camMirror; break;
         case S_THEME: if (toggle) { s.dayTheme = !s.dayTheme; full = true; } break;
         case S_FLIP: if (toggle) { s.flip = !s.flip; full = true; } break;
+        case S_HR:
+            if (toggle && !hr::pairing()) {
+                if (hr::hasSaved()) hr::forget();
+                else hr::startPairing();
+            }
+            return;
     }
     if (minus || plus || toggle) {
         settings::save();
@@ -963,7 +1091,9 @@ void setScreen(Screen next) {
         // Wi-Fi is only for downloading maps; keep it while a download or the setup page runs.
         if (!mapjob::busy() && !net::setupActive()) net::disconnect();
     }
+    if (screen == Screen::Sessions) sessionsui::leave();
     screen = next;
+    if (screen == Screen::Sessions) sessionsui::enter();
     if (screen == Screen::Maps) {
         mapsui::enter();
         if (net::state() == net::State::Off && net::hasStoredNetwork()) net::connect(nullptr, nullptr, Serial);
@@ -1011,6 +1141,11 @@ void onTap(int x, int y) {
         onMapsTap(x, y);
         return;
     }
+    if (screen == Screen::Sessions && y < BTN_Y) {
+        sessionsui::tap(x, y);
+        forceRedraw = true;
+        return;
+    }
     metrics::View v = metrics::view();
     if (screen == Screen::Map && mapsButtonShown() && x >= MAPS_BTN_X && x < MAPS_BTN_X + MAPS_BTN_W &&
         y >= FULL_CAM_Y + MAPS_BTN_Y && y < FULL_CAM_Y + MAPS_BTN_Y + MAPS_BTN_H) {
@@ -1031,6 +1166,10 @@ void onTap(int x, int y) {
                 if (screen == Screen::Main) cyclePip();
                 else if (screen == Screen::Map) toggleHeadUp();
                 else if (screen == Screen::Efficiency) showHint("Hold to clear the chart and your best line");
+                else if (screen == Screen::Sessions) {
+                    sessionsui::back();
+                    forceRedraw = true;
+                }
                 break;
             case 4: nextScreen(); break;
         }
@@ -1071,7 +1210,9 @@ void applySettings(bool full) {
         M5.Display.setBrightness(s.brightness);
     }
     th = s.dayTheme ? &DAY : &NIGHT;
-    mapsui::setColors({th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok});
+    Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+    mapsui::setColors(pal);
+    sessionsui::setColors(pal);
     if (full) {
         M5.Display.setRotation(s.flip ? 1 : 3);
         clearScreen();
@@ -1079,17 +1220,30 @@ void applySettings(bool full) {
     updateCamera();
 }
 
+void dragStart(int x, int y) {
+    if (screen == Screen::Maps) mapsui::dragStart(x, y);
+    else sessionsui::dragStart(x, y);
+}
+void dragMove(int x, int y) {
+    if (screen == Screen::Maps) mapsui::dragMove(x, y);
+    else sessionsui::dragMove(x, y);
+}
+void dragEnd(int x, int y) {
+    if (screen == Screen::Maps) mapsui::dragEnd(x, y);
+    else sessionsui::dragEnd(x, y);
+}
+
 void handleDrag(const m5::touch_detail_t& t) {
-    if (screen != Screen::Maps) return;
+    if (screen != Screen::Maps && screen != Screen::Sessions) return;
     if (t.isPressed()) {
         if (!dragging && (abs(t.distanceX()) > 12 || abs(t.distanceY()) > 12)) {
             dragging = true;
-            mapsui::dragStart(t.base_x, t.base_y);
+            dragStart(t.base_x, t.base_y);
         }
-        if (dragging) mapsui::dragMove(t.x, t.y);
+        if (dragging) dragMove(t.x, t.y);
     } else if (dragging) {
         dragging = false;
-        mapsui::dragEnd(t.x, t.y);
+        dragEnd(t.x, t.y);
     }
 }
 
@@ -1102,7 +1256,7 @@ void begin() {
     Serial.printf("[ui] display %d x %d\n", M5.Display.width(), M5.Display.height());
     M5.Touch.setHoldThresh(cfg::TOUCH_HOLD_MS);
 
-    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &mapC, &mapPipC, &effC, &effP}) {
+    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &setTabC, &mapC, &mapPipC, &effC, &effP}) {
         c->setColorDepth(16);
         c->setPsram(true);
     }
@@ -1113,6 +1267,7 @@ void begin() {
     plotC.createSprite(W, PLOT_H);
     btnC.createSprite(BTN_W, BTN_H);
     setC.createSprite(W, SET_ROW_H);
+    setTabC.createSprite(W, SET_TAB_H);
     mapC.createSprite(W, FULL_CAM_H);
     mapPipC.createSprite(PIP_W, PIP_H);
     effC.createSprite(EFF_CHART_W, EFF_H);
@@ -1121,6 +1276,7 @@ void begin() {
     camera::begin();
     mapview::begin();
     mapsui::begin(0, BAR_H, W, BTN_Y - BAR_H);
+    sessionsui::begin(0, BAR_H, W, BTN_Y - BAR_H);
     applySettings(false);
     clearScreen();
 }
@@ -1129,10 +1285,10 @@ void tap(int x, int y) { onTap(x, y); }
 void hold(int x, int y) { onHold(x, y); }
 
 void drag(int x0, int y0, int x1, int y1) {
-    if (screen != Screen::Maps) return;
-    mapsui::dragStart(x0, y0);
-    for (int i = 1; i <= 8; i++) mapsui::dragMove(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
-    mapsui::dragEnd(x1, y1);
+    if (screen != Screen::Maps && screen != Screen::Sessions) return;
+    dragStart(x0, y0);
+    for (int i = 1; i <= 8; i++) dragMove(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
+    dragEnd(x1, y1);
 }
 
 void command(char c) {
@@ -1164,6 +1320,16 @@ void command(char c) {
 }
 
 void loop() {
+    static bool wasPairing = false;
+    bool pairingNow = hr::pairing();
+    if (wasPairing && !pairingNow) {
+        char text[48];
+        if (hr::hasSaved()) snprintf(text, sizeof(text), "Heart rate: %s", hr::get().name);
+        else snprintf(text, sizeof(text), "No heart rate sensor found");
+        showHint(text);
+    }
+    wasPairing = pairingNow;
+
     auto t = M5.Touch.getDetail();
     handleDrag(t);
     if (t.wasClicked() && !dragging) onTap(t.x, t.y);
@@ -1189,7 +1355,7 @@ void loop() {
     }
 
     // Keep the loaded map area in sync with position, and record the track.
-    if (millis() - lastMapScan > 1000 && !mapsui::reviewing()) {
+    if (millis() - lastMapScan > 1000 && !sessionsui::reviewing()) {
         lastMapScan = millis();
         gps::Snapshot g = gps::get();
         mapdata::update(g.lat, g.lon, g.fix);
@@ -1199,6 +1365,7 @@ void loop() {
     drawCamera();
     drawMapContent();
     if (screen == Screen::Maps) mapsui::draw(forceRedraw);
+    if (screen == Screen::Sessions) sessionsui::draw(forceRedraw);
     if (millis() - lastFrame < cfg::UI_FRAME_MS && !forceRedraw) return;
     lastFrame = millis();
 
@@ -1210,6 +1377,7 @@ void loop() {
         case Screen::Efficiency: drawEfficiency(v); break;
         case Screen::Plot: drawPlot(v); break;
         case Screen::Settings: drawSettings(); break;
+        case Screen::Sessions:
         case Screen::Maps: break;
     }
     drawButtons(v);

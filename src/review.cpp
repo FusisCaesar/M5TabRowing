@@ -20,7 +20,7 @@ constexpr float MIN_SPLIT_SPEED = 0.5f;
 Summary sum;
 bool isLoaded = false;
 int n = 0, tn = 0;
-float *el = nullptr, *spd = nullptr, *rt = nullptr;
+float *el = nullptr, *spd = nullptr, *rt = nullptr, *hrs = nullptr;
 double *tLat = nullptr, *tLon = nullptr;
 uint16_t* tCol = nullptr;
 float slowV = 0, fastV = 1;
@@ -78,10 +78,11 @@ void unload() {
     heap_caps_free(el);
     heap_caps_free(spd);
     heap_caps_free(rt);
+    heap_caps_free(hrs);
     heap_caps_free(tLat);
     heap_caps_free(tLon);
     heap_caps_free(tCol);
-    el = spd = rt = nullptr;
+    el = spd = rt = hrs = nullptr;
     tLat = tLon = nullptr;
     tCol = nullptr;
     n = tn = 0;
@@ -92,24 +93,27 @@ bool load(int number) {
     unload();
     sum = Summary{};
     sum.number = number;
+    float listedDuration = 0;
     for (int i = 0; i < recordings::count(); i++) {
         recordings::Info ri;
         if (recordings::get(i, ri) && ri.number == number) {
             strlcpy(sum.label, ri.label, sizeof(sum.label));
             strlcpy(sum.start, ri.start, sizeof(sum.start));
+            listedDuration = ri.durationS;
         }
     }
 
     el = alloc<float>(MAX_SECONDS);
     spd = alloc<float>(MAX_SECONDS);
     rt = alloc<float>(MAX_SECONDS);
+    hrs = alloc<float>(MAX_SECONDS);
     tLat = alloc<double>(MAX_SECONDS);
     tLon = alloc<double>(MAX_SECONDS);
     tCol = alloc<uint16_t>(MAX_SECONDS);
     float* dist = alloc<float>(MAX_SECONDS);
     float* raw = alloc<float>(MAX_SECONDS);
     int* trackRow = alloc<int>(MAX_SECONDS);
-    if (!el || !spd || !rt || !tLat || !tLon || !tCol || !dist || !raw || !trackRow) {
+    if (!el || !spd || !rt || !hrs || !tLat || !tLon || !tCol || !dist || !raw || !trackRow) {
         heap_caps_free(dist);
         heap_caps_free(raw);
         heap_caps_free(trackRow);
@@ -117,13 +121,21 @@ bool load(int number) {
         return false;
     }
 
-    // elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,...
+    // elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,hdop,sats,battery_pct,hr_bpm
+    double hrSum = 0;
+    int hrN = 0;
     forEachRow(number, "seconds", [&](char** f, int k) {
         if (k < 8 || n >= MAX_SECONDS) return;
         el[n] = atof(f[0]);
         raw[n] = atof(f[4]);
         dist[n] = atof(f[6]);
         rt[n] = atof(f[7]);
+        hrs[n] = k >= 12 ? atof(f[11]) : 0;
+        if (hrs[n] > 0) {
+            hrSum += hrs[n];
+            hrN++;
+            sum.maxHr = std::max(sum.maxHr, (int)hrs[n]);
+        }
         double lat = atof(f[2]), lon = atof(f[3]);
         if (lat != 0 || lon != 0) {
             tLat[tn] = lat;
@@ -143,8 +155,10 @@ bool load(int number) {
         spd[i] = s / c;
         sum.maxSpeed = std::max(sum.maxSpeed, spd[i]);
     }
-    if (n) {
-        sum.durationS = el[n - 1];
+    if (hrN) sum.avgHr = hrSum / hrN;
+    sum.hasGps = tn >= 2;
+    sum.durationS = n ? el[n - 1] : listedDuration;
+    if (n && sum.hasGps) {
         sum.distanceM = dist[n - 1];
         if (sum.distanceM > 10) sum.avgSplitS = sum.durationS * 500 / sum.distanceM;
     }
@@ -195,9 +209,14 @@ bool load(int number) {
     if (rateN) sum.avgRate = rateSum / rateN;
     if (dpsN) sum.avgDps = dpsSum / dpsN;
     forEachRow(number, "laps", [&](char**, int) { sum.laps++; });
+    if (!sum.hasGps) {
+        sum.maxSpeed = 0;
+        sum.avgDps = 0;
+    }
 
-    isLoaded = n > 0;
-    Serial.printf("[review] S%04d: %d s, %d track points, %d strokes\n", number, n, tn, sum.strokes);
+    isLoaded = n > 0 || sum.strokes > 0 || sum.laps > 0;
+    Serial.printf("[review] S%04d: %d s, %d track points, %d strokes, hr avg %.0f\n", number, n, tn, sum.strokes,
+                  sum.avgHr);
     if (!isLoaded) unload();
     return isLoaded;
 }
@@ -209,6 +228,7 @@ float elapsed(int i) { return el[i]; }
 float speed(int i) { return spd[i]; }
 float split(int i) { return spd[i] >= MIN_SPLIT_SPEED ? 500.0f / spd[i] : 0; }
 float rate(int i) { return rt[i]; }
+float hr(int i) { return hrs[i]; }
 int trackCount() { return tn; }
 const double* trackLat() { return tLat; }
 const double* trackLon() { return tLon; }

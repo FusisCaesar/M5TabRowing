@@ -1,11 +1,10 @@
 #include <M5Unified.h>
-#include <BLEDevice.h>
-#include "esp32-hal-hosted.h"
 
 #include "board.h"
 #include "camera.h"
 #include "display_fb.h"
 #include "gps_nav.h"
+#include "hr.h"
 #include "imu_stroke.h"
 #include "logger.h"
 #include "map_data.h"
@@ -43,6 +42,7 @@ void setup() {
     track::begin();
     imu::begin(s.strokeParams(), s.fusion);
     gps::begin();
+    hr::begin();
     metrics::begin();
     ui::begin();
 }
@@ -53,13 +53,15 @@ static void printStatus() {
     last = millis();
     imu::Live l = imu::live();
     gps::Snapshot g = gps::get();
+    hr::Snapshot h = hr::get();
     Serial.printf("[status] imu %.1f Hz ovr %lu acc(%+.4f %+.4f %+.4f) rms %.4f thr %.3f skew %+.2f sign %+d "
                   "dir %s corr %+.2f axis(%+.2f %+.2f %+.2f) rate %.1f | gps conn %d fix %d %.1f Hz %.2f m/s "
-                  "%d sats dist %.1f | cam %d %.1f fps | map %s trk %d | heap %lu psram %lu | up %lus rst %d\n",
+                  "%d sats dist %.1f | hr %s %d bpm | cam %d %.1f fps | map %s trk %d | heap %lu psram %lu | "
+                  "up %lus rst %d\n",
                   l.sampleHz, (unsigned long)l.overruns, l.accel[0], l.accel[1], l.accel[2], l.rms, l.threshold,
                   l.skew, l.sign, l.directionFromGps ? "gps" : "skew", l.gpsCorrelation, l.axis[0], l.axis[1],
                   l.axis[2], l.rate, g.connected, g.fix, g.updateHz,
-                  g.speed, g.sats, g.distance, (int)camera::status(), camera::fps(),
+                  g.speed, g.sats, g.distance, hr::stateName(h.state), h.bpm, (int)camera::status(), camera::fps(),
                   mapdata::loaded() ? mapdata::current().name : "-", track::count(),
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getFreePsram(), millis() / 1000,
                   (int)esp_reset_reason());
@@ -71,37 +73,13 @@ static constexpr uint32_t BINARY_TX_TIMEOUT_MS = 200;
 // 'S' sends the screen as raw RGB565 (see tools/screenshot.py), 'D' lists the SD session files,
 // 'U path size crc' uploads a file (see tools/send_file.py), 'W ssid password' joins Wi-Fi,
 // 'T x y' / 'P x y' / 'Z x0 y0 x1 y1' simulate a tap / hold / drag, 'F' then 'Y' within 10 s formats the SD card,
-// 'B path' downloads a file (see tools/fetch.py); other keys go to ui::command.
-static void bleProbe() {
-    Serial.println("[probe] BLEDevice::init");
-    if (!BLEDevice::getInitialized() && !BLEDevice::init("TabRowing")) {
-        Serial.println("[probe] ERR BLE init failed");
-        return;
-    }
-    uint32_t ma, mi, pa, hma, hmi, hpa;
-    hostedGetSlaveVersion(&ma, &mi, &pa);
-    hostedGetHostVersion(&hma, &hmi, &hpa);
-    Serial.printf("[probe] hosted host %lu.%lu.%lu slave %lu.%lu.%lu\n", hma, hmi, hpa, ma, mi, pa);
-    BLEScan* scan = BLEDevice::getScan();
-    scan->setActiveScan(true);
-    BLEScanResults* r = scan->start(5, false);
-    int n = r ? r->getCount() : -1;
-    Serial.printf("[probe] %d devices\n", n);
-    for (int i = 0; i < n; i++) {
-        BLEAdvertisedDevice d = r->getDevice(i);
-        Serial.printf("[probe] %s type %d rssi %d hrs %d name '%s'\n", d.getAddress().toString().c_str(),
-                      d.getAddressType(), d.getRSSI(), d.isAdvertisingService(BLEUUID((uint16_t)0x180D)),
-                      d.getName().c_str());
-    }
-    scan->clearResults();
-}
-
+// 'B path' downloads a file (see tools/fetch.py), 'h' pairs a heart rate sensor; other keys go to ui::command.
 static void serialCommands() {
     static uint32_t formatArmedMs = 0;
     while (Serial.available()) {
         char c = Serial.read();
-        if (c == 'H') {
-            bleProbe();
+        if (c == 'h') {
+            hr::startPairing();
             continue;
         }
         if (c == 'D') {

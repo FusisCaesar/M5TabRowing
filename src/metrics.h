@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "hr.h"
+
 namespace metrics {
 
 enum class State : uint8_t { Ready, Running, Stopped };
@@ -13,6 +15,8 @@ struct Lap {
     float avgSplit = 0;  // s / 500 m
     float avgRate = 0;   // spm
     int strokes = 0;
+    float avgHr = 0;  // bpm, 0 = no readings
+    int maxHr = 0;    // bpm
 };
 
 struct View {
@@ -36,6 +40,12 @@ struct View {
     int sats = 0;
     float hdop = 99;
     float gpsHz = 0;
+
+    hr::State hrState = hr::State::Off;
+    bool hrConnected = false;
+    int hr = 0;        // bpm, 0 = no fresh reading
+    float avgHr = 0;   // bpm, session
+    int maxHr = 0;     // bpm, session
 
     int battery = -1;
     int session = -1;

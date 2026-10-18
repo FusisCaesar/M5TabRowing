@@ -2,14 +2,14 @@
 
 #include <stdint.h>
 
+#include "palette.h"
+
 // The Maps screen: download maps from a built-in library of rowing waters, draw
 // an area on an OpenStreetMap background, and manage the maps on the SD card.
 // ui.cpp owns the top bar and the bottom buttons; this draws the area between.
 namespace mapsui {
 
-struct Colors {
-    uint16_t bg, fg, label, accent, dim, btn, btnText, warn, ok;
-};
+using Colors = Palette;
 
 enum class View : uint8_t { Library, Draw, OnCard };
 
@@ -22,10 +22,7 @@ void leave();
 void draw(bool force);
 
 View view();
-void setView(View v);  // also closes a session review, even for the current view
-
-// True while a recorded session is shown; the live map should not follow the GPS then.
-bool reviewing();
+void setView(View v);  // also closes the rename keyboard, even for the current view
 
 // Screen coordinates. A tap is a touch without movement; drags pan or select.
 void tap(int x, int y);

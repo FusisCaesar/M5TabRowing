@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // A recorded session loaded back from the SD card for the review screen: the
-// per-second GPS log (track, speed, split, rate) plus totals.
+// per-second log (track, speed, split, rate, heart rate) plus totals.
 namespace review {
 
 struct Summary {
@@ -19,9 +19,12 @@ struct Summary {
     float maxSpeed = 0;     // m/s, 5 s average
     float best500S = 0;     // fastest 500 m, as a split; 0 = not rowed that far
     float avgDps = 0;       // metres per stroke
+    bool hasGps = false;    // at least two positions: track, distance and split are known
+    float avgHr = 0;        // bpm, 0 = no heart rate recorded
+    int maxHr = 0;          // bpm
 };
 
-// Reads S####_*seconds.csv, *strokes.csv and *laps.csv. False if the session has no GPS log.
+// Reads S####_*seconds.csv, *strokes.csv and *laps.csv. False only if the session has no data at all.
 bool load(int number);
 void unload();
 bool loaded();
@@ -33,6 +36,7 @@ float elapsed(int i);     // s
 float speed(int i);       // m/s, 5 s average
 float split(int i);       // s / 500 m from the 5 s average speed, 0 when stopped
 float rate(int i);        // spm, 0 between pieces
+float hr(int i);          // bpm, 0 = no reading
 
 // Track points (seconds with a GPS position), with a colour from slow (red) to fast (green).
 int trackCount();
