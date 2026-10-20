@@ -2,7 +2,10 @@
 
 A SpeedCoach-style rowing monitor for the M5Stack Tab5 (ESP32-P4). Stroke rate
 comes from the built-in BMI270 accelerometer; split, distance and distance per
-stroke come from a GPS unit on the Grove port. Runs standalone, logs to microSD.
+stroke come from a GPS unit on the Grove port; heart rate from any Bluetooth
+chest strap or a Garmin watch broadcasting HR. The built-in camera looks toward
+the bow, offline waterway maps sit on the microSD card, and every session is
+logged there for on-device review or GPX/TCX export. Runs standalone.
 
 ![Main screen](shots/main.png)
 
@@ -10,9 +13,10 @@ stroke come from a GPS unit on the Grove port. Runs standalone, logs to microSD.
 
 | Part | Notes |
 | --- | --- |
-| M5Stack Tab5 | 1280x720 display, BMI270 IMU, microSD slot, battery |
+| M5Stack Tab5 | 1280×720 display, BMI270 IMU, microSD, battery, camera, Bluetooth, 2.4 GHz Wi-Fi, battery-backed clock |
 | M5Stack Unit GNSS / GPS v1.1 (ATGM336H-6N, AT6668) | plug into **Port A** (red Grove, G53/G54) |
 | microSD card | FAT32 (exFAT is not supported); the `F`/`Y` serial command formats it on the device |
+| Heart rate (optional) | BLE chest strap or a Garmin watch with Broadcast Heart Rate; ANT+ is not supported |
 | Waterproof case / phone mount | the Tab5 is not water resistant |
 
 The firmware switches the Grove 5 V output on and turns Port A into a UART. It
@@ -23,7 +27,8 @@ CASIC commands, with u-blox and MTK fallbacks) and only RMC + GGA sentences.
 Mounting: any orientation works. The detector finds the boat's forward axis by
 itself (largest horizontal acceleration) and works out which way is forward from
 the shape of the stroke, or from GPS once you are moving above 1 m/s. Mount it
-rigidly: a wobbly holder adds noise that looks like strokes.
+rigidly: a wobbly holder adds noise that looks like strokes. **Rotate screen 180**
+in Settings if the case is mounted the other way up.
 
 ## Building and flashing
 
@@ -40,7 +45,7 @@ python -m platformio run -e tab5 -t upload --upload-port COM10
 Environments:
 
 - `tab5` is the real firmware.
-- `tab5_sim` generates synthetic rowing (20 -> 32 -> 20 spm over 2 minutes, device
+- `tab5_sim` generates synthetic rowing (20 → 32 → 20 spm over 2 minutes, device
   tilted 35 degrees) and a synthetic GPS track, so the whole pipeline can be tested
   at a desk. The top bar shows a `SIM` badge.
 
@@ -52,53 +57,101 @@ Windows notes:
 
 ## Using it
 
-Six screens; the right-most bottom button cycles through them.
+The right-most bottom button cycles six screens. **Maps** is a seventh, opened
+with **MAPS** on the Map screen between sessions (Wi-Fi is only used there).
 
 | Screen | Content |
 | --- | --- |
-| Main | eight metric tiles (split, rate, distance, time, dist/stroke, avg split, heart rate, rec:drive by default); tap any tile to cycle the metric in that slot |
-| Map | offline waterway map with your position, heading and track; head-up/north-up toggle and zoom buttons |
-| Efficiency | distance per stroke against rate with your best line, efficiency score, ratio/check/bounce gauges and a coaching hint |
-| Plot | last 6 s of the forward acceleration with threshold, catch and finish markers, and drive/recovery/check/bounce stats; shows `REC S####` while a session records |
-| Settings | three tabs. **STROKE**: threshold K and floor, minima threshold, rec:drive target shift. **DISPLAY**: day/night theme, brightness, flip display, camera mirror image. **SENSORS**: heart rate sensor, GPS+IMU fusion, raw IMU logging |
-| Sessions | the recorded sessions on the SD card, to review, rename or delete (see below) |
+| Main | eight metric tiles you can rearrange; optional camera or map picture-in-picture |
+| Map | offline waterway map with your position, heading and track |
+| Efficiency | metres per stroke against rate, efficiency score, rec:drive / check / bounce, coaching hint |
+| Plot | last 6 s of surge acceleration with catch, finish and threshold; IMU diagnostics |
+| Settings | **STROKE**, **DISPLAY** and **SENSORS** tabs |
+| Sessions | recordings on the card: review, rename, delete |
+| Maps | download a library water, draw an area, or manage maps on the card |
+
+### Buttons and sessions
 
 Bottom buttons: **START** starts a session, **LAP** splits a lap, **hold STOP**
-ends the session, **hold RESET** clears it. Stroke rate and split show before
-START; distance, time and logging run only during a session.
+(~0.8 s) ends it, **hold RESET** clears it (only while stopped). The fourth
+button is **PIP** on Main, map orientation on Map, and **hold CLEAR** on
+Efficiency. The fifth button is the next screen.
 
-Tap a metric tile on Main (or the strip above the Map / full-width PIP) to cycle
-what it shows: split, rate, distance, time, dist/stroke, avg split, avg rate,
-strokes, heart rate, avg HR, rec:drive, speed. The layout is remembered. The
+Stroke rate and split run before START. Distance, time, averages, the GPS track
+and logging run only during a session. Without a card the session still runs on
+screen (`RUNNING (no SD)`); the Plot screen says it is not recording.
+
+A **LAP** press freezes the previous piece in a banner for a few seconds (time,
+distance, average split and rate, and average heart rate if you have a sensor).
+Laps are stored in `_laps.csv` and become laps in the TCX export.
+
+### Top bar
+
+- **Left:** `READY`, `REC S####` while recording, `STOPPED`, or `RUNNING (no SD)`.
+- **Centre:** GPS (`not connected` / `searching` with satellite count / `GPS n Hz
+  n sats HDOP …`), a lap banner, or a short hint (for example after pairing).
+- **Right:** heart-rate state (`HR`, `HR...`, `NO HR`), `WIFI` / `WIFI...` on the
+  Maps screen, `SIM` on a simulation build, local clock, battery.
+
+Dates and times on screen are local (`cfg::TIMEZONE`, Amsterdam by default). Log
+files are UTC. The battery-backed clock is set from internet time whenever Wi-Fi
+is connected and from the GPS once it has a fix, and keeps time while the Tab5
+is off.
+
+### Main screen
+
+Eight tiles. Tap any tile to cycle what it shows; the layout is remembered. The
 same eight slots are used in every layout, so the four big Main tiles are the
-same four as the Map strip.
+same four as the strip above the Map and full-width PIP. Duplicates are allowed.
 
-**PIP** (Main screen only) cycles the picture-in-picture pane through **OFF**,
-**CAMERA** and **MAP**. Tap the pane to switch between picture-in-picture (pane
-top left, first two tiles big beside it) and full width (first four tiles in a
-strip above it).
+Default layout: split, rate, distance, time on top; dist/stroke, avg split,
+heart rate, rec:drive below.
+
+| Tile | Unit | Notes |
+| --- | --- | --- |
+| SPLIT | /500m | GPS speed of the last stroke; live before START |
+| RATE | spm | IMU, average of the last 3 strokes; live before START |
+| DISTANCE | m | this session |
+| TIME | | this session |
+| DIST/STROKE | m (`m*` with fusion on) | last stroke |
+| AVG SPLIT | /500m | this session |
+| AVG RATE | spm | this session |
+| STROKES | | this session |
+| HEART RATE | bpm | orange `--` while there is no reading |
+| AVG HR | bpm | this session |
+| REC:DRIVE | SLOWER / GOOD / QUICKER | recovery ÷ drive, see below |
+| SPEED | m/s | GPS speed over ground |
+
+**PIP** cycles the picture-in-picture pane through **OFF**, **CAMERA** and
+**MAP**. Tap the pane (not a metric tile) to switch between picture-in-picture
+(pane top left, first two tiles big beside it) and full width (first four tiles
+in a strip above it).
 
 - **CAMERA** shows the built-in camera, which looks past the rower towards the
-  bow, i.e. where the boat is going. It runs only while shown, at about 20 fps,
-  and stops on the other screens. The image is mirrored by default, like a
-  rear-view mirror; turn that off in Settings.
-- **MAP** shows the same offline waterway map as the Map screen.
+  bow. It runs only while shown, at about 20 fps, and stops on the other screens.
+  The image is mirrored by default, like a rear-view mirror; turn that off in
+  Settings. Flip display also flips the image so it stays upright.
+- **MAP** shows the same offline waterway map as the Map screen. The PIP map
+  always follows the boat; pan and locate are for the full map.
+
+![Map in picture-in-picture](shots/main_pip_small.png)
 
 ### Heart rate
 
 Any Bluetooth heart rate sensor works: a chest strap (Polar H10, Garmin HRM,
 Wahoo TICKR, ...) or a Garmin watch with **Broadcast Heart Rate** switched on
 (controls menu, or "broadcast during activity" in the sensor settings), so you
-can keep recording on the watch too. ANT+ is not supported.
+can keep recording on the watch too.
 
 In Settings, tap **PAIR** on the heart rate row while the sensor is on and
 close by; the strongest one in range is saved. The Tab5 reconnects to it by
 itself at every start and whenever it drops out. **FORGET** removes it, after
-which you can pair another.
+which you can pair another. A hint at the top confirms the name, or that none
+was found.
 
-Heart rate is a tile you can put anywhere (it starts in the bottom row; orange
-`--` while there is no reading). The top bar shows `HR`, `HR...` (connecting)
-or `NO HR`. The lap banner adds the lap's average heart rate.
+Heart rate is a tile you can put anywhere (it starts in the bottom row). The
+top bar shows `HR`, `HR...` (connecting) or `NO HR`. The lap banner and session
+review add average and maximum heart rate.
 
 A chest strap reads much more reliably than a watch while rowing: grip tension
 and wrist flexion make optical wrist readings lag or drop out at high rates.
@@ -106,26 +159,30 @@ and wrist flexion make optical wrist readings lag or drop out at high rates.
 ### Map screen
 
 The Map screen draws an offline vector map of the waterways around you, built
-from OpenStreetMap data (see below). Water areas and canals are blue, your boat
-is the yellow triangle, and the current session's track trails behind it in
-orange. The scale bar is bottom-left and the OpenStreetMap credit bottom-right.
+from OpenStreetMap data (see [Offline maps](#offline-maps)). Water areas and
+canals are blue, bridges grey, locks and clubs red, weirs brown, piers grey.
+Your boat is the yellow triangle; the current session's track trails behind it
+in orange. The scale bar is bottom-left and the OpenStreetMap credit
+bottom-right. A red north arrow shows unless north is already up.
 
 - The **HEAD UP** / **BOW UP** / **NORTH UP** control cycles what is at the top
   of the map: the direction the rower looks (stern), the direction of travel
-  (bow), or north. A red north arrow shows unless north is already up. During a
-  session it is an icon the same size as the zoom buttons (boat bow-up, boat
-  head-up, or a compass for north-up); otherwise it is the fourth button under
-  the map.
-- The **+** / **-** buttons bottom-right zoom in and out. During a session they
-  are double size so they are easier to hit.
-- Drag the map to look ahead. A locate button appears to the left of **−** while
-  the map is not following the boat; tap it to centre back on your position.
+  (bow), or north. During a session it is an icon the same size as the zoom
+  buttons (boat head-up, boat bow-up, or a compass for north-up); otherwise it
+  is the fourth button under the map.
+- The **+** / **−** buttons bottom-right zoom in and out (100 m to 3.2 km
+  across the view). During a session they are double size so they are easier to
+  hit.
+- Drag the map to look ahead. A locate button appears to the left of **−**
+  while the map is not following the boat; tap it to centre back on your
+  position. Leaving the Map screen, leaving full-width PIP, or tapping locate
+  resumes follow.
 
 The map follows your GPS fix and automatically switches to whichever uploaded
-map file covers your position, so you can keep several areas on the card.
+map file covers your position (up to 24 `.rmap` files on the card). Between
+sessions, **MAPS** on the map opens the download screen.
 
 ![Map screen](shots/map_screen.png)
-![Map in picture-in-picture](shots/main_pip_small.png)
 
 ### Rhythm and efficiency
 
@@ -135,7 +192,7 @@ at 34 spm (a long, calm recovery at low rates; at race pace the recovery has to
 shrink). Within 15% of the target the tile is green with **GOOD**; below it,
 orange **SLOWER** means you are rushing the slide; above it, **QUICKER** means
 the recovery drags. Red means more than 30% off. If your coach wants a
-different rhythm, shift the whole target up or down in Settings.
+different rhythm, shift the whole target up or down in Settings (−0.8 to +0.8).
 
 The **Efficiency** screen compares each stroke with your own best in this
 session at the same rate:
@@ -157,8 +214,78 @@ turn into the wind.
 
 ![Efficiency screen](shots/efficiency.png)
 
+### Plot screen
+
+The last 6 seconds of forward acceleration (surge), with the adaptive catch
+threshold in red, a green line at each catch and a cyan tick at each finish.
+Use it to see whether the detector is catching real strokes or bouncing on
+chop.
+
+Two rows under the chart show IMU sample rate and overruns, the learned axis
+and sign, RMS and threshold, skew, live rate, stroke count, check and bounce,
+GPS speed, fused speed (or `(off)`), and log drops. While a session records it
+says `REC S####` and `raw IMU 100 Hz` if raw logging is on; without a card it
+warns that nothing is being written.
+
 ![Plot screen](shots/plot.png)
+
+### Settings
+
+Three tabs. Values are kept in flash.
+
+**STROKE**
+
+- Catch threshold factor (× RMS), default 1.8. Lower if strokes are missed.
+- Catch threshold floor (g), default 0.12. A minimum even when the boat is quiet.
+- Threshold from last 5 catch depths: follow your recent catch size instead of
+  a fixed multiple of RMS. Helps in rough water (fewer double counts).
+- Rec:drive target shift. Added to the rate-based target (2.5 at 20 spm).
+
+**DISPLAY**
+
+- Theme: day (light) or night (dark).
+- Brightness.
+- Rotate screen 180, for a case mounted the other way up (camera image follows).
+- Camera mirror image (on by default).
+
+**SENSORS**
+
+- Heart rate sensor: **PAIR** / **FORGET**, see above.
+- GPS+IMU fusion for distance/stroke: complementary filter (high-passed IMU
+  speed + low-passed GPS). When on, the dist/stroke tile shows `m*` instead of
+  `m`.
+- Raw IMU logging at 100 Hz, on by default. About 13 MB per hour; needed for
+  `analyse.py` / `replay.py`.
+
+The footer shows whether the SD card is present, how many log lines were
+dropped, and `build: hardware` or `build: SIMULATION`.
+
 ![Settings screen](shots/settings.png)
+
+### Sessions screen
+
+Lists every session on the card with its number, start date and time, duration
+and size. The header reminds you of `python tools\fetch.py COM10` to copy them
+off.
+
+- The pencil gives a session a name such as `Bosbaan intervals` (on-screen
+  keyboard). Its files become `S0022_Bosbaan_intervals_imu.csv` and so on, and
+  `fetch.py` and `analyse.py` understand both forms.
+- Tap a session's name to review it: the GPS track on the offline map, coloured
+  from red (slow) to green (fast) with a start dot and a finish square, plus
+  distance, time, average split, fastest 500 m, average rate, strokes, distance
+  per stroke, top speed, average and maximum heart rate, and graphs of split,
+  rate and heart rate over the session. Drag the map to pan, +/− to zoom, tap
+  the map to fit the whole track again; **BACK** returns to the list. The track
+  is drawn without a map when no map on the card covers it.
+- A session without a GPS fix still shows what was recorded: time, average
+  rate, strokes, laps, average and maximum heart rate, and the rate and heart
+  rate graphs.
+- The trash can, tapped twice (it turns red after the first tap), removes all
+  files of a session.
+
+![Sessions screen](shots/sessions.png)
+![Session review](shots/session_review.png)
 
 ## Session logs
 
@@ -173,37 +300,8 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 | `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed (only with raw logging on) |
 
 `t_s` is the same clock in every file, so strokes and IMU samples line up.
-Raw logging takes about 13 MB per hour.
-
-Dates and times in the files are UTC from the Tab5's battery-backed clock (RTC).
-The clock is set from internet time whenever Wi-Fi is connected and from the GPS
-once it has a fix, and keeps time while the Tab5 is off. `_info.csv` records
-where the time came from (`time_source`: NTP, GPS or RTC). The top bar and the
-Sessions screen show local time (`cfg::TIMEZONE`, Amsterdam by default).
-
-### Sessions screen
-
-Lists every session on the card with its number, start date and time, duration
-and size.
-
-- The pencil gives a session a name such as `Bosbaan intervals`. Its files
-  become `S0022_Bosbaan_intervals_imu.csv` and so on, and `fetch.py` and
-  `analyse.py` understand both forms.
-- Tap a session's name to review it: the GPS track on the offline map, coloured
-  from red (slow) to green (fast) with a start dot and a finish square, plus
-  distance, time, average split, fastest 500 m, average rate, strokes, distance
-  per stroke, top speed, average and maximum heart rate, and graphs of split,
-  rate and heart rate over the session. Drag the map to pan, +/- to zoom, tap
-  the map to fit the whole track again; **BACK** returns to the list. The track
-  is drawn without a map when no map on the card covers it.
-- A session without a GPS fix still shows what was recorded: time, average
-  rate, strokes, laps, average and maximum heart rate, and the rate and heart
-  rate graphs.
-- The trash can, tapped twice (it turns red after the first tap), removes all
-  files of a session.
-
-![Sessions screen](shots/sessions.png)
-![Session review](shots/session_review.png)
+`_info.csv` records where the session time came from (`time_source`: NTP, GPS
+or RTC).
 
 ## Exporting to Strava or Garmin Connect
 
@@ -242,7 +340,8 @@ Seconds without a GPS fix are left out of the GPX track.
    ```
 
    About 550 KB/s, so an hour of rowing downloads in under half a minute. Files
-   already in `recordings\` are skipped.
+   already in `recordings\` are skipped. Stop the session first: downloads are
+   refused while it is recording.
 5. Analyse a session (needs `pip install numpy matplotlib`):
 
    ```powershell
@@ -265,59 +364,89 @@ Seconds without a GPS fix are left out of the GPX track.
 Open the port with DTR/RTS held low; otherwise opening it resets the ESP32-P4.
 The scripts in `tools/` do this.
 
+| Command | What it does |
+| --- | --- |
+| `N` | next screen |
+| `M` | open Maps (refused while recording) |
+| `C` | cycle PIP off / camera / map (Main) |
+| `V` | picture-in-picture ↔ full width |
+| `H` | cycle map head-up / bow-up / north-up |
+| `+` / `-` | zoom the map |
+| `G` / `X` / `L` / `R` | start / stop / lap / reset |
+| `h` | pair the strongest heart rate sensor in range |
+| `S` | screenshot (RGB565; use `screenshot.py`) |
+| `D` | list `/rowing` session files and `/map` files |
+| `B path` | download a file (`fetch.py`) |
+| `U path size crc` | upload a file (`send_file.py`) |
+| `W SSID\|PASSWORD` | join Wi-Fi and remember it; `W ` reconnects |
+| `T x y` / `P x y` / `Z x0 y0 x1 y1` | tap / hold / drag |
+| `F` then `Y` within 10 s | erase the SD card (one FAT32 partition) and restart |
+
 ```powershell
 python tools\serial_log.py COM10 60                       # print status every 5 s and every stroke
 python tools\serial_log.py COM10 60 log.txt --send "3:G,40:L,70:X"   # start, lap, stop at those seconds
-python tools\send.py COM10 N                              # N next screen, G start, L lap, X stop, R reset
-python tools\send.py COM10 C                              # C cycle PIP off/camera/map, V picture-in-picture/full width
-python tools\send.py COM10 H                              # H cycle map head-up / bow-up / north-up; +/- zoom the map
-python tools\send.py COM10 M                              # M open the Maps screen (download maps)
-python tools\send.py COM10 h                              # h pair the strongest heart rate sensor in range
-python tools\send.py COM10 'T 640 360'                    # tap at x y; 'P x y' hold, 'Z x0 y0 x1 y1' drag
-python tools\send.py COM10 'W MyNetwork|MyPassword'       # join Wi-Fi and remember it; 'W ' reconnects
-python tools\serial_log.py COM10 5 --send "1:D"           # list SD session files and /map files with their first lines
-python tools\serial_log.py COM10 40 --send "1:F,2:Y"      # erase the SD card: one FAT32 partition, then restart
-python tools\fetch.py COM10 latest                        # download the newest session (B path on the wire)
-python tools\export.py 21                                 # GPX + TCX of a fetched session
+python tools\send.py COM10 N
+python tools\send.py COM10 C
+python tools\send.py COM10 H
+python tools\send.py COM10 M
+python tools\send.py COM10 h
+python tools\send.py COM10 'T 640 360'
+python tools\send.py COM10 'W MyNetwork|MyPassword'       # single quotes in PowerShell
+python tools\serial_log.py COM10 5 --send "1:D"
+python tools\serial_log.py COM10 40 --send "1:F,2:Y"      # format the card
+python tools\fetch.py COM10 latest
+python tools\export.py 21
 python tools\screenshot.py COM10 shots\main.png           # needs Pillow
 ```
+
+Status lines on the serial port report IMU rate and overruns, GPS, heart rate,
+camera fps, loaded map, track points, heap and PSRAM, uptime and reset reason.
 
 ## Offline maps
 
 Maps are vector `.rmap` files drawn on the device, not raster tiles, so they are
-small and fast (a 6 x 6 km city area is about 300 KB). On the water no network is
+small and fast (a 6 × 6 km city area is about 300 KB). On the water no network is
 needed: the map that contains your GPS position is loaded automatically.
 
 ### Downloading maps on the Tab5
 
 Tap **MAPS** on the Map screen (between sessions). Wi-Fi switches on while this
-screen is open and off again when you leave it.
+screen is open and off again when you leave it. 2.4 GHz only.
 
-- **LIBRARY**: well-known rowing waters (Bosbaan, Willem-Alexander Baan, Amstel,
-  Henley, Tideway, Rotsee, Bled, ...). Tap the download arrow; for a map already
-  on the card, the circular arrow fetches a fresh copy.
-- **DRAW AREA**: an OpenStreetMap background centred on your position. Drag to
-  pan, +/- to zoom, tap SELECT AREA and drag a rectangle over the water you row
-  on (up to 8 x 8 km), then DOWNLOAD AREA.
-- **ON CARD**: the maps on the SD card with their size. A map you drew is named
-  after its centre (`Area 52.226 5.072`); tap the pencil to give it a proper
-  name with the on-screen keyboard. The file name on the card stays the same.
-  The trash can, tapped twice, removes a map. Recorded sessions are on the
-  **Sessions** screen.
+- **LIBRARY**: well-known rowing waters. Tap the download arrow; for a map
+  already on the card, the circular arrow fetches a fresh copy.
 
-A download takes 30-60 s, mostly waiting for the Overpass map server; the header
+  Netherlands: Bosbaan, Amstel, Willem-Alexander Baan, Kralingse Plas, Delftse
+  Schie, Galgewater / Oude Rijn, Zegerplas, Reeuwijkse Plassen, Vinkeveense
+  Plassen, Spaarne, Vecht, Beatrixkanaal, Paterswoldsemeer, IJssel, Maas.
+  Belgium: Watersportbaan (Gent). Germany: Regattabahn Wedau, Beetzsee.
+  UK: Dorney Lake, Henley Reach, Tideway. Switzerland: Rotsee. Slovenia: Lake Bled.
+
+- **DRAW AREA**: an OpenStreetMap background centred on your position (or on a
+  map you already have). Drag to pan, +/− to zoom, tap **SELECT AREA** and drag
+  a rectangle over the water you row on (up to 8 × 8 km), then **DOWNLOAD AREA**.
+  Boxes already on the card are shown so you can see coverage.
+- **ON CARD**: the maps on the SD card with their size. The one currently shown
+  on the Map screen is marked. A map you drew is named after its centre
+  (`Area 52.226 5.072`); tap the pencil to give it a proper name with the
+  on-screen keyboard. The file name on the card stays the same. The trash can,
+  tapped twice, removes a map.
+
+A download takes 30–60 s, mostly waiting for the Overpass map server; the header
 shows progress. The Tab5 then converts the data itself (about 2 s) and shows the
 new map. Downloads are refused while a session is recording. If the server is
 busy, try again a minute later.
 
 ![Map library](shots/maps_library.png)
 ![Drawing an area](shots/maps_draw.png)
+![Maps on the card](shots/maps_oncard.png)
 
 **Wi-Fi setup.** The first time, tap **WIFI SETUP** (later: hold the WIFI
 button to choose another network). The Tab5 opens its own network
-`TabRowing-XXXX` and shows a QR code; scan it with your phone, and a page opens
-where you pick your home network (2.4 GHz) and enter its password. The Tab5
-remembers it. Over USB you can also send `python tools\send.py COM10 'W MyNetwork|MyPassword'`
+`TabRowing-XXXX` and shows a QR code; scan it with your phone, or join that
+network and open http://192.168.4.1, then pick your home network (2.4 GHz) and
+enter its password. The Tab5 remembers it. Tap **CANCEL SETUP** to leave without
+changing it. Over USB you can also send `python tools\send.py COM10 'W MyNetwork|MyPassword'`
 (single quotes in PowerShell).
 
 ![Wi-Fi setup](shots/maps_setup.png)
@@ -330,26 +459,28 @@ checks. Only public map data is transferred.
 ### Building maps on a PC
 
 Alternatively build a map with `make_map.py`
-(needs `requests`, `osm2geojson` and `shapely`), then upload it to the card.
+(needs `requests`, `osm2geojson`, `shapely` and `pillow`), then upload it to the card.
 
 ```powershell
-pip install requests osm2geojson shapely
+pip install requests osm2geojson shapely pillow
 python tools\make_map.py --center 52.3245,4.8360 --radius-km 3 --name "Bosbaan" --out maps\bosbaan.rmap
 python tools\send_file.py COM10 maps\bosbaan.rmap /map/bosbaan.rmap
 ```
 
 `make_map.py` queries the Overpass API for water, bridges, locks, weirs, piers
 and rowing clubs, clips and simplifies them, and writes the `.rmap` plus a
-`.png` preview so you can check it before uploading. `send_file.py` streams the
+`.png` preview so you can check it before uploading. `--bbox south,west,north,east`
+is an alternative to `--center` / `--radius-km`. `send_file.py` streams the
 file to `/map/` on the SD card in small acked chunks and verifies a CRC; the
-firmware picks up the new map without a reboot. Map data is
+firmware picks up the new map without a reboot. Uploads are refused while a
+session is recording. Map data is
 (c) OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright).
 
 ## On-water validation against an NK SpeedCoach
 
 1. Mount the Tab5 next to the SpeedCoach. Check **Raw IMU logging** is ON in Settings.
-2. Start both at roughly the same time. Row a mix: steady state at 18-22 spm,
-   a few minutes at 24-28, some starts and bursts at 30+, and some easy paddling.
+2. Start both at roughly the same time. Row a mix: steady state at 18–22 spm,
+   a few minutes at 24–28, some starts and bursts at 30+, and some easy paddling.
 3. Export the session from NK LiNK Logbook as CSV and copy the SD card files.
 4. Compare per stroke. The time offset between the devices is found automatically:
 
@@ -368,6 +499,7 @@ firmware picks up the new map without a reboot. Map data is
    python tools\replay.py S0007_imu.csv --sweep            # grid of K / floor / minima
    python tools\replay.py S0007_imu.csv --k 1.2 --floor 0.08
    python tools\replay.py S0007_imu.csv --plot 60 90       # needs matplotlib
+   python tools\replay.py --synthetic 120                  # self-test on simulated rowing
    ```
 
    `replay.py` is a line-by-line port of `src/stroke_detector.cpp`; keep them in
@@ -386,11 +518,12 @@ Tuning hints:
 ## How it works
 
 - **Stroke rate**: gravity is tracked with a slow average and removed. The
-  remaining acceleration is band-passed (0.1-3 Hz) and projected onto the
+  remaining acceleration is band-passed (0.1–3 Hz) and projected onto the
   horizontal axis with the most motion. The catch is the sharp deceleration dip:
   a catch is the midpoint of where the signal crosses an adaptive threshold
-  (K x RMS, or 0.6 x recent catch depth) on the way down and up again. Rate is
-  the average of the last 3 stroke intervals.
+  (K × RMS, or 0.6 × recent catch depth) on the way down and up again. Rate is
+  the average of the last 3 stroke intervals. Strokes more than 6 s apart are a
+  pause, not a slow stroke.
 - **Forward direction**: the catch dip is short and deep, the drive is long and
   shallow, so the forward acceleration has negative skew. When GPS is moving, the
   integrated acceleration is correlated with the GPS speed fluctuations, which
@@ -398,7 +531,12 @@ Tuning hints:
 - **Split and distance per stroke**: GPS speed averaged over each stroke cycle;
   distance accumulates GPS positions with a 3 m minimum step so it does not drift
   while stationary. Optionally a complementary filter blends GPS speed with the
-  integrated accelerometer for distance per stroke.
+  integrated accelerometer for distance per stroke (the `m*` tile).
 - **Check / bounce**: check is how unevenly the boat decelerates during the
   recovery (scatter around a straight line, in mg); bounce is the vertical
   acceleration RMS.
+- **Map drawing**: a full map frame is rendered on the other CPU core so the
+  timer and metrics keep updating at 20 Hz while the map refreshes about five
+  times a second.
+- **Clock**: logs are UTC; the screen shows local time. NTP when Wi-Fi is up,
+  GPS time once there is a fix, RTC in between.
