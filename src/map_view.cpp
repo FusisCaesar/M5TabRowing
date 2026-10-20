@@ -4,6 +4,7 @@
 #include <math.h>
 
 #include "config.h"
+#include "icons.h"
 #include "map_data.h"
 #include "track.h"
 
@@ -26,8 +27,20 @@ int ringCnt[MAX_RINGS];
 constexpr int MAX_XINTS = 512;
 float xints[MAX_XINTS];
 
-constexpr int ZOOM_BTN = 64;
+constexpr int ZOOM_SMALL = 64;
+constexpr int ZOOM_LARGE = 128;
 constexpr int ZOOM_MARGIN = 12;
+constexpr int ZOOM_GAP = 8;
+
+int zoomSize(bool large) { return large ? ZOOM_LARGE : ZOOM_SMALL; }
+
+float rotationDeg(uint8_t orientation, float course) {
+    if (orientation == BowUp) return course;
+    if (orientation == HeadUp) return course + 180.0f;
+    return 0.0f;
+}
+
+float rotationDeg(const View& v) { return rotationDeg(v.orientation, v.course); }
 
 void initPalette(M5Canvas& c) {
     COL_LAND = c.color565(228, 224, 214);
@@ -186,12 +199,12 @@ void drawNorthArrow(M5Canvas& c, const Xform& xf) {
     c.drawString("N", cx + nx * (L + 10), cy + ny * (L + 10));
 }
 
-void drawBoat(M5Canvas& c, const Xform& xf, float courseDeg, bool headUp) {
-    float bearing = headUp ? 0.0f : courseDeg;
+void drawBoat(M5Canvas& c, float cx, float cy, float courseDeg, float mapBearingDeg) {
+    float bearing = courseDeg - mapBearingDeg;
     float a = bearing * (float)M_PI / 180.0f;
     float dirx = sinf(a), diry = -cosf(a);  // screen: up is -y
     float perpx = -diry, perpy = dirx;
-    float cx = xf.cx, cy = xf.cy, L = 16, Wd = 9;
+    float L = 16, Wd = 9;
     float tipx = cx + dirx * L, tipy = cy + diry * L;
     float blx = cx - dirx * (L * 0.6f) + perpx * Wd, bly = cy - diry * (L * 0.6f) + perpy * Wd;
     float brx = cx - dirx * (L * 0.6f) - perpx * Wd, bry = cy - diry * (L * 0.6f) - perpy * Wd;
@@ -199,20 +212,41 @@ void drawBoat(M5Canvas& c, const Xform& xf, float courseDeg, bool headUp) {
     c.drawTriangle(tipx, tipy, blx, bly, brx, bry, COL_TEXT);
 }
 
-void drawZoomButtons(M5Canvas& c) {
-    int x = c.width() - ZOOM_BTN - ZOOM_MARGIN;
-    int yIn = c.height() - 2 * ZOOM_BTN - ZOOM_MARGIN - 8;
-    int yOut = c.height() - ZOOM_BTN - ZOOM_MARGIN;
-    for (int i = 0; i < 2; i++) {
-        int y = i == 0 ? yIn : yOut;
-        c.fillRoundRect(x, y, ZOOM_BTN, ZOOM_BTN, 12, COL_SHADE);
-        c.drawRoundRect(x, y, ZOOM_BTN, ZOOM_BTN, 12, COL_TEXT);
-        c.setFont(&fonts::FreeSansBold18pt7b);
-        c.setTextSize(1);
-        c.setTextDatum(middle_center);
-        c.setTextColor(COL_TEXT);
-        c.drawString(i == 0 ? "+" : "-", x + ZOOM_BTN / 2, y + ZOOM_BTN / 2 - 2);
+icons::Icon orientationIcon(uint8_t o) {
+    if (o == BowUp) return icons::Icon::BoatBow;
+    if (o == NorthUp) return icons::Icon::Compass;
+    return icons::Icon::BoatHead;
+}
+
+void drawControls(M5Canvas& c, const View& v) {
+    int z = zoomSize(v.largeControls);
+    int x = c.width() - z - ZOOM_MARGIN;
+    int yOut = c.height() - z - ZOOM_MARGIN;
+    int yIn = yOut - ZOOM_GAP - z;
+    int r = v.largeControls ? 16 : 12;
+    auto button = [&](int y) {
+        c.fillRoundRect(x, y, z, z, r, COL_SHADE);
+        c.drawRoundRect(x, y, z, z, r, COL_TEXT);
+    };
+    if (v.largeControls) {
+        int yO = yIn - ZOOM_GAP - z;
+        button(yO);
+        icons::draw(c, orientationIcon(v.orientation), x + z / 2, yO + z / 2, (int)(z * 0.55f), COL_TEXT, COL_SHADE);
     }
+    button(yIn);
+    button(yOut);
+    if (v.showRecenter) {
+        int rx = x - ZOOM_GAP - z;
+        c.fillRoundRect(rx, yOut, z, z, r, COL_SHADE);
+        c.drawRoundRect(rx, yOut, z, z, r, COL_TEXT);
+        icons::draw(c, icons::Icon::Locate, rx + z / 2, yOut + z / 2, (int)(z * 0.55f), COL_TEXT, COL_SHADE);
+    }
+    c.setFont(v.largeControls ? &fonts::FreeSansBold24pt7b : &fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_center);
+    c.setTextColor(COL_TEXT);
+    c.drawString("+", x + z / 2, yIn + z / 2 - 2);
+    c.drawString("-", x + z / 2, yOut + z / 2 - 2);
 }
 
 void drawStatus(M5Canvas& c, const char* msg) {
@@ -231,21 +265,73 @@ void begin() {
     if (!sxBuf || !syBuf) Serial.println("[mapview] scratch alloc failed");
 }
 
-bool zoomInRect(const M5Canvas& c, int& x, int& y, int& w, int& h) {
-    x = c.width() - ZOOM_BTN - ZOOM_MARGIN;
-    y = c.height() - 2 * ZOOM_BTN - ZOOM_MARGIN - 8;
-    w = h = ZOOM_BTN;
+const char* orientationName(uint8_t o) {
+    switch (o) {
+        case BowUp: return "BOW UP";
+        case NorthUp: return "NORTH UP";
+        default: return "HEAD UP";
+    }
+}
+
+bool zoomInRect(const M5Canvas& c, int& x, int& y, int& w, int& h, bool large) {
+    int z = zoomSize(large);
+    x = c.width() - z - ZOOM_MARGIN;
+    y = c.height() - 2 * z - ZOOM_MARGIN - ZOOM_GAP;
+    w = h = z;
     return true;
 }
 
-bool zoomOutRect(const M5Canvas& c, int& x, int& y, int& w, int& h) {
-    x = c.width() - ZOOM_BTN - ZOOM_MARGIN;
-    y = c.height() - ZOOM_BTN - ZOOM_MARGIN;
-    w = h = ZOOM_BTN;
+bool zoomOutRect(const M5Canvas& c, int& x, int& y, int& w, int& h, bool large) {
+    int z = zoomSize(large);
+    x = c.width() - z - ZOOM_MARGIN;
+    y = c.height() - z - ZOOM_MARGIN;
+    w = h = z;
     return true;
 }
+
+bool orientationRect(const M5Canvas& c, int& x, int& y, int& w, int& h, bool large) {
+    if (!large) return false;
+    int z = ZOOM_LARGE;
+    x = c.width() - z - ZOOM_MARGIN;
+    y = c.height() - 3 * z - ZOOM_MARGIN - 2 * ZOOM_GAP;
+    w = h = z;
+    return true;
+}
+
+bool recenterRect(const M5Canvas& c, int& x, int& y, int& w, int& h, bool large) {
+    int z = zoomSize(large);
+    x = c.width() - 2 * z - ZOOM_MARGIN - ZOOM_GAP;
+    y = c.height() - z - ZOOM_MARGIN;
+    w = h = z;
+    return true;
+}
+
+void panCenter(double& lat, double& lon, float dxPx, float dyPx, float metersPerPixel, uint8_t orientation,
+               float course) {
+    float B = rotationDeg(orientation, course) * (float)M_PI / 180.0f;
+    float cosB = cosf(B), sinB = sinf(B);
+    float xr = -dxPx * metersPerPixel;
+    float yr = dyPx * metersPerPixel;
+    float east = xr * cosB + yr * sinB;
+    float north = -xr * sinB + yr * cosB;
+    lat += north / 111320.0;
+    lon += east / (111320.0 * cos(lat * M_PI / 180.0));
+}
+
+static void renderLocked(M5Canvas& c, const View& v);
 
 void render(M5Canvas& c, const View& v) {
+    // The scratch buffers are shared, and the main map is drawn from its own task.
+    static SemaphoreHandle_t busy = xSemaphoreCreateMutex();
+    xSemaphoreTake(busy, portMAX_DELAY);
+    {
+        mapdata::Guard guard;
+        renderLocked(c, v);
+    }
+    xSemaphoreGive(busy);
+}
+
+static void renderLocked(M5Canvas& c, const View& v) {
     if (!paletteReady) initPalette(c);
     c.fillSprite(COL_LAND);
 
@@ -260,28 +346,31 @@ void render(M5Canvas& c, const View& v) {
     // Boat position in map coordinates; fall back to map centre with no fix.
     double blat = v.lat, blon = v.lon;
     if (!v.haveFix && !review) mapdata::centerLatLon(blat, blon);
+    double olat = v.followBoat ? blat : v.centerLat;
+    double olon = v.followBoat ? blon : v.centerLon;
     // Without a map file, project around the view centre instead of the map's origin.
     auto project = [&](double lat, double lon, int32_t& x, int32_t& y) {
         if (haveMap) {
             mapdata::project(lat, lon, x, y);
         } else {
-            x = (int32_t)lround((lon - blon) * 111320.0 * cos(blat * M_PI / 180.0) * 10.0);
-            y = (int32_t)lround((lat - blat) * 111320.0 * 10.0);
+            x = (int32_t)lround((lon - olon) * 111320.0 * cos(olat * M_PI / 180.0) * 10.0);
+            y = (int32_t)lround((lat - olat) * 111320.0 * 10.0);
         }
     };
-    int32_t bxi, byi;
+    int32_t oxi, oyi, bxi, byi;
+    project(olat, olon, oxi, oyi);
     project(blat, blon, bxi, byi);
 
     Xform xf;
-    xf.bx = bxi;
-    xf.by = byi;
-    float B = v.headUp ? v.course : 0.0f;
+    xf.bx = oxi;
+    xf.by = oyi;
+    float B = rotationDeg(v);
     float a = B * (float)M_PI / 180.0f;
     xf.cosB = cosf(a);
     xf.sinB = sinf(a);
     xf.invmpp = 1.0f / v.metersPerPixel;
     xf.cx = c.width() / 2.0f;
-    xf.cy = v.headUp ? c.height() * 0.62f : c.height() / 2.0f;
+    xf.cy = v.orientation == NorthUp ? c.height() / 2.0f : c.height() * 0.62f;
 
     // World (decimetre) bounding box of the canvas, for culling.
     float minVX = 1e18f, minVY = 1e18f, maxVX = -1e18f, maxVY = -1e18f;
@@ -389,9 +478,13 @@ void render(M5Canvas& c, const View& v) {
         }
     }
 
-    if (!review) drawBoat(c, xf, v.course, v.headUp);
+    if (!review) {
+        float bsx, bsy;
+        xf.toScreen(bxi, byi, bsx, bsy);
+        drawBoat(c, bsx, bsy, v.course, B);
+    }
     drawScaleBar(c, v.metersPerPixel);
-    if (v.headUp) drawNorthArrow(c, xf);
+    if (v.orientation != NorthUp) drawNorthArrow(c, xf);
 
     c.setFont(&fonts::FreeSans9pt7b);
     c.setTextSize(1);
@@ -405,7 +498,7 @@ void render(M5Canvas& c, const View& v) {
         c.setTextColor(COL_LOCK);
         c.drawString("Waiting for GPS", c.width() / 2, 8);
     }
-    if (v.showControls) drawZoomButtons(c);
+    if (v.showControls) drawControls(c, v);
 }
 
 }  // namespace mapview

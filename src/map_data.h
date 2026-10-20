@@ -47,6 +47,15 @@ struct Map {
 
 void begin();
 
+// Hold while reading current() from another task (the map is drawn in the background);
+// replacing or freeing the loaded map waits for it.
+struct Guard {
+    Guard();
+    ~Guard();
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+};
+
 // Loads the area whose bounds contain the fix, switching files as you move. With
 // no fix, keeps whatever is loaded (or the first file, from begin()).
 void update(double lat, double lon, bool haveFix);

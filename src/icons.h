@@ -5,7 +5,9 @@
 
 namespace icons {
 
-enum class Icon { Pencil, Trash, Download, Refresh, Check, Plus, Minus, Sun, Moon };
+enum class Icon {
+    Pencil, Trash, Download, Refresh, Check, Plus, Minus, Sun, Moon, Compass, BoatBow, BoatHead, Locate
+};
 
 // Draws `icon` centred on (cx, cy) inside a box of size x size; `bg` is the colour behind it
 // (used for cut-outs).

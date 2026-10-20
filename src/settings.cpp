@@ -3,6 +3,7 @@
 #include <Preferences.h>
 
 #include "config.h"
+#include "map_view.h"
 
 namespace settings {
 
@@ -26,7 +27,13 @@ void begin() {
     s.camMirror = prefs.getBool("camMirror", true);
     s.pipMode = prefs.getUChar("pipMode", 0);
     s.mapZoom = prefs.getUChar("mapZoom", cfg::MAP_ZOOM_DEFAULT);
-    s.mapHeadUp = prefs.getBool("mapHeadUp", true);
+    if (prefs.isKey("mapOrient")) {
+        s.mapOrientation = prefs.getUChar("mapOrient", mapview::HeadUp);
+        if (s.mapOrientation >= mapview::ORIENTATION_COUNT) s.mapOrientation = mapview::HeadUp;
+    } else {
+        // Old HEAD UP was course-up, which is now Bow Up, so the map does not flip 180°.
+        s.mapOrientation = prefs.getBool("mapHeadUp", true) ? mapview::BowUp : mapview::NorthUp;
+    }
     s.ratioShift = prefs.getFloat("ratioShift", 0.0f);
     prefs.end();
 }
@@ -47,7 +54,7 @@ void save() {
     prefs.putBool("camMirror", s.camMirror);
     prefs.putUChar("pipMode", s.pipMode);
     prefs.putUChar("mapZoom", s.mapZoom);
-    prefs.putBool("mapHeadUp", s.mapHeadUp);
+    prefs.putUChar("mapOrient", s.mapOrientation);
     prefs.putFloat("ratioShift", s.ratioShift);
     prefs.end();
 }

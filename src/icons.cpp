@@ -86,6 +86,23 @@ void moon(M5Canvas& c, float cx, float cy, float u, uint16_t col, uint16_t bg) {
     c.fillSmoothCircle(cx + 0.38f * u, cy - 0.3f * u, 0.62f * u, bg);
 }
 
+void compass(M5Canvas& c, float cx, float cy, float u, uint16_t col) {
+    c.drawCircle(cx, cy, 0.88f * u, col);
+    c.drawCircle(cx, cy, 0.88f * u - 1, col);
+    c.fillTriangle(cx, cy - 0.72f * u, cx - 0.22f * u, cy + 0.08f * u, cx + 0.22f * u, cy + 0.08f * u, col);
+    c.fillTriangle(cx, cy + 0.55f * u, cx - 0.14f * u, cy + 0.12f * u, cx + 0.14f * u, cy + 0.12f * u, col);
+}
+
+// Boat hull pointing `up` (bow at the top) or down (bow at the bottom, a head at the stern).
+void boat(M5Canvas& c, float cx, float cy, float u, uint16_t col, bool bowUp) {
+    float dir = bowUp ? -1.0f : 1.0f;
+    float tipY = cy + dir * 0.78f * u;
+    float backY = cy - dir * 0.55f * u;
+    float half = 0.42f * u;
+    c.fillTriangle(cx, tipY, cx - half, backY, cx + half, backY, col);
+    if (!bowUp) c.fillSmoothCircle(cx, backY - 0.22f * u, 0.16f * u, col);
+}
+
 }  // namespace
 
 void draw(M5Canvas& c, Icon icon, int cx, int cy, int size, uint16_t color, uint16_t bg) {
@@ -103,6 +120,18 @@ void draw(M5Canvas& c, Icon icon, int cx, int cy, int size, uint16_t color, uint
         case Icon::Minus: c.fillRect(cx - 0.8f * u, cy - 0.12f * u, 1.6f * u, 0.24f * u, color); break;
         case Icon::Sun: sun(c, cx, cy, u, color); break;
         case Icon::Moon: moon(c, cx, cy, u, color, bg); break;
+        case Icon::Compass: compass(c, cx, cy, u, color); break;
+        case Icon::BoatBow: boat(c, cx, cy, u, color, true); break;
+        case Icon::BoatHead: boat(c, cx, cy, u, color, false); break;
+        case Icon::Locate:
+            c.drawCircle(cx, cy, 0.72f * u, color);
+            c.drawCircle(cx, cy, 0.72f * u - 1, color);
+            c.fillSmoothCircle(cx, cy, 0.16f * u, color);
+            c.drawWideLine(cx, cy - 0.92f * u, cx, cy - 0.58f * u, 0.08f * u + 0.5f, color);
+            c.drawWideLine(cx, cy + 0.58f * u, cx, cy + 0.92f * u, 0.08f * u + 0.5f, color);
+            c.drawWideLine(cx - 0.92f * u, cy, cx - 0.58f * u, cy, 0.08f * u + 0.5f, color);
+            c.drawWideLine(cx + 0.58f * u, cy, cx + 0.92f * u, cy, 0.08f * u + 0.5f, color);
+            break;
     }
 }
 

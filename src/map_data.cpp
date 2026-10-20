@@ -90,7 +90,13 @@ bool readFileHeader(const char* path, FileHeader& out) {
     return true;
 }
 
+SemaphoreHandle_t mutex() {
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+    return m;
+}
+
 void freeCurrent() {
+    Guard guard;
     heap_caps_free(cur.features);
     heap_caps_free(cur.rings);
     heap_caps_free(cur.points);
@@ -185,6 +191,7 @@ bool loadFile(int index) {
         return false;
     }
 
+    Guard guard;
     freeCurrent();
     cur.valid = true;
     cur.originLat = originLat;
@@ -203,6 +210,9 @@ bool loadFile(int index) {
 }
 
 }  // namespace
+
+Guard::Guard() { xSemaphoreTakeRecursive(mutex(), portMAX_DELAY); }
+Guard::~Guard() { xSemaphoreGiveRecursive(mutex()); }
 
 void begin() {
     nFiles = 0;
@@ -282,6 +292,7 @@ bool renameFile(int i, const char* name) {
     if (f) f.close();
     if (ok) {
         strlcpy(files[i].name, field, sizeof(files[i].name));
+        Guard guard;
         if (i == curIndex) strlcpy(cur.name, field, sizeof(cur.name));
     }
     Serial.printf("[map] rename %s to '%s': %s\n", files[i].path, field, ok ? "OK" : "failed");

@@ -105,9 +105,16 @@ from OpenStreetMap data (see below). Water areas and canals are blue, your boat
 is the yellow triangle, and the current session's track trails behind it in
 orange. The scale bar is bottom-left and the OpenStreetMap credit bottom-right.
 
-- The **HEAD UP** / **NORTH UP** button rotates the map to your heading or keeps
-  north up (a red north arrow shows in head-up mode).
-- The **+** / **-** buttons bottom-right zoom in and out.
+- The **HEAD UP** / **BOW UP** / **NORTH UP** control cycles what is at the top
+  of the map: the direction the rower looks (stern), the direction of travel
+  (bow), or north. A red north arrow shows unless north is already up. During a
+  session it is an icon the same size as the zoom buttons (boat bow-up, boat
+  head-up, or a compass for north-up); otherwise it is the fourth button under
+  the map.
+- The **+** / **-** buttons bottom-right zoom in and out. During a session they
+  are double size so they are easier to hit.
+- Drag the map to look ahead. A locate button appears to the left of **−** while
+  the map is not following the boat; tap it to centre back on your position.
 
 The map follows your GPS fix and automatically switches to whichever uploaded
 map file covers your position, so you can keep several areas on the card.
@@ -258,7 +265,7 @@ python tools\serial_log.py COM10 60                       # print status every 5
 python tools\serial_log.py COM10 60 log.txt --send "3:G,40:L,70:X"   # start, lap, stop at those seconds
 python tools\send.py COM10 N                              # N next screen, G start, L lap, X stop, R reset
 python tools\send.py COM10 C                              # C cycle PIP off/camera/map, V picture-in-picture/full width
-python tools\send.py COM10 H                              # H map head-up/north-up; +/- zoom the map
+python tools\send.py COM10 H                              # H cycle map head-up / bow-up / north-up; +/- zoom the map
 python tools\send.py COM10 M                              # M open the Maps screen (download maps)
 python tools\send.py COM10 h                              # h pair the strongest heart rate sensor in range
 python tools\send.py COM10 'T 640 360'                    # tap at x y; 'P x y' hold, 'Z x0 y0 x1 y1' drag

@@ -2,6 +2,8 @@
 
 #include <M5Unified.h>
 
+#include <atomic>
+
 #include "board.h"
 #include "camera.h"
 #include "display_fb.h"
@@ -334,7 +336,8 @@ void drawButtons(const metrics::View& v) {
         const char* pip = s.pipMode == PipCamera ? "PIP: CAM" : s.pipMode == PipMap ? "PIP: MAP" : "PIP: OFF";
         drawButton(3, pip, true, s.pipMode != PipOff);
     } else if (screen == Screen::Map) {
-        drawButton(3, s.mapHeadUp ? "HEAD UP" : "NORTH UP", true, s.mapHeadUp);
+        drawButton(3, mapview::orientationName(s.mapOrientation), true,
+                   s.mapOrientation != mapview::NorthUp);
     } else if (screen == Screen::Efficiency) {
         drawButton(3, "HOLD: CLEAR", efficiency::strokeCount() > 0);
     } else if (screen == Screen::Sessions) {
@@ -1001,25 +1004,37 @@ bool mapFullShown() { return screen == Screen::Map || (mapOnMain() && settings::
 // Downloads are refused while recording, so the Maps screen is only offered between sessions.
 bool mapsButtonShown() { return screen == Screen::Map && metrics::view().state != metrics::State::Running; }
 
-void drawMapContent() {
-    int sx, sy;
-    bool full;
-    M5Canvas* cv = mapCanvasFor(sx, sy, full);
-    if (!cv) return;
-    if (!forceRedraw && millis() - lastMap < cfg::MAP_FRAME_MS) return;
-    lastMap = millis();
-    const Settings& s = settings::get();
-    gps::Snapshot g = gps::get();
-    mapview::View mv;
-    mv.lat = g.lat;
-    mv.lon = g.lon;
-    mv.course = g.course;
-    mv.haveFix = g.fix;
-    mv.headUp = s.mapHeadUp;
-    mv.showControls = full;
-    int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
-    mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
-    mapview::render(*cv, mv);
+// A full map frame takes longer than a UI frame, so it is drawn by its own task on the other
+// core and only pushed from here; the timer and metrics keep updating meanwhile.
+enum class MapJob : uint8_t { Idle, Drawing, Done };
+std::atomic<MapJob> mapJob{MapJob::Idle};
+TaskHandle_t mapTask = nullptr;
+M5Canvas* mapJobCanvas = nullptr;
+mapview::View mapJobView;
+uint32_t mapJobLayout = 0;  // layoutGen when the job was started
+uint32_t layoutGen = 0;     // bumped by every full redraw; older frames are dropped
+bool mapRedrawPending = false;
+bool mapFollow = true;
+double mapCenterLat = 0, mapCenterLon = 0;
+double mapPanLat0 = 0, mapPanLon0 = 0;
+int mapPanX0 = 0, mapPanY0 = 0;
+float mapPanMpp = 1, mapPanCourse = 0;
+uint8_t mapPanOrientation = mapview::NorthUp;
+enum class DragKind : uint8_t { None, Lists, Map } dragKind = DragKind::None;
+
+void mapTaskRun(void*) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        mapview::render(*mapJobCanvas, mapJobView);
+        mapJob = MapJob::Done;
+    }
+}
+
+void startMapTask() {
+    xTaskCreatePinnedToCore(mapTaskRun, "map", 8192, nullptr, 1, &mapTask, 0);
+}
+
+void pushMap(M5Canvas* cv, int sx, int sy) {
     if (mapsButtonShown()) {
         cv->fillRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, TFT_WHITE);
         cv->drawRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, TFT_DARKGREY);
@@ -1032,10 +1047,55 @@ void drawMapContent() {
     fb::push(*cv, sx, sy);
 }
 
+void drawMapContent() {
+    if (forceRedraw) {
+        layoutGen++;
+        mapRedrawPending = true;
+    }
+    int sx, sy;
+    bool full;
+    M5Canvas* cv = mapCanvasFor(sx, sy, full);
+
+    if (mapJob == MapJob::Done) {
+        bool current = cv && cv == mapJobCanvas && mapJobLayout == layoutGen;
+        mapJob = MapJob::Idle;
+        // The gap before the next frame starts now, so the map task never hogs its core.
+        lastMap = millis();
+        if (current) pushMap(cv, sx, sy);
+    }
+    if (!cv || mapJob != MapJob::Idle) return;
+    if (!mapRedrawPending && millis() - lastMap < cfg::MAP_FRAME_MS) return;
+    mapRedrawPending = false;
+
+    const Settings& s = settings::get();
+    gps::Snapshot g = gps::get();
+    mapview::View mv;
+    mv.lat = g.lat;
+    mv.lon = g.lon;
+    mv.course = g.course;
+    mv.haveFix = g.fix;
+    mv.orientation = s.mapOrientation;
+    mv.showControls = full;
+    mv.largeControls = full && metrics::view().state == metrics::State::Running;
+    if (!full) mapFollow = true;
+    mv.followBoat = mapFollow;
+    mv.centerLat = mapCenterLat;
+    mv.centerLon = mapCenterLon;
+    mv.showRecenter = full && !mapFollow;
+    int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
+    mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
+    mapJobCanvas = cv;
+    mapJobView = mv;
+    mapJobLayout = layoutGen;
+    mapJob = MapJob::Drawing;
+    xTaskNotifyGive(mapTask);
+}
+
 void cyclePip() {
     Settings& s = settings::get();
     s.pipMode = (uint8_t)((s.pipMode + 1) % 3);
     settings::save();
+    if (s.pipMode != PipMap || !s.camFull) mapFollow = true;
     clearScreen();
     updateCamera();
 }
@@ -1044,15 +1104,49 @@ void togglePipFull() {
     Settings& s = settings::get();
     s.camFull = !s.camFull;
     settings::save();
+    if (!s.camFull) mapFollow = true;
     clearScreen();
     updateCamera();
 }
 
-void toggleHeadUp() {
+void recenterMap() {
+    mapFollow = true;
+    mapRedrawPending = true;
+    forceRedraw = true;
+}
+
+void boatLatLon(double& lat, double& lon) {
+    gps::Snapshot g = gps::get();
+    if (g.fix) {
+        lat = g.lat;
+        lon = g.lon;
+        return;
+    }
+    if (!mapdata::centerLatLon(lat, lon)) lat = lon = 0;
+}
+
+bool mapControlHit(int px, int py) {
+    if (!mapFullShown()) return false;
+    bool large = metrics::view().state == metrics::State::Running;
+    int bx, by, bw, bh;
+    auto hit = [&](int x, int y, int w, int h) {
+        return px >= x && px < x + w && py >= FULL_CAM_Y + y && py < FULL_CAM_Y + y + h;
+    };
+    if (mapview::zoomInRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) return true;
+    if (mapview::zoomOutRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) return true;
+    if (mapview::orientationRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) return true;
+    if (!mapFollow && mapview::recenterRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) return true;
+    if (mapsButtonShown() && px >= MAPS_BTN_X && px < MAPS_BTN_X + MAPS_BTN_W &&
+        py >= FULL_CAM_Y + MAPS_BTN_Y && py < FULL_CAM_Y + MAPS_BTN_Y + MAPS_BTN_H)
+        return true;
+    return false;
+}
+
+void cycleOrientation() {
     Settings& s = settings::get();
-    s.mapHeadUp = !s.mapHeadUp;
+    s.mapOrientation = (uint8_t)((s.mapOrientation + 1) % mapview::ORIENTATION_COUNT);
     settings::save();
-    clearScreen();
+    forceRedraw = true;
 }
 
 void adjustZoom(int delta) {
@@ -1064,22 +1158,31 @@ void adjustZoom(int delta) {
         s.mapZoom = (uint8_t)z;
         settings::save();
         forceRedraw = true;
-        lastMap = 0;
     }
 }
 
-// If the tap hit an on-map zoom button, handle it. Returns true if consumed.
-bool handleMapZoomTap(int px, int py) {
+// If the tap hit an on-map zoom or orientation button, handle it. Returns true if consumed.
+bool handleMapControlTap(int px, int py) {
     if (!mapFullShown()) return false;
+    bool large = metrics::view().state == metrics::State::Running;
     int bx, by, bw, bh;
-    mapview::zoomInRect(mapC, bx, by, bw, bh);
-    if (px >= bx && px < bx + bw && py >= FULL_CAM_Y + by && py < FULL_CAM_Y + by + bh) {
+    auto hit = [&](int x, int y, int w, int h) {
+        return px >= x && px < x + w && py >= FULL_CAM_Y + y && py < FULL_CAM_Y + y + h;
+    };
+    if (mapview::zoomInRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) {
         adjustZoom(-1);  // smaller span = closer in
         return true;
     }
-    mapview::zoomOutRect(mapC, bx, by, bw, bh);
-    if (px >= bx && px < bx + bw && py >= FULL_CAM_Y + by && py < FULL_CAM_Y + by + bh) {
+    if (mapview::zoomOutRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) {
         adjustZoom(+1);  // larger span = further out
+        return true;
+    }
+    if (mapview::orientationRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) {
+        cycleOrientation();
+        return true;
+    }
+    if (!mapFollow && mapview::recenterRect(mapC, bx, by, bw, bh, large) && hit(bx, by, bw, bh)) {
+        recenterMap();
         return true;
     }
     return false;
@@ -1107,6 +1210,7 @@ void setScreen(Screen next) {
         if (net::state() == net::State::Off && net::hasStoredNetwork()) net::connect(nullptr, nullptr, Serial);
     }
     dragging = false;
+    if (next != Screen::Map) mapFollow = true;
     clearScreen();
     updateCamera();
 }
@@ -1172,7 +1276,7 @@ void onTap(int x, int y) {
                 break;
             case 3:
                 if (screen == Screen::Main) cyclePip();
-                else if (screen == Screen::Map) toggleHeadUp();
+                else if (screen == Screen::Map) cycleOrientation();
                 else if (screen == Screen::Efficiency) showHint("Hold to clear the chart and your best line");
                 else if (screen == Screen::Sessions) {
                     sessionsui::back();
@@ -1183,8 +1287,8 @@ void onTap(int x, int y) {
         }
         return;
     }
-    if (handleMapZoomTap(x, y)) return;
-    if (screen == Screen::Map) return;  // full map: only the zoom buttons react
+    if (handleMapControlTap(x, y)) return;
+    if (screen == Screen::Map) return;  // full map: controls and drag, not a tap action
     if (inContentRect(x, y)) togglePipFull();
     if (screen == Screen::Settings) onSettingsTap(x, y);
 }
@@ -1229,20 +1333,57 @@ void applySettings(bool full) {
 }
 
 void dragStart(int x, int y) {
-    if (screen == Screen::Maps) mapsui::dragStart(x, y);
-    else sessionsui::dragStart(x, y);
+    dragKind = DragKind::None;
+    if (screen == Screen::Maps) {
+        dragKind = DragKind::Lists;
+        mapsui::dragStart(x, y);
+    } else if (screen == Screen::Sessions) {
+        dragKind = DragKind::Lists;
+        sessionsui::dragStart(x, y);
+    } else if (mapFullShown() && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
+        dragKind = DragKind::Map;
+        mapPanX0 = x;
+        mapPanY0 = y;
+        if (mapFollow) boatLatLon(mapPanLat0, mapPanLon0);
+        else {
+            mapPanLat0 = mapCenterLat;
+            mapPanLon0 = mapCenterLon;
+        }
+        const Settings& s = settings::get();
+        M5Canvas* cv = &mapC;
+        int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
+        mapPanMpp = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
+        mapPanOrientation = s.mapOrientation;
+        mapPanCourse = gps::get().course;
+    }
 }
 void dragMove(int x, int y) {
-    if (screen == Screen::Maps) mapsui::dragMove(x, y);
-    else sessionsui::dragMove(x, y);
+    if (dragKind == DragKind::Lists) {
+        if (screen == Screen::Maps) mapsui::dragMove(x, y);
+        else sessionsui::dragMove(x, y);
+        return;
+    }
+    if (dragKind != DragKind::Map) return;
+    mapFollow = false;
+    mapCenterLat = mapPanLat0;
+    mapCenterLon = mapPanLon0;
+    mapview::panCenter(mapCenterLat, mapCenterLon, (float)(x - mapPanX0), (float)(y - mapPanY0), mapPanMpp,
+                       mapPanOrientation, mapPanCourse);
+    mapRedrawPending = true;
+    lastMap = 0;
 }
 void dragEnd(int x, int y) {
-    if (screen == Screen::Maps) mapsui::dragEnd(x, y);
-    else sessionsui::dragEnd(x, y);
+    if (dragKind == DragKind::Lists) {
+        if (screen == Screen::Maps) mapsui::dragEnd(x, y);
+        else sessionsui::dragEnd(x, y);
+    } else if (dragKind == DragKind::Map) {
+        dragMove(x, y);
+    }
+    dragKind = DragKind::None;
 }
 
 void handleDrag(const m5::touch_detail_t& t) {
-    if (screen != Screen::Maps && screen != Screen::Sessions) return;
+    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown()) return;
     if (t.isPressed()) {
         if (!dragging && (abs(t.distanceX()) > 12 || abs(t.distanceY()) > 12)) {
             dragging = true;
@@ -1283,6 +1424,7 @@ void begin() {
 
     camera::begin();
     mapview::begin();
+    startMapTask();
     mapsui::begin(0, BAR_H, W, BTN_Y - BAR_H);
     sessionsui::begin(0, BAR_H, W, BTN_Y - BAR_H);
     applySettings(false);
@@ -1293,7 +1435,7 @@ void tap(int x, int y) { onTap(x, y); }
 void hold(int x, int y) { onHold(x, y); }
 
 void drag(int x0, int y0, int x1, int y1) {
-    if (screen != Screen::Maps && screen != Screen::Sessions) return;
+    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown()) return;
     dragStart(x0, y0);
     for (int i = 1; i <= 8; i++) dragMove(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
     dragEnd(x1, y1);
@@ -1312,7 +1454,7 @@ void command(char c) {
             if (cameraVisible() || mapOnMain()) togglePipFull();
             break;
         case 'H':
-            if (mapFullShown() || mapOnMain()) toggleHeadUp();
+            if (mapFullShown() || mapOnMain()) cycleOrientation();
             break;
         case '+':
             if (mapFullShown() || mapOnMain()) adjustZoom(-1);  // zoom in

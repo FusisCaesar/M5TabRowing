@@ -16,8 +16,8 @@ struct Settings {
     bool camFull;    // picture-in-picture content shown full width instead of in the corner
     bool camMirror;  // mirror image, like a rear-view mirror
     uint8_t pipMode;    // Main-screen corner content: 0 off, 1 camera, 2 map
-    uint8_t mapZoom;    // index into cfg::MAP_ZOOM_M
-    bool mapHeadUp;     // rotate the map so the course points up
+    uint8_t mapZoom;         // index into cfg::MAP_ZOOM_M
+    uint8_t mapOrientation;  // mapview::HeadUp / BowUp / NorthUp
     float ratioShift;   // added to the rate-based recovery:drive target
 
     StrokeParams strokeParams() const {
