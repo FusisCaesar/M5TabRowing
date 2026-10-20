@@ -273,35 +273,44 @@ void drawSlot(int slot, int x, int y, bool big, const metrics::View& v) {
     drawTile(big ? bigC : smallC, x, y, label, unit, value, big, color, unitColor);
 }
 
-void cycleTile(int slot) {
-    if (slot < 0 || slot >= TILE_SLOTS) return;
+void cycleTile(int slot, int dir) {
+    if (slot < 0 || slot >= TILE_SLOTS || dir == 0) return;
+    int n = (int)TileMetric::Count;
     Settings& s = settings::get();
-    s.tiles[slot] = (uint8_t)((s.tiles[slot] + 1) % (uint8_t)TileMetric::Count);
+    s.tiles[slot] = (uint8_t)((s.tiles[slot] + dir + n) % n);
     settings::save();
     forceRedraw = true;
 }
 
 // Which of the eight slots is at (x, y), or -1. Same slot numbers in every layout.
-int tileSlotAt(int x, int y) {
+// tileLeft / tileW are that slot's rectangle, so a tap can pick previous vs next.
+int tileSlotAt(int x, int y, int* tileLeft = nullptr, int* tileW = nullptr) {
+    auto hit = [&](int slot, int left, int width) {
+        if (tileLeft) *tileLeft = left;
+        if (tileW) *tileW = width;
+        return slot;
+    };
     if (y < BAR_H || y >= BTN_Y) return -1;
     const Settings& s = settings::get();
     bool topStrip = screen == Screen::Map || (screen == Screen::Main && s.pipMode != PipOff && s.camFull);
     if (topStrip) {
-        if (y < BAR_H + SMALL_H) return x / SMALL_W;
+        if (y < BAR_H + SMALL_H) return hit(x / SMALL_W, (x / SMALL_W) * SMALL_W, SMALL_W);
         return -1;
     }
     if (screen != Screen::Main) return -1;
     if (s.pipMode != PipOff) {
         if (x < PIP_W && y >= BAR_H && y < BAR_H + PIP_H) return -1;
-        if (x >= BIG_W && y >= BAR_H && y < BAR_H + BIG_H) return 0;
-        if (x >= BIG_W && y >= BAR_H + BIG_H && y < BAR_H + 2 * BIG_H) return 1;
-        if (y >= PIP_INFO_Y && y < PIP_INFO_Y + SMALL_H && x < PIP_W) return 2 + x / SMALL_W;
-        if (y >= SMALL_Y && y < SMALL_Y + SMALL_H) return 4 + x / SMALL_W;
+        if (x >= BIG_W && y >= BAR_H && y < BAR_H + BIG_H) return hit(0, BIG_W, BIG_W);
+        if (x >= BIG_W && y >= BAR_H + BIG_H && y < BAR_H + 2 * BIG_H) return hit(1, BIG_W, BIG_W);
+        if (y >= PIP_INFO_Y && y < PIP_INFO_Y + SMALL_H && x < PIP_W)
+            return hit(2 + x / SMALL_W, (x / SMALL_W) * SMALL_W, SMALL_W);
+        if (y >= SMALL_Y && y < SMALL_Y + SMALL_H)
+            return hit(4 + x / SMALL_W, (x / SMALL_W) * SMALL_W, SMALL_W);
         return -1;
     }
-    if (y < BAR_H + BIG_H) return x / BIG_W;
-    if (y < SMALL_Y) return 2 + x / BIG_W;
-    if (y < SMALL_Y + SMALL_H) return 4 + x / SMALL_W;
+    if (y < BAR_H + BIG_H) return hit(x / BIG_W, (x / BIG_W) * BIG_W, BIG_W);
+    if (y < SMALL_Y) return hit(2 + x / BIG_W, (x / BIG_W) * BIG_W, BIG_W);
+    if (y < SMALL_Y + SMALL_H) return hit(4 + x / SMALL_W, (x / SMALL_W) * SMALL_W, SMALL_W);
     return -1;
 }
 
@@ -1370,9 +1379,10 @@ void onTap(int x, int y) {
         return;
     }
     if (handleMapControlTap(x, y)) return;
-    int slot = tileSlotAt(x, y);
+    int tileLeft = 0, tileW = 0;
+    int slot = tileSlotAt(x, y, &tileLeft, &tileW);
     if (slot >= 0) {
-        cycleTile(slot);
+        cycleTile(slot, x < tileLeft + tileW / 2 ? -1 : 1);
         return;
     }
     if (screen == Screen::Map) return;  // full map: controls and drag, not a tap action

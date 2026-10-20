@@ -100,7 +100,8 @@ is off.
 
 ### Main screen
 
-Eight tiles. Tap any tile to cycle what it shows; the layout is remembered. The
+Eight tiles. Tap the right half of a tile for the next metric, the left half
+for the previous; the layout is remembered. The
 same eight slots are used in every layout, so the four big Main tiles are the
 same four as the strip above the Map and full-width PIP. Duplicates are allowed.
 
