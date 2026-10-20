@@ -1,6 +1,7 @@
 #include "settings.h"
 
 #include <Preferences.h>
+#include <string.h>
 
 #include "config.h"
 #include "map_view.h"
@@ -35,6 +36,15 @@ void begin() {
         s.mapOrientation = prefs.getBool("mapHeadUp", true) ? mapview::BowUp : mapview::NorthUp;
     }
     s.ratioShift = prefs.getFloat("ratioShift", 0.0f);
+    static const uint8_t TILE_DEFAULT[TILE_SLOTS] = {
+        (uint8_t)TileMetric::Split,     (uint8_t)TileMetric::Rate,      (uint8_t)TileMetric::Distance,
+        (uint8_t)TileMetric::Time,      (uint8_t)TileMetric::DistStroke, (uint8_t)TileMetric::AvgSplit,
+        (uint8_t)TileMetric::HeartRate, (uint8_t)TileMetric::RecDrive,
+    };
+    memcpy(s.tiles, TILE_DEFAULT, TILE_SLOTS);
+    prefs.getBytes("tiles", s.tiles, TILE_SLOTS);
+    for (int i = 0; i < TILE_SLOTS; i++)
+        if (s.tiles[i] >= (uint8_t)TileMetric::Count) s.tiles[i] = TILE_DEFAULT[i];
     prefs.end();
 }
 
@@ -56,6 +66,7 @@ void save() {
     prefs.putUChar("mapZoom", s.mapZoom);
     prefs.putUChar("mapOrient", s.mapOrientation);
     prefs.putFloat("ratioShift", s.ratioShift);
+    prefs.putBytes("tiles", s.tiles, TILE_SLOTS);
     prefs.end();
 }
 

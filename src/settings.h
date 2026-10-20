@@ -4,6 +4,24 @@
 
 #include "stroke_detector.h"
 
+// One of these in each of the eight Main-screen slots; tap a tile to cycle.
+enum class TileMetric : uint8_t {
+    Split = 0,
+    Rate,
+    Distance,
+    Time,
+    DistStroke,
+    AvgSplit,
+    AvgRate,
+    Strokes,
+    HeartRate,
+    AvgHr,
+    RecDrive,
+    Speed,
+    Count
+};
+constexpr int TILE_SLOTS = 8;
+
 struct Settings {
     float thresholdK;
     float thresholdFloorG;
@@ -19,6 +37,7 @@ struct Settings {
     uint8_t mapZoom;         // index into cfg::MAP_ZOOM_M
     uint8_t mapOrientation;  // mapview::HeadUp / BowUp / NorthUp
     float ratioShift;   // added to the rate-based recovery:drive target
+    uint8_t tiles[TILE_SLOTS];  // metric shown in each Main-screen slot
 
     StrokeParams strokeParams() const {
         StrokeParams p;

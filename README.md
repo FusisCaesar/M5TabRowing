@@ -56,7 +56,7 @@ Six screens; the right-most bottom button cycles through them.
 
 | Screen | Content |
 | --- | --- |
-| Main | split /500m, stroke rate, distance, time; distance per stroke, average split, strokes, recovery:drive with a SLOWER / GOOD / QUICKER indicator |
+| Main | eight metric tiles (split, rate, distance, time, dist/stroke, avg split, heart rate, rec:drive by default); tap any tile to cycle the metric in that slot |
 | Map | offline waterway map with your position, heading and track; head-up/north-up toggle and zoom buttons |
 | Efficiency | distance per stroke against rate with your best line, efficiency score, ratio/check/bounce gauges and a coaching hint |
 | Plot | last 6 s of the forward acceleration with threshold, catch and finish markers, and drive/recovery/check/bounce stats; shows `REC S####` while a session records |
@@ -67,10 +67,16 @@ Bottom buttons: **START** starts a session, **LAP** splits a lap, **hold STOP**
 ends the session, **hold RESET** clears it. Stroke rate and split show before
 START; distance, time and logging run only during a session.
 
+Tap a metric tile on Main (or the strip above the Map / full-width PIP) to cycle
+what it shows: split, rate, distance, time, dist/stroke, avg split, avg rate,
+strokes, heart rate, avg HR, rec:drive, speed. The layout is remembered. The
+same eight slots are used in every layout, so the four big Main tiles are the
+same four as the Map strip.
+
 **PIP** (Main screen only) cycles the picture-in-picture pane through **OFF**,
 **CAMERA** and **MAP**. Tap the pane to switch between picture-in-picture (pane
-top left, split and rate beside it) and full width (split, rate, distance and
-time in a strip above it).
+top left, first two tiles big beside it) and full width (first four tiles in a
+strip above it).
 
 - **CAMERA** shows the built-in camera, which looks past the rower towards the
   bow, i.e. where the boat is going. It runs only while shown, at about 20 fps,
@@ -90,10 +96,9 @@ close by; the strongest one in range is saved. The Tab5 reconnects to it by
 itself at every start and whenever it drops out. **FORGET** removes it, after
 which you can pair another.
 
-With a sensor paired, the **STROKES** tile on the Main screen shows **HEART
-RATE** instead (orange `--` while there is no reading), the full-width strip
-shows it next to the time, and the top bar shows `HR`, `HR...` (connecting) or
-`NO HR`. The lap banner adds the lap's average heart rate.
+Heart rate is a tile you can put anywhere (it starts in the bottom row; orange
+`--` while there is no reading). The top bar shows `HR`, `HR...` (connecting)
+or `NO HR`. The lap banner adds the lap's average heart rate.
 
 A chest strap reads much more reliably than a watch while rowing: grip tension
 and wrist flexion make optical wrist readings lag or drop out at high rates.

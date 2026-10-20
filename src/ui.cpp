@@ -3,6 +3,7 @@
 #include <M5Unified.h>
 
 #include <atomic>
+#include <cstring>
 
 #include "board.h"
 #include "camera.h"
@@ -92,7 +93,7 @@ constexpr int MAPS_BTN_X = 16, MAPS_BTN_Y = 16, MAPS_BTN_W = 170, MAPS_BTN_H = 6
 struct Cache {
     char text[96];
 };
-Cache bigCache[4], smallCache[6], btnCache[BTN_COUNT], barCache, rowCache[12];
+Cache tileCache[TILE_SLOTS], btnCache[BTN_COUNT], barCache, rowCache[12];
 
 char hint[48] = "";
 uint32_t hintUntil = 0;
@@ -170,7 +171,142 @@ void drawValue(M5Canvas& c, const char* value, int top, float maxScale, uint16_t
 }
 
 void drawTile(M5Canvas& c, int x, int y, const char* label, const char* unit, const char* value,
-              bool big, uint16_t color, int unitColor = -1) {
+              bool big, uint16_t color, int unitColor = -1);
+
+void fillMetric(TileMetric m, const metrics::View& v, char* label, char* unit, char* value, size_t vn,
+                uint16_t& color, int& unitColor) {
+    color = th->fg;
+    unitColor = -1;
+    label[0] = unit[0] = value[0] = '\0';
+    switch (m) {
+        case TileMetric::Split:
+            strcpy(label, "SPLIT");
+            strcpy(unit, "/500m");
+            fmtSplit(value, vn, v.split);
+            break;
+        case TileMetric::Rate:
+            strcpy(label, "RATE");
+            strcpy(unit, "spm");
+            color = th->accent;
+            if (v.rate > 0) snprintf(value, vn, "%d", (int)lroundf(v.rate));
+            else snprintf(value, vn, "--");
+            break;
+        case TileMetric::Distance:
+            strcpy(label, "DISTANCE");
+            strcpy(unit, "m");
+            snprintf(value, vn, "%d", (int)v.distance);
+            break;
+        case TileMetric::Time:
+            strcpy(label, "TIME");
+            fmtTime(value, vn, v.elapsed);
+            break;
+        case TileMetric::DistStroke:
+            strcpy(label, "DIST/STROKE");
+            strcpy(unit, v.dpsFused ? "m*" : "m");
+            if (v.dps > 0) snprintf(value, vn, "%.1f", v.dps);
+            else snprintf(value, vn, "--");
+            break;
+        case TileMetric::AvgSplit:
+            strcpy(label, "AVG SPLIT");
+            strcpy(unit, "/500m");
+            fmtSplit(value, vn, v.avgSplit);
+            break;
+        case TileMetric::AvgRate:
+            strcpy(label, "AVG RATE");
+            strcpy(unit, "spm");
+            if (v.avgRate > 0) snprintf(value, vn, "%.1f", v.avgRate);
+            else snprintf(value, vn, "--");
+            break;
+        case TileMetric::Strokes:
+            strcpy(label, "STROKES");
+            snprintf(value, vn, "%d", v.strokes);
+            break;
+        case TileMetric::HeartRate:
+            strcpy(label, "HEART RATE");
+            strcpy(unit, "bpm");
+            if (v.hr > 0) snprintf(value, vn, "%d", v.hr);
+            else snprintf(value, vn, "--");
+            color = v.hr > 0 ? th->fg : th->warn;
+            break;
+        case TileMetric::AvgHr:
+            strcpy(label, "AVG HR");
+            strcpy(unit, "bpm");
+            if (v.avgHr > 0) snprintf(value, vn, "%.0f", v.avgHr);
+            else snprintf(value, vn, "--");
+            color = v.avgHr > 0 ? th->fg : th->warn;
+            break;
+        case TileMetric::RecDrive: {
+            strcpy(label, "REC:DRIVE");
+            efficiency::RatioCheck rc = efficiency::checkRatio(v.ratio, v.rate);
+            strlcpy(unit, efficiency::adviceWord(rc.advice), 16);
+            if (v.ratio > 0) snprintf(value, vn, "%.1f", v.ratio);
+            else snprintf(value, vn, "--");
+            color = adviceColor(rc);
+            unitColor = (int)color;
+            break;
+        }
+        case TileMetric::Speed:
+            strcpy(label, "SPEED");
+            strcpy(unit, "m/s");
+            if (v.speed > 0.05f) snprintf(value, vn, "%.1f", v.speed);
+            else snprintf(value, vn, "--");
+            break;
+        case TileMetric::Count:
+        default:
+            strcpy(label, "SPLIT");
+            strcpy(unit, "/500m");
+            fmtSplit(value, vn, v.split);
+            break;
+    }
+}
+
+void drawSlot(int slot, int x, int y, bool big, const metrics::View& v) {
+    TileMetric m = (TileMetric)settings::get().tiles[slot];
+    if ((uint8_t)m >= (uint8_t)TileMetric::Count) m = TileMetric::Split;
+    char label[16], unit[16], value[24];
+    uint16_t color;
+    int unitColor;
+    fillMetric(m, v, label, unit, value, sizeof(value), color, unitColor);
+    char key[80];
+    snprintf(key, sizeof(key), "%d|%s|%s|%s|%u", (int)m, label, unit, value, (unsigned)color);
+    if (!changed(tileCache[slot], key)) return;
+    drawTile(big ? bigC : smallC, x, y, label, unit, value, big, color, unitColor);
+}
+
+void cycleTile(int slot) {
+    if (slot < 0 || slot >= TILE_SLOTS) return;
+    Settings& s = settings::get();
+    s.tiles[slot] = (uint8_t)((s.tiles[slot] + 1) % (uint8_t)TileMetric::Count);
+    settings::save();
+    forceRedraw = true;
+}
+
+// Which of the eight slots is at (x, y), or -1. Same slot numbers in every layout.
+int tileSlotAt(int x, int y) {
+    if (y < BAR_H || y >= BTN_Y) return -1;
+    const Settings& s = settings::get();
+    bool topStrip = screen == Screen::Map || (screen == Screen::Main && s.pipMode != PipOff && s.camFull);
+    if (topStrip) {
+        if (y < BAR_H + SMALL_H) return x / SMALL_W;
+        return -1;
+    }
+    if (screen != Screen::Main) return -1;
+    if (s.pipMode != PipOff) {
+        if (x < PIP_W && y >= BAR_H && y < BAR_H + PIP_H) return -1;
+        if (x >= BIG_W && y >= BAR_H && y < BAR_H + BIG_H) return 0;
+        if (x >= BIG_W && y >= BAR_H + BIG_H && y < BAR_H + 2 * BIG_H) return 1;
+        if (y >= PIP_INFO_Y && y < PIP_INFO_Y + SMALL_H && x < PIP_W) return 2 + x / SMALL_W;
+        if (y >= SMALL_Y && y < SMALL_Y + SMALL_H) return 4 + x / SMALL_W;
+        return -1;
+    }
+    if (y < BAR_H + BIG_H) return x / BIG_W;
+    if (y < SMALL_Y) return 2 + x / BIG_W;
+    if (y < SMALL_Y + SMALL_H) return 4 + x / SMALL_W;
+    return -1;
+}
+
+void drawTile(M5Canvas& c, int x, int y, const char* label, const char* unit, const char* value,
+              bool big, uint16_t color, int unitColor) {
     c.fillSprite(th->bg);
     c.drawRoundRect(4, 4, c.width() - 8, c.height() - 8, 14, th->dim);
     c.setFont(big ? &fonts::FreeSansBold18pt7b : &fonts::FreeSansBold12pt7b);
@@ -360,92 +496,37 @@ void drawButtons(const metrics::View& v) {
 
 void drawSmallRow(const metrics::View& v);
 
-// The four key numbers in one row across the top (used by full-width PIP and the Map screen).
+// The first four slots in one row across the top (full-width PIP and the Map screen).
 void drawTopTiles(const metrics::View& v) {
-    char split[16], rate[8], dist[16], elapsed[16];
-    fmtSplit(split, sizeof(split), v.split);
-    if (v.rate > 0) snprintf(rate, sizeof(rate), "%d", (int)lroundf(v.rate));
-    else snprintf(rate, sizeof(rate), "--");
-    snprintf(dist, sizeof(dist), "%d", (int)v.distance);
-    fmtTime(elapsed, sizeof(elapsed), v.elapsed);
-    if (changed(smallCache[0], split)) drawTile(smallC, 0, BAR_H, "SPLIT", "/500m", split, false, th->fg);
-    if (changed(smallCache[1], rate)) drawTile(smallC, SMALL_W, BAR_H, "RATE", "spm", rate, false, th->accent);
-    if (changed(smallCache[2], dist)) drawTile(smallC, 2 * SMALL_W, BAR_H, "DISTANCE", "m", dist, false, th->fg);
-    // Heart rate rides along in the TIME tile's unit corner; there is no room for a fifth tile.
-    char hrUnit[16] = "";
-    if (hr::hasSaved()) {
-        if (v.hr > 0) snprintf(hrUnit, sizeof(hrUnit), "%d bpm", v.hr);
-        else snprintf(hrUnit, sizeof(hrUnit), "-- bpm");
-    }
-    char timeKey[32];
-    snprintf(timeKey, sizeof(timeKey), "%s|%s", elapsed, hrUnit);
-    if (changed(smallCache[3], timeKey))
-        drawTile(smallC, 3 * SMALL_W, BAR_H, "TIME", hrUnit, elapsed, false, th->fg, v.hr > 0 ? th->fg : th->warn);
+    for (int i = 0; i < 4; i++) drawSlot(i, i * SMALL_W, BAR_H, false, v);
 }
 
 void drawMain(const metrics::View& v) {
-    char split[16], rate[8], dist[16], elapsed[16];
-    fmtSplit(split, sizeof(split), v.split);
-    if (v.rate > 0) snprintf(rate, sizeof(rate), "%d", (int)lroundf(v.rate));
-    else snprintf(rate, sizeof(rate), "--");
-    snprintf(dist, sizeof(dist), "%d", (int)v.distance);
-    fmtTime(elapsed, sizeof(elapsed), v.elapsed);
-
     const Settings& s = settings::get();
     bool hasPip = s.pipMode != PipOff;
 
     if (hasPip && s.camFull) {
-        // Full-width content: everything that matters in one row above it.
         drawTopTiles(v);
         return;
     }
     if (hasPip) {
-        // Picture-in-picture: content top left, split and rate stay big on the right.
-        if (changed(bigCache[0], split)) drawTile(bigC, BIG_W, BAR_H, "SPLIT", "/500m", split, true, th->fg);
-        if (changed(bigCache[1], rate)) drawTile(bigC, BIG_W, BAR_H + BIG_H, "RATE", "spm", rate, true, th->accent);
-        if (changed(smallCache[4], dist)) drawTile(smallC, 0, PIP_INFO_Y, "DISTANCE", "m", dist, false, th->fg);
-        if (changed(smallCache[5], elapsed)) drawTile(smallC, SMALL_W, PIP_INFO_Y, "TIME", "", elapsed, false, th->fg);
+        drawSlot(0, BIG_W, BAR_H, true, v);
+        drawSlot(1, BIG_W, BAR_H + BIG_H, true, v);
+        drawSlot(2, 0, PIP_INFO_Y, false, v);
+        drawSlot(3, SMALL_W, PIP_INFO_Y, false, v);
         drawSmallRow(v);
         return;
     }
 
-    if (changed(bigCache[0], split)) drawTile(bigC, 0, BAR_H, "SPLIT", "/500m", split, true, th->fg);
-    if (changed(bigCache[1], rate)) drawTile(bigC, BIG_W, BAR_H, "RATE", "spm", rate, true, th->accent);
-    if (changed(bigCache[2], dist)) drawTile(bigC, 0, BAR_H + BIG_H, "DISTANCE", "m", dist, true, th->fg);
-    if (changed(bigCache[3], elapsed)) drawTile(bigC, BIG_W, BAR_H + BIG_H, "TIME", "", elapsed, true, th->fg);
+    drawSlot(0, 0, BAR_H, true, v);
+    drawSlot(1, BIG_W, BAR_H, true, v);
+    drawSlot(2, 0, BAR_H + BIG_H, true, v);
+    drawSlot(3, BIG_W, BAR_H + BIG_H, true, v);
     drawSmallRow(v);
 }
 
 void drawSmallRow(const metrics::View& v) {
-    char buf[24];
-    if (v.dps > 0) snprintf(buf, sizeof(buf), "%.1f", v.dps);
-    else snprintf(buf, sizeof(buf), "--");
-    if (changed(smallCache[0], buf))
-        drawTile(smallC, 0, SMALL_Y, "DIST/STROKE", v.dpsFused ? "m*" : "m", buf, false, th->fg);
-
-    fmtSplit(buf, sizeof(buf), v.avgSplit);
-    if (changed(smallCache[1], buf)) drawTile(smallC, SMALL_W, SMALL_Y, "AVG SPLIT", "/500m", buf, false, th->fg);
-
-    if (hr::hasSaved()) {
-        if (v.hr > 0) snprintf(buf, sizeof(buf), "%d", v.hr);
-        else snprintf(buf, sizeof(buf), "--");
-        char key[32];
-        snprintf(key, sizeof(key), "hr|%s", buf);
-        if (changed(smallCache[2], key))
-            drawTile(smallC, 2 * SMALL_W, SMALL_Y, "HEART RATE", "bpm", buf, false, v.hr > 0 ? th->fg : th->warn);
-    } else {
-        snprintf(buf, sizeof(buf), "%d", v.strokes);
-        if (changed(smallCache[2], buf)) drawTile(smallC, 2 * SMALL_W, SMALL_Y, "STROKES", "", buf, false, th->fg);
-    }
-
-    efficiency::RatioCheck rc = efficiency::checkRatio(v.ratio, v.rate);
-    const char* word = efficiency::adviceWord(rc.advice);
-    if (v.ratio > 0) snprintf(buf, sizeof(buf), "%.1f", v.ratio);
-    else snprintf(buf, sizeof(buf), "--");
-    char key[32];
-    snprintf(key, sizeof(key), "%s|%s", buf, word);
-    uint16_t col = adviceColor(rc);
-    if (changed(smallCache[3], key)) drawTile(smallC, 3 * SMALL_W, SMALL_Y, "REC:DRIVE", word, buf, false, col, col);
+    for (int i = 0; i < 4; i++) drawSlot(4 + i, i * SMALL_W, SMALL_Y, false, v);
 }
 
 // ---- efficiency screen -----------------------------------------------------
@@ -1288,6 +1369,11 @@ void onTap(int x, int y) {
         return;
     }
     if (handleMapControlTap(x, y)) return;
+    int slot = tileSlotAt(x, y);
+    if (slot >= 0) {
+        cycleTile(slot);
+        return;
+    }
     if (screen == Screen::Map) return;  // full map: controls and drag, not a tap action
     if (inContentRect(x, y)) togglePipFull();
     if (screen == Screen::Settings) onSettingsTap(x, y);
