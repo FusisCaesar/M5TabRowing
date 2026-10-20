@@ -16,6 +16,7 @@ namespace {
 uint16_t COL_LAND, COL_WATER, COL_BRIDGE, COL_LOCK, COL_WEIR, COL_PIER, COL_CLUB, COL_TRACK, COL_BOAT,
     COL_TEXT, COL_SHADE;
 bool paletteReady = false;
+bool paletteDay = true;  // force a first init against View.day (default night)
 
 // Reusable scratch for transformed feature points.
 constexpr int SCRATCH = 20000;
@@ -42,19 +43,35 @@ float rotationDeg(uint8_t orientation, float course) {
 
 float rotationDeg(const View& v) { return rotationDeg(v.orientation, v.course); }
 
-void initPalette(M5Canvas& c) {
-    COL_LAND = c.color565(228, 224, 214);
-    COL_WATER = c.color565(120, 172, 220);
-    COL_BRIDGE = c.color565(92, 92, 98);
-    COL_LOCK = c.color565(205, 70, 70);
-    COL_WEIR = c.color565(170, 110, 50);
-    COL_PIER = c.color565(140, 140, 140);
-    COL_CLUB = c.color565(210, 60, 60);
-    COL_TRACK = c.color565(245, 120, 25);
-    COL_BOAT = c.color565(255, 210, 0);
-    COL_TEXT = c.color565(40, 40, 40);
-    COL_SHADE = c.color565(255, 255, 255);
+void initPalette(M5Canvas& c, bool day) {
+    if (paletteReady && paletteDay == day) return;
+    paletteDay = day;
     paletteReady = true;
+    if (day) {
+        COL_LAND = c.color565(228, 224, 214);
+        COL_WATER = c.color565(120, 172, 220);
+        COL_BRIDGE = c.color565(92, 92, 98);
+        COL_LOCK = c.color565(205, 70, 70);
+        COL_WEIR = c.color565(170, 110, 50);
+        COL_PIER = c.color565(140, 140, 140);
+        COL_CLUB = c.color565(210, 60, 60);
+        COL_TRACK = c.color565(245, 120, 25);
+        COL_BOAT = c.color565(255, 210, 0);
+        COL_TEXT = c.color565(40, 40, 40);
+        COL_SHADE = c.color565(255, 255, 255);
+    } else {
+        COL_LAND = c.color565(28, 30, 36);
+        COL_WATER = c.color565(48, 92, 148);
+        COL_BRIDGE = c.color565(78, 80, 88);
+        COL_LOCK = c.color565(220, 78, 78);
+        COL_WEIR = c.color565(176, 122, 58);
+        COL_PIER = c.color565(110, 112, 120);
+        COL_CLUB = c.color565(230, 86, 86);
+        COL_TRACK = c.color565(255, 148, 40);
+        COL_BOAT = c.color565(255, 214, 64);
+        COL_TEXT = c.color565(230, 230, 232);
+        COL_SHADE = c.color565(42, 44, 52);
+    }
 }
 
 uint16_t featureColor(uint8_t kind) {
@@ -332,7 +349,7 @@ void render(M5Canvas& c, const View& v) {
 }
 
 static void renderLocked(M5Canvas& c, const View& v) {
-    if (!paletteReady) initPalette(c);
+    initPalette(c, v.day);
     c.fillSprite(COL_LAND);
 
     const mapdata::Map& m = mapdata::current();

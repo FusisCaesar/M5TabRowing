@@ -12,6 +12,7 @@
 #include "map_view.h"
 #include "recordings.h"
 #include "review.h"
+#include "settings.h"
 
 namespace sessionsui {
 namespace {
@@ -361,6 +362,7 @@ void drawReview() {
         v.trackLon = review::trackLon();
         v.trackColor = review::trackColor();
         v.trackCount = review::trackCount();
+        v.day = settings::get().dayTheme;
         mapview::render(revMap, v);
         revMap.pushSprite(0, HEADER_H);
         drawLegend();

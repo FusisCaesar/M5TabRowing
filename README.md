@@ -162,8 +162,10 @@ The Map screen draws an offline vector map of the waterways around you, built
 from OpenStreetMap data (see [Offline maps](#offline-maps)). Water areas and
 canals are blue, bridges grey, locks and clubs red, weirs brown, piers grey.
 Your boat is the yellow triangle; the current session's track trails behind it
-in orange. The scale bar is bottom-left and the OpenStreetMap credit
-bottom-right. A red north arrow shows unless north is already up.
+in orange. Night theme uses a dark map (dark land, deeper water, light labels)
+so it does not glare; day theme is the paper map. The scale bar is bottom-left
+and the OpenStreetMap credit bottom-right. A red north arrow shows unless north
+is already up.
 
 - The **HEAD UP** / **BOW UP** / **NORTH UP** control cycles what is at the top
   of the map: the direction the rower looks (stern), the direction of travel
@@ -243,7 +245,7 @@ Three tabs. Values are kept in flash.
 
 **DISPLAY**
 
-- Theme: day (light) or night (dark).
+- Theme: day (light, paper map) or night (dark UI and dark map).
 - Brightness.
 - Rotate screen 180, for a case mounted the other way up (camera image follows).
 - Camera mirror image (on by default).

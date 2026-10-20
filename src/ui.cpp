@@ -1117,11 +1117,11 @@ void startMapTask() {
 
 void pushMap(M5Canvas* cv, int sx, int sy) {
     if (mapsButtonShown()) {
-        cv->fillRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, TFT_WHITE);
-        cv->drawRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, TFT_DARKGREY);
+        cv->fillRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, th->btn);
+        cv->drawRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, th->dim);
         cv->setFont(&fonts::FreeSansBold12pt7b);
         cv->setTextSize(1);
-        cv->setTextColor(TFT_BLACK);
+        cv->setTextColor(th->btnText);
         cv->setTextDatum(middle_center);
         cv->drawString("MAPS", MAPS_BTN_X + MAPS_BTN_W / 2, MAPS_BTN_Y + MAPS_BTN_H / 2);
     }
@@ -1163,6 +1163,7 @@ void drawMapContent() {
     mv.centerLat = mapCenterLat;
     mv.centerLon = mapCenterLon;
     mv.showRecenter = full && !mapFollow;
+    mv.day = s.dayTheme;
     int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
     mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
     mapJobCanvas = cv;

@@ -26,6 +26,7 @@ struct View {
     bool followBoat = true;
     double centerLat = 0, centerLon = 0;
     bool showRecenter = false;
+    bool day = false;  // paper-map colours; false is the night palette
 
     // Review: draw this recorded track (one colour per point) centred on lat/lon instead of
     // the live track and boat. Works without a map file for the area.
