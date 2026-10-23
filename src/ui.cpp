@@ -52,9 +52,10 @@ constexpr int ROW_H = 67;
 constexpr int PLOT_POINTS = 600;   // 6 s at 100 Hz
 constexpr float PLOT_RANGE_G = 0.6f;
 
-// The NEXT button cycles through the first CYCLE screens; Maps opens from the Map screen.
+// The NEXT button cycles through the first CYCLE screens. Maps opens from the Map
+// screen; GPS diagnostics opens from the top bar and is not part of the cycle.
 // Screens from Sessions on draw their own content area (sessions_ui, maps_ui).
-enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps };
+enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps, Gps };
 constexpr int CYCLE = 6;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
 // Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
@@ -81,6 +82,7 @@ M5Canvas effC(&M5.Display);     // efficiency chart
 M5Canvas effP(&M5.Display);     // efficiency score and technique panel
 
 Screen screen = Screen::Main;
+Screen gpsBack = Screen::Main;
 const Theme* th = &NIGHT;
 bool forceRedraw = true;
 camera::Status camShown = camera::Status::Off;
@@ -493,6 +495,10 @@ void drawButtons(const metrics::View& v) {
         drawButton(3, "", false);
     }
 
+    if (screen == Screen::Gps) {
+        drawButton(4, "BACK", true);
+        return;
+    }
     const char* next = screen == Screen::Main         ? "MAP"
                        : screen == Screen::Map        ? "EFFICIENCY"
                        : screen == Screen::Efficiency ? "PLOT"
@@ -822,7 +828,7 @@ void drawPlot(const metrics::View& v) {
 
 // ---- settings screen -------------------------------------------------------
 
-enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_COUNT };
+enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_COUNT };
 constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 4;
 constexpr int SET_ICON = 74, SET_PLUS_X = W - 20 - SET_ICON, SET_MINUS_X = SET_PLUS_X - 16 - SET_ICON;
 constexpr int SET_SWITCH_W = 130, SET_SWITCH_H = 60, SET_TEXT_BTN_W = 190;
@@ -834,7 +840,7 @@ struct SettingsTab {
 constexpr SettingsTab SET_TABS[] = {
     {"STROKE", {S_K, S_FLOOR, S_MINIMA, S_RATIO}},
     {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR}},
-    {"SENSORS", {S_HR, S_FUSION, S_RAW, -1}},
+    {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS}},
 };
 constexpr int SET_TAB_COUNT = sizeof(SET_TABS) / sizeof(SET_TABS[0]);
 int settingsTab = 0;
@@ -874,10 +880,21 @@ void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
             else if (hr::hasSaved()) snprintf(value, vn, "%s", hr::get().name);
             else snprintf(value, vn, "NONE");
             break;
+        case S_GPS: {
+            gps::Snapshot g = gps::get();
+            snprintf(label, ln, "GPS");
+            if (!g.connected && g.scanning) snprintf(value, vn, "SCANNING");
+            else if (!g.connected) snprintf(value, vn, "NO LINK");
+            else if (g.fix) snprintf(value, vn, "FIX");
+            else if (g.sats > 0) snprintf(value, vn, "%d SATS", g.sats);
+            else snprintf(value, vn, "SEARCHING");
+            break;
+        }
     }
 }
 
 const char* settingButton(int row) {
+    if (row == S_GPS) return "OPEN";
     if (row == S_HR) {
         if (hr::pairing()) return "...";
         return hr::hasSaved() ? "FORGET" : "PAIR";
@@ -940,7 +957,7 @@ void drawSettingRow(int slot, int r) {
             bool day = settings::get().dayTheme;
             c.drawString(day ? "Day" : "Night", SET_PLUS_X - 24, mid);
             iconButton(SET_PLUS_X, day ? icons::Icon::Sun : icons::Icon::Moon);
-        } else if (r == S_HR) {
+        } else if (r == S_HR || r == S_GPS) {
             int bx = W - 20 - SET_TEXT_BTN_W;
             c.drawString(value, bx - 24, mid);
             c.fillSmoothRoundRect(bx, by, SET_TEXT_BTN_W, SET_ICON, 16, th->btn);
@@ -962,7 +979,8 @@ void drawSettings() {
     char info[96];
     snprintf(info, sizeof(info), "SD card: %s   log drops: %lu", logger::sdReady() ? "OK" : "not found",
              (unsigned long)logger::dropped());
-    drawRow(S_COUNT, BTN_Y - ROW_H, info,
+    // Footer cache slot. S_COUNT is not an index: rowCache only has 12 entries.
+    drawRow(11, BTN_Y - ROW_H, info,
 #if SIM_MODE
             "build: SIMULATION",
 #else
@@ -972,6 +990,7 @@ void drawSettings() {
 }
 
 void applySettings(bool full);
+void openGps();
 
 void onSettingsTap(int x, int y) {
     if (y >= BAR_H && y < BAR_H + SET_TAB_H) {
@@ -1015,6 +1034,9 @@ void onSettingsTap(int x, int y) {
                 if (hr::hasSaved()) hr::forget();
                 else hr::startPairing();
             }
+            return;
+        case S_GPS:
+            openGps();
             return;
     }
     if (minus || plus || toggle) {
@@ -1280,6 +1302,102 @@ bool handleMapControlTap(int px, int py) {
     return false;
 }
 
+// ---- GPS screen ------------------------------------------------------------
+// Same tile grid as the main screen: four large tiles, then four small ones.
+
+void drawGpsTile(int slot, int x, int y, bool big, const char* label, const char* unit, const char* value,
+                 uint16_t color, bool numeric, int unitColor = -1) {
+    char key[96];
+    snprintf(key, sizeof(key), "g|%s|%s|%s|%u|%d", label, unit, value, (unsigned)color, unitColor);
+    if (!changed(tileCache[slot], key)) return;
+    M5Canvas& c = big ? bigC : smallC;
+    c.fillSprite(th->bg);
+    c.drawRoundRect(4, 4, c.width() - 8, c.height() - 8, 14, th->dim);
+    c.setFont(big ? &fonts::FreeSansBold18pt7b : &fonts::FreeSansBold12pt7b);
+    c.setTextSize(1);
+    c.setTextColor(th->label);
+    c.setTextDatum(top_left);
+    c.drawString(label, 20, big ? 16 : 12);
+    if (unitColor >= 0) c.setTextColor((uint16_t)unitColor);
+    c.setTextDatum(top_right);
+    c.drawString(unit, c.width() - 20, big ? 16 : 12);
+    if (numeric) {
+        drawValue(c, value, big ? 56 : 38, big ? 3.6f : 1.15f, color);
+    } else {
+        int top = big ? 64 : 34;
+        c.setTextColor(color);
+        c.setTextDatum(middle_center);
+        c.setFont(&fonts::FreeSansBold24pt7b);
+        float s = 1;
+        int tw = c.textWidth(value);
+        int fh = c.fontHeight();
+        if (tw > 0 && fh > 0) {
+            s = fminf((c.width() - 48) / (float)tw, (c.height() - top - 16) / (float)fh);
+            s = fminf(s, big ? 2.2f : 1.15f);
+        }
+        c.setTextSize(s);
+        c.drawString(value, c.width() / 2, top + (c.height() - top) / 2);
+    }
+    fb::push(c, x, y);
+}
+
+void drawGps() {
+    gps::Snapshot g = gps::get();
+    char unit[24], value[28];
+
+    const char* state = "NO LINK";
+    uint16_t stateColor = th->warn;
+    if (!g.connected && g.scanning) {
+        state = "SCANNING";
+        stateColor = th->caution;
+    } else if (g.connected && g.baud == 0) {
+        state = "SIM";
+        stateColor = th->fg;
+    } else if (g.fix) {
+        state = "FIX";
+        stateColor = th->ok;
+    } else if (g.connected) {
+        state = "SEARCHING";
+        stateColor = th->warn;
+    }
+    if (g.rxPin && g.baud) snprintf(unit, sizeof(unit), "G%d   %lu", g.rxPin, (unsigned long)g.baud);
+    else if (g.baud) snprintf(unit, sizeof(unit), "%lu", (unsigned long)g.baud);
+    else unit[0] = '\0';
+    drawGpsTile(0, 0, BAR_H, true, "GPS", unit, state, stateColor, false);
+
+    snprintf(value, sizeof(value), "%d", g.sats);
+    uint16_t sky = g.fix ? th->ok : g.sats > 0 ? th->caution : g.connected ? th->warn : th->fg;
+    drawGpsTile(1, BIG_W, BAR_H, true, "SATELLITES", "used", value, sky, true);
+
+    if (g.hdop < 90) snprintf(value, sizeof(value), "%.1f", g.hdop);
+    else snprintf(value, sizeof(value), "--");
+    uint16_t hdopColor = g.hdop <= cfg::GPS_MAX_HDOP ? th->ok : g.connected ? th->warn : th->fg;
+    snprintf(unit, sizeof(unit), "max %.0f", cfg::GPS_MAX_HDOP);
+    drawGpsTile(2, 0, BAR_H + BIG_H, true, "HDOP", unit, value, hdopColor, true);
+
+    if (g.fix) snprintf(value, sizeof(value), "%.1f", g.speed);
+    else snprintf(value, sizeof(value), "--");
+    drawGpsTile(3, BIG_W, BAR_H + BIG_H, true, "SPEED", "m/s", value, th->fg, true);
+
+    if (g.fix) snprintf(value, sizeof(value), "%.0f", g.course);
+    else snprintf(value, sizeof(value), "--");
+    drawGpsTile(4, 0, SMALL_Y, false, "COURSE", "deg", value, th->fg, true);
+
+    if (g.timeValid) snprintf(value, sizeof(value), "%02u:%02u:%02u", g.hour, g.minute, g.second);
+    else snprintf(value, sizeof(value), "--");
+    drawGpsTile(5, SMALL_W, SMALL_Y, false, "TIME", "UTC", value, th->fg, true);
+
+    if (g.updateHz > 0) snprintf(value, sizeof(value), "%.1f", g.updateHz);
+    else snprintf(value, sizeof(value), "--");
+    int signalUnit = g.failed ? (int)th->caution : -1;
+    drawGpsTile(6, 2 * SMALL_W, SMALL_Y, false, "SIGNAL", g.failed ? "bad" : "Hz", value,
+                g.failed ? th->caution : th->fg, true, signalUnit);
+
+    if (g.lat != 0 || g.lon != 0) snprintf(value, sizeof(value), "%.4f, %.4f", g.lat, g.lon);
+    else snprintf(value, sizeof(value), "--");
+    drawGpsTile(7, 3 * SMALL_W, SMALL_Y, false, "POSITION", "", value, th->fg, g.lat == 0 && g.lon == 0);
+}
+
 // ---- input -----------------------------------------------------------------
 
 void clearScreen() {
@@ -1307,7 +1425,21 @@ void setScreen(Screen next) {
     updateCamera();
 }
 
+void openGps() {
+    if (screen == Screen::Gps) return;
+    gpsBack = screen;
+    setScreen(Screen::Gps);
+}
+
+void closeGps() {
+    setScreen(gpsBack == Screen::Gps ? Screen::Main : gpsBack);
+}
+
 void nextScreen() {
+    if (screen == Screen::Gps) {
+        closeGps();
+        return;
+    }
     setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + 1) % CYCLE));
 }
 
@@ -1341,6 +1473,12 @@ void onMapsTap(int x, int y) {
 
 void onTap(int x, int y) {
     using metrics::State;
+    // Centre of the top bar is the GPS status. Tap it for diagnostics.
+    if (y < BAR_H && x >= 220 && x < 1000) {
+        if (screen == Screen::Gps) closeGps();
+        else openGps();
+        return;
+    }
     if (screen == Screen::Maps) {
         onMapsTap(x, y);
         return;
@@ -1561,6 +1699,7 @@ void command(char c) {
             if (mapFullShown() || mapOnMain()) adjustZoom(+1);  // zoom out
             break;
         case 'G': metrics::start(); break;
+        case 'g': openGps(); break;
         case 'X': metrics::stop(); break;
         case 'L': metrics::lap(); break;
         case 'R': metrics::reset(); break;
@@ -1627,6 +1766,7 @@ void loop() {
         case Screen::Settings: drawSettings(); break;
         case Screen::Sessions:
         case Screen::Maps: break;
+        case Screen::Gps: drawGps(); break;
     }
     drawButtons(v);
     forceRedraw = false;

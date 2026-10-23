@@ -20,6 +20,17 @@ struct Snapshot {
     bool timeValid = false;
     uint16_t year = 0;
     uint8_t month = 0, day = 0, hour = 0, minute = 0, second = 0;
+
+    // Diagnostics. scanning is true while baud and pin order are still being tried.
+    bool scanning = false;
+    int rxPin = 0;             // Grove pin the receiver's TX is wired to
+    int txPin = 0;
+    uint32_t sentences = 0;    // NMEA sentences with a valid checksum
+    uint32_t failed = 0;       // checksum failures
+    uint32_t fixes = 0;        // sentences that carried a position
+    uint32_t chars = 0;        // bytes read from the receiver
+    uint32_t lastByteMs = 0;   // millis() of the last byte, 0 = none yet
+    char sentence[88] = "";    // last complete NMEA sentence
 };
 
 void begin();

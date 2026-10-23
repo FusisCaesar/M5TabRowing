@@ -57,8 +57,10 @@ Windows notes:
 
 ## Using it
 
-The right-most bottom button cycles six screens. **Maps** is a seventh, opened
-with **MAPS** on the Map screen between sessions (Wi-Fi is only used there).
+The right-most bottom button cycles six screens. **Maps** is opened with **MAPS**
+on the Map screen between sessions (Wi-Fi is only used there). **GPS diagnostics** opens from the GPS status in the centre of the top bar, or
+from **OPEN** on Settings → Sensors. **BACK** returns to the screen you came
+from. Neither Maps nor GPS diagnostics is part of the six-screen cycle.
 
 | Screen | Content |
 | --- | --- |
@@ -90,7 +92,8 @@ Laps are stored in `_laps.csv` and become laps in the TCX export.
 - **Left:** `READY`, `REC S####` while recording, `STOPPED`, or `RUNNING (no SD)`.
 - **Centre:** GPS (`not connected` / `GPS on, searching` until it sees satellites,
   then `searching N sats` / `GPS n Hz n sats HDOP …` once it has a fix), a lap
-  banner, or a short hint (for example after pairing).
+  banner, or a short hint (for example after pairing). Tap this status to open
+  GPS diagnostics. Settings → Sensors has the same **OPEN** button.
 - **Right:** heart-rate state (`HR`, `HR...`, `NO HR`), `WIFI` / `WIFI...` on the
   Maps screen, `SIM` on a simulation build, local clock, battery.
 
@@ -98,6 +101,26 @@ Dates and times on screen are local (`cfg::TIMEZONE`, Amsterdam by default). Log
 files are UTC. The battery-backed clock is set from internet time whenever Wi-Fi
 is connected and from the GPS once it has a fix, and keeps time while the Tab5
 is off.
+
+### GPS
+
+Tap the centre of the top bar, or **OPEN** on the GPS row in Settings → Sensors.
+The page is the same tile layout as the main screen.
+
+| Tile | Shows |
+| --- | --- |
+| GPS | `FIX`, `SEARCHING`, `SCANNING` or `NO LINK`. The corner is the Grove pin and baud |
+| SATELLITES | satellites used |
+| HDOP | horizontal accuracy. A fix needs HDOP at or below 4, and at least 4 satellites |
+| SPEED | m/s, once there is a fix |
+| COURSE | degrees |
+| TIME | GPS time of day, UTC |
+| SIGNAL | update rate. The corner says `bad` if checksums are failing |
+| POSITION | last accepted latitude and longitude |
+
+Indoors the module can be powered and talking (`GPS on, searching`, 0 satellites,
+HDOP 25.5) while the fix LED stays dark. That LED blinks only once the receiver
+has a lock. Put the unit by a window or outside; a fix needs a clear view of the sky.
 
 ### Main screen
 
@@ -260,6 +283,8 @@ Three tabs. Values are kept in flash.
   `m`.
 - Raw IMU logging at 100 Hz, on by default. About 13 MB per hour; needed for
   `analyse.py` / `replay.py`.
+- GPS: **OPEN** shows the same tiles as the GPS page. The row shows
+  `SEARCHING`, `FIX`, `SCANNING` or `NO LINK`.
 
 The footer shows whether the SD card is present, how many log lines were
 dropped, and `build: hardware` or `build: SIMULATION`.
@@ -377,6 +402,7 @@ The scripts in `tools/` do this.
 | `H` | cycle map head-up / bow-up / north-up |
 | `+` / `-` | zoom the map |
 | `G` / `X` / `L` / `R` | start / stop / lap / reset |
+| `g` | open GPS diagnostics (`N` or BACK returns) |
 | `h` | pair the strongest heart rate sensor in range |
 | `S` | screenshot (RGB565; use `screenshot.py`) |
 | `D` | list `/rowing` session files and `/map` files |

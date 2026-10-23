@@ -114,6 +114,13 @@ void openPort(uint32_t baud) {
 }
 
 bool probe(uint32_t baud, uint32_t ms = 1500) {
+    portENTER_CRITICAL(&mux);
+    state.scanning = true;
+    state.connected = false;
+    state.baud = baud;
+    state.rxPin = rxPin;
+    state.txPin = txPin;
+    portEXIT_CRITICAL(&mux);
     openPort(baud);
     TinyGPSPlus p;
     uint32_t start = millis();
@@ -234,13 +241,15 @@ void onSentence() {
     bool satsNew = parser.satellites.isUpdated();
     bool hdopNew = parser.hdop.isUpdated();
     if (!speedNew && !locNew && !satsNew && !hdopNew) return;
-    float speed = speedNew && parser.speed.isValid() ? (float)parser.speed.mps() : 0;
-    bool locOk = locNew && parser.location.isValid() && parser.location.age() < 1500;
+    // GGA updates satellites and HDOP but not speed. Speed lives in the following
+    // RMC, so the fix has to survive a sentence that does not carry it.
+    float speed = speedNew && parser.speed.isValid() ? (float)parser.speed.mps() : state.speed;
+    bool locOk = parser.location.isValid() && parser.location.age() < 1500;
     double lat = locOk ? parser.location.lat() : state.lat;
     double lon = locOk ? parser.location.lng() : state.lon;
     float hdop = hdopNew && parser.hdop.isValid() ? (float)parser.hdop.hdop() : state.hdop;
     int sats = satsNew && parser.satellites.isValid() ? (int)parser.satellites.value() : state.sats;
-    bool good = locOk && speedNew && hdop <= cfg::GPS_MAX_HDOP && sats >= cfg::GPS_MIN_SATS;
+    bool good = locOk && hdop <= cfg::GPS_MAX_HDOP && sats >= cfg::GPS_MIN_SATS;
     bool timeOk = parser.date.isValid() && parser.time.isValid();
     float course = parser.course.isValid() ? (float)parser.course.deg() : 0;
     publishFix(lat, lon, speed, course, hdop, sats, good, timeOk, parser.date.year(), parser.date.month(),
@@ -251,11 +260,24 @@ void setConnected(bool c, uint32_t baud) {
     portENTER_CRITICAL(&mux);
     state.connected = c;
     state.baud = baud;
+    state.scanning = !c;
+    state.rxPin = rxPin;
+    state.txPin = txPin;
     if (!c) {
         state.fix = false;
         state.speed = 0;
         state.updateHz = 0;
     }
+    portEXIT_CRITICAL(&mux);
+}
+
+void noteTraffic() {
+    portENTER_CRITICAL(&mux);
+    state.sentences = parser.passedChecksum();
+    state.failed = parser.failedChecksum();
+    state.fixes = parser.sentencesWithFix();
+    state.chars = parser.charsProcessed();
+    state.lastByteMs = millis();
     portEXIT_CRITICAL(&mux);
 }
 
@@ -278,6 +300,12 @@ void simTask(void*) {
         uint32_t secs = (uint32_t)t;
         publishFix(lat, lon, v, (float)headingDeg, 0.8f, 12, true, true, 2026, 10, 18,
                    (8 + secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+        portENTER_CRITICAL(&mux);
+        state.sentences++;
+        state.fixes++;
+        state.lastByteMs = millis();
+        strlcpy(state.sentence, "$SIMRMC,simulation", sizeof(state.sentence));
+        portEXIT_CRITICAL(&mux);
     }
 }
 #endif
@@ -292,22 +320,30 @@ void task(void*) {
         }
         setConnected(true, baud);
         uint32_t lastByte = millis();
+        char line[sizeof(state.sentence)];
+        int lineLen = 0;
         for (;;) {
             bool any = false;
             while (port.available()) {
                 any = true;
-                if (parser.encode(port.read())) onSentence();
+                char c = port.read();
+                if (parser.encode(c)) onSentence();
+                if (c == '\r') continue;
+                if (c == '\n') {
+                    if (lineLen > 0) {
+                        line[lineLen] = '\0';
+                        portENTER_CRITICAL(&mux);
+                        strlcpy(state.sentence, line, sizeof(state.sentence));
+                        portEXIT_CRITICAL(&mux);
+                    }
+                    lineLen = 0;
+                } else if (lineLen < (int)sizeof(line) - 1) {
+                    line[lineLen++] = c;
+                }
             }
             if (any) {
                 lastByte = millis();
-                static uint32_t lastReport = 0;
-                if (millis() - lastReport > 10000) {
-                    lastReport = millis();
-                    Snapshot s = get();
-                    Serial.printf("[gps] baud %lu  sentences %lu  sats %d  hdop %.1f  fix %d\n",
-                                  (unsigned long)baud, (unsigned long)parser.passedChecksum(), s.sats, s.hdop,
-                                  s.fix);
-                }
+                noteTraffic();
             } else if (millis() - lastByte > cfg::GPS_SILENCE_RESCAN_MS) {
                 Serial.println("[gps] silent, rescanning");
                 break;
