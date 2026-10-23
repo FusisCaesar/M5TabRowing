@@ -88,8 +88,9 @@ Laps are stored in `_laps.csv` and become laps in the TCX export.
 ### Top bar
 
 - **Left:** `READY`, `REC S####` while recording, `STOPPED`, or `RUNNING (no SD)`.
-- **Centre:** GPS (`not connected` / `searching` with satellite count / `GPS n Hz
-  n sats HDOP …`), a lap banner, or a short hint (for example after pairing).
+- **Centre:** GPS (`not connected` / `GPS on, searching` until it sees satellites,
+  then `searching N sats` / `GPS n Hz n sats HDOP …` once it has a fix), a lap
+  banner, or a short hint (for example after pairing).
 - **Right:** heart-rate state (`HR`, `HR...`, `NO HR`), `WIFI` / `WIFI...` on the
   Maps screen, `SIM` on a simulation build, local clock, battery.
 

@@ -388,7 +388,8 @@ void drawTopBar(const metrics::View& v) {
     } else if (!v.gpsConnected) {
         snprintf(mid, sizeof(mid), "GPS not connected");
     } else if (!v.gpsFix) {
-        snprintf(mid, sizeof(mid), "GPS searching  %d sats", v.sats);
+        if (v.sats > 0) snprintf(mid, sizeof(mid), "GPS searching  %d sats", v.sats);
+        else snprintf(mid, sizeof(mid), "GPS on, searching");
     } else {
         snprintf(mid, sizeof(mid), "GPS %.0f Hz  %d sats  HDOP %.1f", v.gpsHz, v.sats, v.hdop);
     }

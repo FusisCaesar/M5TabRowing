@@ -202,8 +202,10 @@ void publishFix(double lat, double lon, float speed, float course, float hdop, i
     state.fix = good;
     state.speed = good ? speed : 0;
     state.course = lastCourse;
-    state.lat = lat;
-    state.lon = lon;
+    if (good) {
+        state.lat = lat;
+        state.lon = lon;
+    }
     state.hdop = hdop;
     state.sats = sats;
     if (shown > state.distance) state.distance = shown;
@@ -225,13 +227,20 @@ void publishFix(double lat, double lon, float speed, float course, float hdop, i
 }
 
 void onSentence() {
-    if (!parser.speed.isUpdated()) return;
-    float speed = parser.speed.isValid() ? (float)parser.speed.mps() : 0;
-    bool locOk = parser.location.isValid() && parser.location.age() < 1500;
-    double lat = parser.location.lat(), lon = parser.location.lng();
-    float hdop = parser.hdop.isValid() ? (float)parser.hdop.hdop() : 99.0f;
-    int sats = parser.satellites.isValid() ? (int)parser.satellites.value() : 0;
-    bool good = locOk && hdop <= cfg::GPS_MAX_HDOP && sats >= cfg::GPS_MIN_SATS;
+    // RMC only commits speed once there is a fix, so a receiver that is still
+    // searching would otherwise never update the satellite count.
+    bool speedNew = parser.speed.isUpdated();
+    bool locNew = parser.location.isUpdated();
+    bool satsNew = parser.satellites.isUpdated();
+    bool hdopNew = parser.hdop.isUpdated();
+    if (!speedNew && !locNew && !satsNew && !hdopNew) return;
+    float speed = speedNew && parser.speed.isValid() ? (float)parser.speed.mps() : 0;
+    bool locOk = locNew && parser.location.isValid() && parser.location.age() < 1500;
+    double lat = locOk ? parser.location.lat() : state.lat;
+    double lon = locOk ? parser.location.lng() : state.lon;
+    float hdop = hdopNew && parser.hdop.isValid() ? (float)parser.hdop.hdop() : state.hdop;
+    int sats = satsNew && parser.satellites.isValid() ? (int)parser.satellites.value() : state.sats;
+    bool good = locOk && speedNew && hdop <= cfg::GPS_MAX_HDOP && sats >= cfg::GPS_MIN_SATS;
     bool timeOk = parser.date.isValid() && parser.time.isValid();
     float course = parser.course.isValid() ? (float)parser.course.deg() : 0;
     publishFix(lat, lon, speed, course, hdop, sats, good, timeOk, parser.date.year(), parser.date.month(),
@@ -291,6 +300,14 @@ void task(void*) {
             }
             if (any) {
                 lastByte = millis();
+                static uint32_t lastReport = 0;
+                if (millis() - lastReport > 10000) {
+                    lastReport = millis();
+                    Snapshot s = get();
+                    Serial.printf("[gps] baud %lu  sentences %lu  sats %d  hdop %.1f  fix %d\n",
+                                  (unsigned long)baud, (unsigned long)parser.passedChecksum(), s.sats, s.hdop,
+                                  s.fix);
+                }
             } else if (millis() - lastByte > cfg::GPS_SILENCE_RESCAN_MS) {
                 Serial.println("[gps] silent, rescanning");
                 break;
