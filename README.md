@@ -68,7 +68,7 @@ from. Neither Maps nor GPS diagnostics is part of the six-screen cycle.
 | Map | offline waterway map with your position, heading and track |
 | Efficiency | metres per stroke against rate, efficiency score, rec:drive / check / bounce, coaching hint |
 | Plot | last 6 s of surge acceleration with catch, finish and threshold; IMU diagnostics |
-| Settings | **STROKE**, **DISPLAY** and **SENSORS** tabs |
+| Settings | **STROKE**, **DISPLAY**, **SENSORS** and **WIFI** tabs |
 | Sessions | recordings on the card: review, rename, delete |
 | Maps | download a library water, draw an area, or manage maps on the card |
 
@@ -258,7 +258,7 @@ warns that nothing is being written.
 
 ### Settings
 
-Three tabs. Values are kept in flash.
+Four tabs. Values are kept in flash.
 
 **STROKE**
 
@@ -285,6 +285,16 @@ Three tabs. Values are kept in flash.
   `analyse.py` / `replay.py`.
 - GPS: **OPEN** shows the same tiles as the GPS page. The row shows
   `SEARCHING`, `FIX`, `SCANNING` or `NO LINK`.
+
+**WIFI**
+
+The saved network, or **No network saved**. **FORGET** drops it. Below that,
+the access points in range (2.4 GHz), strongest first, with signal level and
+`open` or `lock`. Tap a locked network and type the password on the on-screen
+keyboard (**SYM** for symbols). Tap the saved network to join it again without
+retyping. **RESCAN** looks again. The top bar shows `WIFI` once it is connected.
+Wi-Fi still turns off when you leave Settings, except while the Maps screen is
+open.
 
 The footer shows whether the SD card is present, how many log lines were
 dropped, and `build: hardware` or `build: SIMULATION`.
@@ -471,13 +481,14 @@ busy, try again a minute later.
 ![Drawing an area](shots/maps_draw.png)
 ![Maps on the card](shots/maps_oncard.png)
 
-**Wi-Fi setup.** The first time, tap **WIFI SETUP** (later: hold the WIFI
-button to choose another network). The Tab5 opens its own network
-`TabRowing-XXXX` and shows a QR code; scan it with your phone, or join that
-network and open http://192.168.4.1, then pick your home network (2.4 GHz) and
-enter its password. The Tab5 remembers it. Tap **CANCEL SETUP** to leave without
-changing it. Over USB you can also send `python tools\send.py COM10 'W MyNetwork|MyPassword'`
-(single quotes in PowerShell).
+**Wi-Fi setup.** On **Settings → WIFI**, pick a network from the list. The same
+setup still works from the Maps screen: the first time, tap **WIFI SETUP**
+(later: hold the WIFI button to choose another network). The Tab5 opens its own
+network `TabRowing-XXXX` and shows a QR code; scan it with your phone, or join
+that network and open http://192.168.4.1, then pick your home network (2.4 GHz)
+and enter its password. The Tab5 remembers it. Tap **CANCEL SETUP** to leave
+without changing it. Over USB you can also send
+`python tools\send.py COM10 'W MyNetwork|MyPassword'` (single quotes in PowerShell).
 
 ![Wi-Fi setup](shots/maps_setup.png)
 

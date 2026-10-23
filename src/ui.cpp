@@ -13,6 +13,7 @@
 #include "gps_nav.h"
 #include "hr.h"
 #include "icons.h"
+#include "keyboard.h"
 #include "imu_stroke.h"
 #include "logger.h"
 #include "map_data.h"
@@ -76,6 +77,7 @@ M5Canvas plotC(&M5.Display);
 M5Canvas btnC(&M5.Display);
 M5Canvas setC(&M5.Display);
 M5Canvas setTabC(&M5.Display);
+M5Canvas wifiC(&M5.Display);
 M5Canvas mapC(&M5.Display);     // full-size map area (Map screen or full-on-Main)
 M5Canvas mapPipC(&M5.Display);  // picture-in-picture map
 M5Canvas effC(&M5.Display);     // efficiency chart
@@ -841,10 +843,26 @@ constexpr SettingsTab SET_TABS[] = {
     {"STROKE", {S_K, S_FLOOR, S_MINIMA, S_RATIO}},
     {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR}},
     {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS}},
+    {"WIFI", {-1, -1, -1, -1}},
 };
 constexpr int SET_TAB_COUNT = sizeof(SET_TABS) / sizeof(SET_TABS[0]);
+constexpr int TAB_WIFI = 3;
+constexpr int WIFI_ROW = 68;
+constexpr int WIFI_HEAD = 90;
+constexpr int WIFI_SUB = 52;
 int settingsTab = 0;
-Cache setTabCache, setRowCache[SET_ROWS];
+Cache setTabCache, setRowCache[SET_ROWS], wifiCache;
+bool wifiEditing = false;
+char wifiJoin[33] = "";
+int wifiScroll = 0;
+int wifiDragY = 0;
+int wifiScroll0 = 0;
+
+int wifiListTop() { return SET_TAB_H + WIFI_HEAD + WIFI_SUB; }
+int wifiMaxScroll() {
+    int extra = net::apCount() * WIFI_ROW - ((BTN_Y - BAR_H) - wifiListTop());
+    return extra > 0 ? extra : 0;
+}
 
 bool isNumeric(int row) { return row == S_K || row == S_FLOOR || row == S_RATIO || row == S_BRIGHT; }
 
@@ -972,7 +990,184 @@ void drawSettingRow(int slot, int r) {
     fb::push(c, 0, BAR_H + SET_TAB_H + slot * SET_ROW_H);
 }
 
+void enterWifiTab() {
+    wifiScroll = 0;
+    wifiEditing = false;
+    net::watchScan(true);
+}
+
+void leaveWifiTab() {
+    wifiEditing = false;
+    net::watchScan(false);
+}
+
+void drawWifiTabs(M5Canvas& c) {
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_center);
+    int tw = W / SET_TAB_COUNT;
+    for (int i = 0; i < SET_TAB_COUNT; i++) {
+        bool on = i == settingsTab;
+        c.fillRoundRect(i * tw + 8, 8, tw - 16, SET_TAB_H - 16, 14, on ? th->accent : th->btn);
+        c.setTextColor(on ? th->bg : th->btnText);
+        c.drawString(SET_TABS[i].name, i * tw + tw / 2, SET_TAB_H / 2);
+    }
+    c.drawFastHLine(0, SET_TAB_H - 1, W, th->dim);
+}
+
+void drawWifi() {
+    uint32_t passHash = 0;
+    if (wifiEditing)
+        for (const char* p = osk::text(); *p; ++p) passHash = passHash * 33 + (uint8_t)*p;
+    char key[96];
+    snprintf(key, sizeof(key), "%d|%lu|%d|%d|%d|%d|%s|%lu|%d", wifiEditing, (unsigned long)net::scanGeneration(),
+             net::apCount(), wifiScroll, (int)net::state(), net::hasStoredNetwork() ? 1 : 0, net::ssid(),
+             (unsigned long)passHash, net::scanning() ? 1 : 0);
+    if (!changed(wifiCache, key)) return;
+
+    M5Canvas& c = wifiC;
+    c.fillSprite(th->bg);
+    if (wifiEditing) {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextSize(1);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        char title[64];
+        snprintf(title, sizeof(title), "Password for %s", wifiJoin);
+        c.drawString(title, 24, 28);
+        Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+        osk::draw(c, 48, pal);
+        fb::push(c, 0, BAR_H);
+        return;
+    }
+
+    drawWifiTabs(c);
+    int y = SET_TAB_H;
+    c.drawFastHLine(0, y + WIFI_HEAD - 1, W, th->dim);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_left);
+    c.setTextColor(th->fg);
+    const char* saved = net::hasStoredNetwork() && net::ssid()[0] ? net::ssid() : "No network saved";
+    c.drawString(saved, 24, y + WIFI_HEAD / 2);
+    const char* status = "OFF";
+    uint16_t statusColor = th->label;
+    switch (net::state()) {
+        case net::State::Connected: status = "ON"; statusColor = th->ok; break;
+        case net::State::Connecting: status = "JOINING"; statusColor = th->caution; break;
+        case net::State::Failed: status = "FAILED"; statusColor = th->warn; break;
+        case net::State::Off: break;
+    }
+    int bx = W - 20 - SET_TEXT_BTN_W;
+    c.setTextDatum(middle_right);
+    c.setTextColor(statusColor);
+    if (net::hasStoredNetwork()) {
+        c.drawString(status, bx - 24, y + WIFI_HEAD / 2);
+        c.fillSmoothRoundRect(bx, y + (WIFI_HEAD - SET_ICON) / 2, SET_TEXT_BTN_W, SET_ICON, 16, th->btn);
+        c.setTextDatum(middle_center);
+        c.setTextColor(th->btnText);
+        c.drawString("FORGET", bx + SET_TEXT_BTN_W / 2, y + WIFI_HEAD / 2);
+    } else {
+        c.drawString(status, W - 24, y + WIFI_HEAD / 2);
+    }
+
+    y += WIFI_HEAD;
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(middle_left);
+    c.setTextColor(th->label);
+    if (net::scanning() && net::apCount() == 0) c.drawString("Scanning", 24, y + WIFI_SUB / 2);
+    else {
+        char sub[32];
+        snprintf(sub, sizeof(sub), "%d networks", net::apCount());
+        c.drawString(sub, 24, y + WIFI_SUB / 2);
+    }
+    int rx = W - 20 - 170;
+    c.fillSmoothRoundRect(rx, y + (WIFI_SUB - 44) / 2, 170, 44, 12, th->btn);
+    c.setTextDatum(middle_center);
+    c.setTextColor(th->btnText);
+    c.drawString(net::scanning() ? "SCAN..." : "RESCAN", rx + 85, y + WIFI_SUB / 2);
+
+    int listTop = wifiListTop();
+    int n = net::apCount();
+    if (n == 0 && !net::scanning()) {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->label);
+        c.drawString("No networks found", 24, listTop + 36);
+    }
+    for (int i = 0; i < n; i++) {
+        int ry = listTop + i * WIFI_ROW - wifiScroll;
+        if (ry < listTop || ry >= c.height()) continue;
+        const net::Ap* a = net::ap(i);
+        if (!a) continue;
+        c.drawFastHLine(0, ry + WIFI_ROW - 1, W, th->dim);
+        bool current = net::ssid()[0] && strcmp(a->ssid, net::ssid()) == 0 &&
+                       (net::connected() || net::state() == net::State::Connecting);
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(current ? th->accent : th->fg);
+        c.drawString(a->ssid, 24, ry + WIFI_ROW / 2);
+        char side[24];
+        snprintf(side, sizeof(side), "%d   %s", a->rssi, a->open ? "open" : "lock");
+        c.setFont(&fonts::FreeSans12pt7b);
+        c.setTextDatum(middle_right);
+        c.setTextColor(th->label);
+        c.drawString(side, W - 24, ry + WIFI_ROW / 2);
+    }
+    fb::push(c, 0, BAR_H);
+}
+
+void onWifiTap(int x, int y) {
+    int cy = y - BAR_H;
+    if (wifiEditing) {
+        Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+        osk::Result r = osk::tap(x, cy, W, 48);
+        if (r == osk::Result::Save) {
+            net::connect(wifiJoin, osk::text(), Serial);
+            wifiEditing = false;
+        } else if (r == osk::Result::Cancel) {
+            wifiEditing = false;
+        }
+        forceRedraw = true;
+        return;
+    }
+    if (cy >= SET_TAB_H && cy < SET_TAB_H + WIFI_HEAD) {
+        int bx = W - 20 - SET_TEXT_BTN_W;
+        if (net::hasStoredNetwork() && x >= bx) {
+            net::forget();
+            wifiScroll = 0;
+            net::beginScan();
+            forceRedraw = true;
+        }
+        return;
+    }
+    if (cy >= SET_TAB_H + WIFI_HEAD && cy < wifiListTop()) {
+        if (x >= W - 20 - 170) {
+            net::beginScan();
+            forceRedraw = true;
+        }
+        return;
+    }
+    int rel = cy - wifiListTop() + wifiScroll;
+    if (rel < 0) return;
+    int i = rel / WIFI_ROW;
+    const net::Ap* a = net::ap(i);
+    if (!a) return;
+    strlcpy(wifiJoin, a->ssid, sizeof(wifiJoin));
+    bool saved = net::hasStoredNetwork() && strcmp(wifiJoin, net::ssid()) == 0;
+    if (a->open || saved) net::connect(saved ? nullptr : wifiJoin, saved ? nullptr : "", Serial);
+    else {
+        osk::start("", 63, osk::Kind::Secret);
+        wifiEditing = true;
+    }
+    forceRedraw = true;
+}
+
 void drawSettings() {
+    if (settingsTab == TAB_WIFI) {
+        drawWifi();
+        return;
+    }
     drawSettingsTabs();
     for (int i = 0; i < SET_ROWS; i++) drawSettingRow(i, SET_TABS[settingsTab].rows[i]);
 
@@ -993,8 +1188,23 @@ void applySettings(bool full);
 void openGps();
 
 void onSettingsTap(int x, int y) {
+    if (settingsTab == TAB_WIFI && wifiEditing) {
+        onWifiTap(x, y);
+        return;
+    }
     if (y >= BAR_H && y < BAR_H + SET_TAB_H) {
-        settingsTab = min(SET_TAB_COUNT - 1, x / (W / SET_TAB_COUNT));
+        int tab = min(SET_TAB_COUNT - 1, x / (W / SET_TAB_COUNT));
+        if (tab != settingsTab) {
+            if (settingsTab == TAB_WIFI) leaveWifiTab();
+            settingsTab = tab;
+            if (settingsTab == TAB_WIFI) enterWifiTab();
+            M5.Display.fillRect(0, BAR_H, W, BTN_Y - BAR_H, th->bg);
+            forceRedraw = true;
+        }
+        return;
+    }
+    if (settingsTab == TAB_WIFI) {
+        onWifiTap(x, y);
         return;
     }
     int slot = (y - BAR_H - SET_TAB_H) / SET_ROW_H;
@@ -1133,7 +1343,7 @@ double mapPanLat0 = 0, mapPanLon0 = 0;
 int mapPanX0 = 0, mapPanY0 = 0;
 float mapPanMpp = 1, mapPanCourse = 0;
 uint8_t mapPanOrientation = mapview::NorthUp;
-enum class DragKind : uint8_t { None, Lists, Map } dragKind = DragKind::None;
+enum class DragKind : uint8_t { None, Lists, Map, Wifi } dragKind = DragKind::None;
 
 void mapTaskRun(void*) {
     for (;;) {
@@ -1413,7 +1623,12 @@ void setScreen(Screen next) {
         if (!mapjob::busy() && !net::setupActive()) net::disconnect();
     }
     if (screen == Screen::Sessions) sessionsui::leave();
+    if (screen == Screen::Settings) {
+        leaveWifiTab();
+        if (next != Screen::Maps && !mapjob::busy() && !net::setupActive()) net::disconnect();
+    }
     screen = next;
+    if (screen == Screen::Settings && settingsTab == TAB_WIFI) enterWifiTab();
     if (screen == Screen::Sessions) sessionsui::enter();
     if (screen == Screen::Maps) {
         mapsui::enter();
@@ -1576,6 +1791,11 @@ void dragStart(int x, int y) {
     } else if (screen == Screen::Sessions) {
         dragKind = DragKind::Lists;
         sessionsui::dragStart(x, y);
+    } else if (screen == Screen::Settings && settingsTab == TAB_WIFI && !wifiEditing &&
+               y >= BAR_H + wifiListTop()) {
+        dragKind = DragKind::Wifi;
+        wifiDragY = y;
+        wifiScroll0 = wifiScroll;
     } else if (mapFullShown() && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
         dragKind = DragKind::Map;
         mapPanX0 = x;
@@ -1594,6 +1814,13 @@ void dragStart(int x, int y) {
     }
 }
 void dragMove(int x, int y) {
+    if (dragKind == DragKind::Wifi) {
+        int next = wifiScroll0 - (y - wifiDragY);
+        if (next < 0) next = 0;
+        int cap = wifiMaxScroll();
+        wifiScroll = next > cap ? cap : next;
+        return;
+    }
     if (dragKind == DragKind::Lists) {
         if (screen == Screen::Maps) mapsui::dragMove(x, y);
         else sessionsui::dragMove(x, y);
@@ -1619,7 +1846,8 @@ void dragEnd(int x, int y) {
 }
 
 void handleDrag(const m5::touch_detail_t& t) {
-    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown()) return;
+    bool wifiList = screen == Screen::Settings && settingsTab == TAB_WIFI && !wifiEditing;
+    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown() && !wifiList) return;
     if (t.isPressed()) {
         if (!dragging && (abs(t.distanceX()) > 12 || abs(t.distanceY()) > 12)) {
             dragging = true;
@@ -1641,7 +1869,7 @@ void begin() {
     Serial.printf("[ui] display %d x %d\n", M5.Display.width(), M5.Display.height());
     M5.Touch.setHoldThresh(cfg::TOUCH_HOLD_MS);
 
-    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &setTabC, &mapC, &mapPipC, &effC, &effP}) {
+    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &setTabC, &wifiC, &mapC, &mapPipC, &effC, &effP}) {
         c->setColorDepth(16);
         c->setPsram(true);
     }
@@ -1653,6 +1881,7 @@ void begin() {
     btnC.createSprite(BTN_W, BTN_H);
     setC.createSprite(W, SET_ROW_H);
     setTabC.createSprite(W, SET_TAB_H);
+    wifiC.createSprite(W, BTN_Y - BAR_H);
     mapC.createSprite(W, FULL_CAM_H);
     mapPipC.createSprite(PIP_W, PIP_H);
     effC.createSprite(EFF_CHART_W, EFF_H);
@@ -1671,7 +1900,8 @@ void tap(int x, int y) { onTap(x, y); }
 void hold(int x, int y) { onHold(x, y); }
 
 void drag(int x0, int y0, int x1, int y1) {
-    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown()) return;
+    bool wifiList = screen == Screen::Settings && settingsTab == TAB_WIFI && !wifiEditing;
+    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown() && !wifiList) return;
     dragStart(x0, y0);
     for (int i = 1; i <= 8; i++) dragMove(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
     dragEnd(x1, y1);

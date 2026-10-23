@@ -12,7 +12,21 @@ enum class State : uint8_t { Off, Connecting, Connected, Failed };
 // it succeeds. With an empty ssid, uses the stored credentials.
 bool connect(const char* ssid, const char* pass, Print& out);
 void disconnect();
+void forget();  // drop the saved network and turn the radio off
 bool hasStoredNetwork();
+
+// Nearby access points, strongest first. beginScan turns the radio on if it was off.
+struct Ap {
+    char ssid[33];
+    int8_t rssi;
+    bool open;
+};
+void beginScan();
+void watchScan(bool on);  // while on, scan again every few seconds
+bool scanning();
+uint32_t scanGeneration();  // bumps when the list changes
+int apCount();
+const Ap* ap(int index);
 
 // Call from the main loop: reports the connect result, handles timeouts and
 // serves the setup page.

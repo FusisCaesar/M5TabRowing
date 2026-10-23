@@ -10,8 +10,12 @@ namespace osk {
 
 enum class Result : uint8_t { None, Save, Cancel };
 
-void start(const char* current, int maxLen);
-const char* text();  // trailing spaces are trimmed on SAVE
+// Name: first letter capital, for map and session titles.
+// Secret: case stays as typed, for a Wi-Fi password (up to 63 characters).
+enum class Kind : uint8_t { Name, Secret };
+
+void start(const char* current, int maxLen, Kind kind = Kind::Name);
+const char* text();  // names have trailing spaces trimmed on SAVE
 
 void draw(M5Canvas& cv, int top, const Palette& c);
 Result tap(int x, int y, int width, int top);

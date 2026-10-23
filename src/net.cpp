@@ -22,6 +22,52 @@ uint32_t lastScanMs = 0;
 uint32_t connectedInSetupMs = 0;
 bool connectFromPage = false;  // only a network chosen on the setup page closes the setup network
 
+constexpr int MAX_APS = 20;
+Ap aps[MAX_APS];
+int apN = 0;
+bool scanWanted = false;
+bool scanWatch = false;
+uint32_t scanGen = 0;
+uint32_t lastAutoScan = 0;
+
+void collectScan(int n) {
+    Ap tmp[32];
+    int tn = 0;
+    for (int i = 0; i < n; i++) {
+        String s = WiFi.SSID(i);
+        if (!s.length() || s.length() > 32) continue;
+        int rssi = WiFi.RSSI(i);
+        bool open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+        int found = -1;
+        for (int j = 0; j < tn; j++)
+            if (strcmp(tmp[j].ssid, s.c_str()) == 0) found = j;
+        if (found >= 0) {
+            if (rssi > tmp[found].rssi) {
+                tmp[found].rssi = (int8_t)rssi;
+                tmp[found].open = open;
+            }
+            continue;
+        }
+        if (tn >= (int)(sizeof(tmp) / sizeof(tmp[0]))) continue;
+        strlcpy(tmp[tn].ssid, s.c_str(), sizeof(tmp[tn].ssid));
+        tmp[tn].rssi = (int8_t)rssi;
+        tmp[tn].open = open;
+        tn++;
+    }
+    for (int i = 1; i < tn; i++) {
+        Ap key = tmp[i];
+        int j = i;
+        while (j > 0 && tmp[j - 1].rssi < key.rssi) {
+            tmp[j] = tmp[j - 1];
+            j--;
+        }
+        tmp[j] = key;
+    }
+    apN = tn < MAX_APS ? tn : MAX_APS;
+    for (int i = 0; i < apN; i++) aps[i] = tmp[i];
+    scanGen++;
+}
+
 String htmlEscape(const String& s) {
     String o;
     for (size_t i = 0; i < s.length(); i++) {
@@ -151,6 +197,21 @@ void loop(Print& out) {
         // Give the phone a moment to load the reply before the setup network closes.
         if (connectedInSetupMs && millis() - connectedInSetupMs > 5000) stopSetup();
     }
+
+    if (scanWanted) {
+        int n = WiFi.scanComplete();
+        if (n >= 0) {
+            collectScan(n);
+            WiFi.scanDelete();
+            scanWanted = false;
+        } else if (n == WIFI_SCAN_FAILED) {
+            scanWanted = false;
+            scanGen++;
+        }
+    } else if (scanWatch && !server && st != State::Connecting &&
+               WiFi.scanComplete() != WIFI_SCAN_RUNNING && millis() - lastAutoScan > SCAN_INTERVAL_MS) {
+        beginScan();
+    }
 }
 
 void disconnect() {
@@ -158,6 +219,42 @@ void disconnect() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     st = State::Off;
+}
+
+void forget() {
+    disconnect();
+    Preferences prefs;
+    prefs.begin("net", false);
+    prefs.remove("ssid");
+    prefs.remove("pass");
+    prefs.end();
+    currentSsid = "";
+    pendingSsid = "";
+    pendingPass = "";
+}
+
+void beginScan() {
+    if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) return;
+    if (!server && WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
+    lastAutoScan = millis();
+    scanWanted = true;
+    WiFi.scanNetworks(true);
+}
+
+void watchScan(bool on) {
+    scanWatch = on;
+    if (on) beginScan();
+}
+
+bool scanning() { return scanWanted || WiFi.scanComplete() == WIFI_SCAN_RUNNING; }
+
+uint32_t scanGeneration() { return scanGen; }
+
+int apCount() { return apN; }
+
+const Ap* ap(int index) {
+    if (index < 0 || index >= apN) return nullptr;
+    return &aps[index];
 }
 
 bool hasStoredNetwork() {
