@@ -33,4 +33,7 @@ void dragEnd(int x, int y);
 // Shows a short message in the header (e.g. why a download cannot start).
 void message(const char* text);
 
+// True once after a tap on a map in the ON CARD list, which is now the loaded map.
+bool takeShown();
+
 }  // namespace mapsui

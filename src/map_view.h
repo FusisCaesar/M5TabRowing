@@ -34,6 +34,29 @@ struct View {
     const double* trackLon = nullptr;
     const uint16_t* trackColor = nullptr;
     int trackCount = 0;
+
+    // Live targets. The selected one is drawn larger, with a line from the boat
+    // unless a segment route is set, which is drawn instead.
+    struct Pin {
+        double lat = 0, lon = 0;
+        bool selected = false;
+        char name[40] = "";
+    };
+    static constexpr int MAX_PINS = 12;
+    Pin pins[MAX_PINS];
+    int pinCount = 0;
+
+    // Selected segment, start to finish through the via points.
+    static constexpr int MAX_ROUTE = 12;
+    double routeLat[MAX_ROUTE] = {};
+    double routeLon[MAX_ROUTE] = {};
+    int routeCount = 0;
+    int routeNext = 0;  // point the boat is heading for
+
+    // Start line across the first point, already in lat/lon.
+    bool showStartLine = false;
+    double lineLat[2] = {};
+    double lineLon[2] = {};
 };
 
 void begin();  // allocates scratch buffers in PSRAM
@@ -48,5 +71,8 @@ bool recenterRect(const M5Canvas& c, int& x, int& y, int& w, int& h, bool large 
 // Move the view centre with a finger drag (screen pixels, y down).
 void panCenter(double& lat, double& lon, float dxPx, float dyPx, float metersPerPixel, uint8_t orientation,
                float course);
+
+// Lat/lon under a point on the canvas this view was drawn into. False when there is no map.
+bool latLonAt(const View& v, int canvasW, int canvasH, float sx, float sy, double& lat, double& lon);
 
 }  // namespace mapview

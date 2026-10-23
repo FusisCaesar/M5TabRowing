@@ -335,6 +335,31 @@ void panCenter(double& lat, double& lon, float dxPx, float dyPx, float metersPer
     lon += east / (111320.0 * cos(lat * M_PI / 180.0));
 }
 
+bool latLonAt(const View& v, int canvasW, int canvasH, float sx, float sy, double& lat, double& lon) {
+    if (canvasW < 1 || canvasH < 1) return false;
+    mapdata::Guard guard;
+    bool review = v.trackCount > 0;
+    if (!mapdata::loaded() && !review) return false;
+    double blat = v.lat, blon = v.lon;
+    if (!v.haveFix && !review && !mapdata::centerLatLon(blat, blon)) return false;
+    double olat = v.followBoat ? blat : v.centerLat;
+    double olon = v.followBoat ? blon : v.centerLon;
+    // Inverse of the renderer's screen transform: metres east/north of the view centre.
+    float B = rotationDeg(v) * (float)M_PI / 180.0f;
+    float cosB = cosf(B), sinB = sinf(B);
+    float cx = canvasW / 2.0f;
+    float cy = v.orientation == NorthUp ? canvasH / 2.0f : canvasH * 0.62f;
+    float xr = (sx - cx) * v.metersPerPixel;
+    float yr = (cy - sy) * v.metersPerPixel;
+    float east = xr * cosB + yr * sinB;
+    float north = -xr * sinB + yr * cosB;
+    double lonScale = 111320.0 * cos(olat * M_PI / 180.0);
+    if (fabs(lonScale) < 1) return false;
+    lat = olat + north / 111320.0;
+    lon = olon + east / lonScale;
+    return true;
+}
+
 static void renderLocked(M5Canvas& c, const View& v);
 
 void render(M5Canvas& c, const View& v) {
@@ -492,6 +517,79 @@ static void renderLocked(M5Canvas& c, const View& v) {
             c.setTextDatum(middle_left);
             c.setTextColor(COL_TEXT);
             c.drawString(ft.name, sx + 9, sy);
+        }
+    }
+
+    if (!review && (v.pinCount > 0 || v.routeCount >= 2)) {
+        float bsx, bsy;
+        xf.toScreen(bxi, byi, bsx, bsy);
+        int nRoute = v.routeCount < View::MAX_ROUTE ? v.routeCount : View::MAX_ROUTE;
+        if (nRoute >= 2) {
+            float px = 0, py = 0;
+            bool have = false;
+            for (int i = 0; i < nRoute; i++) {
+                int32_t tx, ty;
+                project(v.routeLat[i], v.routeLon[i], tx, ty);
+                float sx, sy;
+                xf.toScreen(tx, ty, sx, sy);
+                if (have) c.drawWideLine(px, py, sx, sy, 5, COL_BOAT);
+                px = sx;
+                py = sy;
+                have = true;
+            }
+            if (v.haveFix && v.routeNext >= 0 && v.routeNext < nRoute) {
+                int32_t tx, ty;
+                project(v.routeLat[v.routeNext], v.routeLon[v.routeNext], tx, ty);
+                float sx, sy;
+                xf.toScreen(tx, ty, sx, sy);
+                c.drawWideLine(bsx, bsy, sx, sy, 3, COL_BOAT);
+            }
+        }
+        if (v.showStartLine) {
+            int32_t tx, ty;
+            project(v.lineLat[0], v.lineLon[0], tx, ty);
+            float x0, y0;
+            xf.toScreen(tx, ty, x0, y0);
+            project(v.lineLat[1], v.lineLon[1], tx, ty);
+            float x1, y1;
+            xf.toScreen(tx, ty, x1, y1);
+            c.drawWideLine(x0, y0, x1, y1, 6, COL_TEXT);
+        }
+        int nPins = v.pinCount < View::MAX_PINS ? v.pinCount : View::MAX_PINS;
+        // A segment already joins the boat to the next point, so a second line to one target would cut across it.
+        if (nRoute < 2) {
+            for (int i = 0; i < nPins; i++) {
+                if (!v.pins[i].selected || !v.haveFix) continue;
+                int32_t tx, ty;
+                project(v.pins[i].lat, v.pins[i].lon, tx, ty);
+                float sx, sy;
+                xf.toScreen(tx, ty, sx, sy);
+                c.drawWideLine(bsx, bsy, sx, sy, 3, COL_BOAT);
+            }
+        }
+        c.setFont(&fonts::FreeSans9pt7b);
+        c.setTextSize(1);
+        c.setTextDatum(middle_left);
+        for (int i = 0; i < nPins; i++) {
+            int32_t tx, ty;
+            project(v.pins[i].lat, v.pins[i].lon, tx, ty);
+            float sx, sy;
+            xf.toScreen(tx, ty, sx, sy);
+            int r = v.pins[i].selected ? 12 : 7;
+            if (v.pins[i].selected) c.fillCircle(sx, sy, r, COL_BOAT);
+            c.drawCircle(sx, sy, r, COL_TEXT);
+            if (v.pins[i].selected) c.drawCircle(sx, sy, r + 5, COL_BOAT);
+            if (v.pins[i].name[0]) {
+                c.setTextColor(COL_TEXT);
+                c.drawString(v.pins[i].name, sx + r + 8, sy);
+            }
+        }
+        if (nRoute >= 2 && v.routeNext >= 0 && v.routeNext < nRoute) {
+            int32_t tx, ty;
+            project(v.routeLat[v.routeNext], v.routeLon[v.routeNext], tx, ty);
+            float sx, sy;
+            xf.toScreen(tx, ty, sx, sy);
+            c.drawCircle(sx, sy, 16, COL_BOAT);
         }
     }
 

@@ -23,8 +23,10 @@
 #include "net.h"
 #include "metrics.h"
 #include "rtclock.h"
+#include "segments.h"
 #include "sessions_ui.h"
 #include "settings.h"
+#include "targets.h"
 #include "track.h"
 
 namespace ui {
@@ -54,9 +56,10 @@ constexpr int PLOT_POINTS = 600;   // 6 s at 100 Hz
 constexpr float PLOT_RANGE_G = 0.6f;
 
 // The NEXT button cycles through the first CYCLE screens. Maps opens from the Map
-// screen; GPS diagnostics opens from the top bar and is not part of the cycle.
+// screen; GPS diagnostics opens from the top bar; the target and segment lists
+// open from the map. None of those is part of the cycle.
 // Screens from Sessions on draw their own content area (sessions_ui, maps_ui).
-enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps, Gps };
+enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps, Gps, Targets, Segments };
 constexpr int CYCLE = 6;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
 // Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
@@ -85,6 +88,8 @@ M5Canvas effP(&M5.Display);     // efficiency score and technique panel
 
 Screen screen = Screen::Main;
 Screen gpsBack = Screen::Main;
+Screen tgtBack = Screen::Main;
+Screen segBack = Screen::Main;
 const Theme* th = &NIGHT;
 bool forceRedraw = true;
 camera::Status camShown = camera::Status::Off;
@@ -95,7 +100,7 @@ bool dragging = false;
 constexpr int MAPS_BTN_X = 16, MAPS_BTN_Y = 16, MAPS_BTN_W = 170, MAPS_BTN_H = 64;
 
 struct Cache {
-    char text[96];
+    char text[120];
 };
 Cache tileCache[TILE_SLOTS], btnCache[BTN_COUNT], barCache, rowCache[12];
 
@@ -255,6 +260,41 @@ void fillMetric(TileMetric m, const metrics::View& v, char* label, char* unit, c
             if (v.speed > 0.05f) snprintf(value, vn, "%.1f", v.speed);
             else snprintf(value, vn, "--");
             break;
+        case TileMetric::Dtt:
+        case TileMetric::Ttt:
+        case TileMetric::Finish: {
+            // A selected segment counts down to its start line, then along the points to the finish.
+            bool course = segments::selected() >= 0;
+            bool toFinish = !course || segments::onCourse();
+            strcpy(label, m == TileMetric::Dtt ? (course ? (toFinish ? "DTF" : "DTS") : "DTT")
+                               : m == TileMetric::Ttt ? (course ? (toFinish ? "TTF" : "TTS") : "TTT")
+                                                       : (course && !toFinish ? "START" : "FINISH"));
+            const char* name = course ? segments::selectedName() : targets::selectedName();
+            if (name[0]) strlcpy(unit, name, 40);
+            double blat = 0, blon = 0;
+            gps::Snapshot g = gps::get();
+            bool have = g.lat != 0 || g.lon != 0;
+            if (have) {
+                blat = g.lat;
+                blon = g.lon;
+            }
+            float d = -1;
+            if (have) {
+                if (!course) d = targets::distanceFrom(blat, blon);
+                else d = toFinish ? segments::remaining(blat, blon) : segments::distanceToStart(blat, blon);
+            }
+            if (d < 0) snprintf(value, vn, "--");
+            else if (m == TileMetric::Dtt) snprintf(value, vn, "%d", (int)lroundf(d));
+            else if (m == TileMetric::Ttt) {
+                if (v.speed > cfg::GPS_SPEED_ZERO_MPS) fmtTime(value, vn, d / v.speed);
+                else snprintf(value, vn, "--");
+            } else if (v.avgSplit > 0) {
+                fmtTime(value, vn, d * v.avgSplit / 500.0f);
+            } else {
+                snprintf(value, vn, "--");
+            }
+            break;
+        }
         case TileMetric::Count:
         default:
             strcpy(label, "SPLIT");
@@ -267,11 +307,11 @@ void fillMetric(TileMetric m, const metrics::View& v, char* label, char* unit, c
 void drawSlot(int slot, int x, int y, bool big, const metrics::View& v) {
     TileMetric m = (TileMetric)settings::get().tiles[slot];
     if ((uint8_t)m >= (uint8_t)TileMetric::Count) m = TileMetric::Split;
-    char label[16], unit[16], value[24];
+    char label[16], unit[40], value[24];
     uint16_t color;
     int unitColor;
     fillMetric(m, v, label, unit, value, sizeof(value), color, unitColor);
-    char key[80];
+    char key[120];
     snprintf(key, sizeof(key), "%d|%s|%s|%s|%u", (int)m, label, unit, value, (unsigned)color);
     if (!changed(tileCache[slot], key)) return;
     drawTile(big ? bigC : smallC, x, y, label, unit, value, big, color, unitColor);
@@ -329,7 +369,13 @@ void drawTile(M5Canvas& c, int x, int y, const char* label, const char* unit, co
     c.drawString(label, 20, big ? 16 : 12);
     if (unitColor >= 0) c.setTextColor((uint16_t)unitColor);
     c.setTextDatum(top_right);
-    c.drawString(unit, c.width() - 20, big ? 16 : 12);
+    // A target name can be longer than the corner, so it stops before the label.
+    int unitMax = c.width() - 48 - c.textWidth(label);
+    if (unit[0] && unitMax > 8) {
+        c.setClipRect(c.width() - 20 - unitMax, 0, unitMax + 20, big ? 52 : 36);
+        c.drawString(unit, c.width() - 20, big ? 16 : 12);
+        c.clearClipRect();
+    }
     drawValue(c, value, big ? 56 : 38, big ? 3.6f : 1.15f, color);
     fb::push(c, x, y);
 }
@@ -497,7 +543,7 @@ void drawButtons(const metrics::View& v) {
         drawButton(3, "", false);
     }
 
-    if (screen == Screen::Gps) {
+    if (screen == Screen::Gps || screen == Screen::Targets || screen == Screen::Segments) {
         drawButton(4, "BACK", true);
         return;
     }
@@ -1343,7 +1389,7 @@ double mapPanLat0 = 0, mapPanLon0 = 0;
 int mapPanX0 = 0, mapPanY0 = 0;
 float mapPanMpp = 1, mapPanCourse = 0;
 uint8_t mapPanOrientation = mapview::NorthUp;
-enum class DragKind : uint8_t { None, Lists, Map, Wifi } dragKind = DragKind::None;
+enum class DragKind : uint8_t { None, Lists, Map, Wifi, Targets, Segments } dragKind = DragKind::None;
 
 void mapTaskRun(void*) {
     for (;;) {
@@ -1357,17 +1403,99 @@ void startMapTask() {
     xTaskCreatePinnedToCore(mapTaskRun, "map", 8192, nullptr, 1, &mapTask, 0);
 }
 
+// Canvas coordinates. The pair sits under MAPS between sessions, and in that corner while recording.
+void targetsButtonRect(int& x, int& y, int& w, int& h) {
+    x = MAPS_BTN_X;
+    y = mapsButtonShown() ? MAPS_BTN_Y + MAPS_BTN_H + 12 : MAPS_BTN_Y;
+    w = 190;
+    h = MAPS_BTN_H;
+}
+
+void segmentsButtonRect(int& x, int& y, int& w, int& h) {
+    int tx, ty, tw, th;
+    targetsButtonRect(tx, ty, tw, th);
+    x = tx + tw + 12;
+    y = ty;
+    w = 210;
+    h = th;
+}
+
+bool mapCornerHit(int px, int py, void (*rect)(int&, int&, int&, int&)) {
+    if (screen != Screen::Map) return false;
+    int x, y, w, h;
+    rect(x, y, w, h);
+    return px >= x && px < x + w && py >= FULL_CAM_Y + y && py < FULL_CAM_Y + y + h;
+}
+
+bool targetsButtonHit(int px, int py) { return mapCornerHit(px, py, targetsButtonRect); }
+bool segmentsButtonHit(int px, int py) { return mapCornerHit(px, py, segmentsButtonRect); }
+
 void pushMap(M5Canvas* cv, int sx, int sy) {
+    cv->setFont(&fonts::FreeSansBold12pt7b);
+    cv->setTextSize(1);
+    cv->setTextDatum(middle_center);
     if (mapsButtonShown()) {
         cv->fillRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, th->btn);
         cv->drawRoundRect(MAPS_BTN_X, MAPS_BTN_Y, MAPS_BTN_W, MAPS_BTN_H, 10, th->dim);
-        cv->setFont(&fonts::FreeSansBold12pt7b);
-        cv->setTextSize(1);
         cv->setTextColor(th->btnText);
-        cv->setTextDatum(middle_center);
         cv->drawString("MAPS", MAPS_BTN_X + MAPS_BTN_W / 2, MAPS_BTN_Y + MAPS_BTN_H / 2);
     }
+    if (screen == Screen::Map) {
+        int x, y, w, h;
+        targetsButtonRect(x, y, w, h);
+        bool lit = targets::selected() >= 0;
+        cv->fillRoundRect(x, y, w, h, 10, lit ? th->accent : th->btn);
+        cv->drawRoundRect(x, y, w, h, 10, th->dim);
+        cv->setTextColor(lit ? th->bg : th->btnText);
+        cv->drawString("TARGETS", x + w / 2, y + h / 2);
+        segmentsButtonRect(x, y, w, h);
+        lit = segments::selected() >= 0;
+        cv->fillRoundRect(x, y, w, h, 10, lit ? th->accent : th->btn);
+        cv->drawRoundRect(x, y, w, h, 10, th->dim);
+        cv->setTextColor(lit ? th->bg : th->btnText);
+        cv->drawString("SEGMENTS", x + w / 2, y + h / 2);
+    }
     fb::push(*cv, sx, sy);
+}
+
+void fillLiveMapView(mapview::View& mv, bool full, int canvasW) {
+    const Settings& s = settings::get();
+    gps::Snapshot g = gps::get();
+    mv.lat = g.lat;
+    mv.lon = g.lon;
+    mv.course = g.course;
+    mv.haveFix = g.fix;
+    mv.orientation = s.mapOrientation;
+    mv.showControls = full;
+    mv.largeControls = full && metrics::view().state == metrics::State::Running;
+    mv.followBoat = mapFollow;
+    mv.centerLat = mapCenterLat;
+    mv.centerLon = mapCenterLon;
+    mv.showRecenter = full && !mapFollow;
+    mv.day = s.dayTheme;
+    int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
+    mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)canvasW;
+    mv.pinCount = targets::count();
+    if (mv.pinCount > mapview::View::MAX_PINS) mv.pinCount = mapview::View::MAX_PINS;
+    int sel = targets::selected();
+    for (int i = 0; i < mv.pinCount; i++) {
+        const targets::Target* t = targets::get(i);
+        if (!t) continue;
+        mv.pins[i].lat = t->lat;
+        mv.pins[i].lon = t->lon;
+        mv.pins[i].selected = i == sel;
+        strlcpy(mv.pins[i].name, t->name, sizeof(mv.pins[i].name));
+    }
+    mv.routeCount = 0;
+    mv.routeNext = 0;
+    mv.showStartLine = false;
+    if (segments::selected() >= 0) {
+        if (g.lat != 0 || g.lon != 0) segments::track(g.lat, g.lon);
+        mv.routeCount = segments::selectedRoute(mv.routeLat, mv.routeLon, mapview::View::MAX_ROUTE);
+        int nx = segments::nextPoint();
+        mv.routeNext = nx < 0 ? 0 : nx;
+        mv.showStartLine = segments::startLine(mv.lineLat[0], mv.lineLon[0], mv.lineLat[1], mv.lineLon[1]);
+    }
 }
 
 void drawMapContent() {
@@ -1390,24 +1518,9 @@ void drawMapContent() {
     if (!mapRedrawPending && millis() - lastMap < cfg::MAP_FRAME_MS) return;
     mapRedrawPending = false;
 
-    const Settings& s = settings::get();
-    gps::Snapshot g = gps::get();
+    if (!full && !mapdata::held()) mapFollow = true;
     mapview::View mv;
-    mv.lat = g.lat;
-    mv.lon = g.lon;
-    mv.course = g.course;
-    mv.haveFix = g.fix;
-    mv.orientation = s.mapOrientation;
-    mv.showControls = full;
-    mv.largeControls = full && metrics::view().state == metrics::State::Running;
-    if (!full) mapFollow = true;
-    mv.followBoat = mapFollow;
-    mv.centerLat = mapCenterLat;
-    mv.centerLon = mapCenterLon;
-    mv.showRecenter = full && !mapFollow;
-    mv.day = s.dayTheme;
-    int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
-    mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
+    fillLiveMapView(mv, full, cv->width());
     mapJobCanvas = cv;
     mapJobView = mv;
     mapJobLayout = layoutGen;
@@ -1419,7 +1532,7 @@ void cyclePip() {
     Settings& s = settings::get();
     s.pipMode = (uint8_t)((s.pipMode + 1) % 3);
     settings::save();
-    if (s.pipMode != PipMap || !s.camFull) mapFollow = true;
+    if ((s.pipMode != PipMap || !s.camFull) && !mapdata::held()) mapFollow = true;
     clearScreen();
     updateCamera();
 }
@@ -1428,15 +1541,34 @@ void togglePipFull() {
     Settings& s = settings::get();
     s.camFull = !s.camFull;
     settings::save();
-    if (!s.camFull) mapFollow = true;
+    if (!s.camFull && !mapdata::held()) mapFollow = true;
     clearScreen();
     updateCamera();
 }
 
 void recenterMap() {
+    mapdata::release();
     mapFollow = true;
     mapRedrawPending = true;
     forceRedraw = true;
+}
+
+void addTargetAt(int cx, int cy) {
+    mapview::View mv;
+    fillLiveMapView(mv, true, mapC.width());
+    double lat = 0, lon = 0;
+    if (!mapview::latLonAt(mv, mapC.width(), mapC.height(), (float)cx, (float)cy, lat, lon)) {
+        showHint("No map to mark");
+        return;
+    }
+    if (!targets::add(lat, lon)) {
+        showHint("Target list is full");
+        return;
+    }
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Target %s", targets::selectedName());
+    showHint(msg);
+    mapRedrawPending = true;
 }
 
 void boatLatLon(double& lat, double& lon) {
@@ -1463,6 +1595,8 @@ bool mapControlHit(int px, int py) {
     if (mapsButtonShown() && px >= MAPS_BTN_X && px < MAPS_BTN_X + MAPS_BTN_W &&
         py >= FULL_CAM_Y + MAPS_BTN_Y && py < FULL_CAM_Y + MAPS_BTN_Y + MAPS_BTN_H)
         return true;
+    if (targetsButtonHit(px, py)) return true;
+    if (segmentsButtonHit(px, py)) return true;
     return false;
 }
 
@@ -1635,7 +1769,8 @@ void setScreen(Screen next) {
         if (net::state() == net::State::Off && net::hasStoredNetwork()) net::connect(nullptr, nullptr, Serial);
     }
     dragging = false;
-    if (next != Screen::Map) mapFollow = true;
+    if (next != Screen::Map && next != Screen::Targets && next != Screen::Segments && !mapdata::held())
+        mapFollow = true;
     clearScreen();
     updateCamera();
 }
@@ -1650,9 +1785,514 @@ void closeGps() {
     setScreen(gpsBack == Screen::Gps ? Screen::Main : gpsBack);
 }
 
+constexpr int TGT_HEAD = 80;
+constexpr int TGT_ROW = 84;
+constexpr int TGT_BTN_W = 150;
+int tgtScroll = 0;
+int tgtDragY = 0;
+int tgtScroll0 = 0;
+int tgtEdit = -1;  // row whose name is on the keyboard, or -1
+
+int tgtDeleteX() { return W - 20 - TGT_BTN_W; }
+int tgtRenameX() { return tgtDeleteX() - 12 - TGT_BTN_W; }
+
+int tgtMaxScroll() {
+    int extra = targets::count() * TGT_ROW - ((BTN_Y - BAR_H) - TGT_HEAD);
+    return extra > 0 ? extra : 0;
+}
+
+void openTargets() {
+    if (screen == Screen::Targets) return;
+    tgtBack = screen;
+    tgtScroll = 0;
+    setScreen(Screen::Targets);
+}
+
+void closeTargets() {
+    tgtEdit = -1;
+    setScreen(tgtBack == Screen::Targets ? Screen::Map : tgtBack);
+}
+
+void drawTargets() {
+    if (tgtEdit >= 0) {
+        uint32_t pass = 0;
+        for (const char* p = osk::text(); *p; ++p) pass = pass * 33 + (uint8_t)*p;
+        char ekey[24];
+        snprintf(ekey, sizeof(ekey), "%d|%lu", tgtEdit, (unsigned long)pass);
+        static char eshown[24];
+        if (!forceRedraw && strcmp(eshown, ekey) == 0) return;
+        strlcpy(eshown, ekey, sizeof(eshown));
+        M5Canvas& c = wifiC;
+        c.fillSprite(th->bg);
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextSize(1);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        const targets::Target* t = targets::get(tgtEdit);
+        char title[56];
+        snprintf(title, sizeof(title), "Rename %s", t ? t->name : "");
+        c.drawString(title, 24, 28);
+        Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+        osk::draw(c, 48, pal);
+        fb::push(c, 0, BAR_H);
+        return;
+    }
+    if (tgtScroll > tgtMaxScroll()) tgtScroll = tgtMaxScroll();
+    gps::Snapshot g = gps::get();
+    bool have = g.lat != 0 || g.lon != 0;
+    static char key[768];
+    int pos = snprintf(key, sizeof(key), "%d|%d|%d|", targets::selected(), tgtScroll, targets::count());
+    for (int i = 0; i < targets::count() && pos < (int)sizeof(key) - 16; i++) {
+        const targets::Target* t = targets::get(i);
+        int metres = have && t ? (int)lroundf(targets::metresBetween(g.lat, g.lon, t->lat, t->lon)) : -1;
+        pos += snprintf(key + pos, sizeof(key) - pos, "%s,%d;", t ? t->name : "", metres);
+    }
+    static char shown[768];
+    if (!forceRedraw && strcmp(shown, key) == 0) return;
+    strlcpy(shown, key, sizeof(shown));
+
+    M5Canvas& c = wifiC;
+    c.fillSprite(th->bg);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextSize(1);
+    c.setTextDatum(middle_left);
+    c.setTextColor(th->fg);
+    c.drawString("TARGETS", 24, 36);
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(middle_right);
+    c.setTextColor(th->label);
+    c.drawString("Hold the map to add", W - 24, 36);
+    c.drawFastHLine(0, TGT_HEAD - 1, W, th->dim);
+
+    int n = targets::count();
+    if (n == 0) {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->label);
+        c.drawString("No targets yet", 24, TGT_HEAD + 48);
+    }
+    for (int i = 0; i < n; i++) {
+        int ry = TGT_HEAD + i * TGT_ROW - tgtScroll;
+        if (ry < TGT_HEAD || ry >= c.height()) continue;
+        const targets::Target* t = targets::get(i);
+        if (!t) continue;
+        c.drawFastHLine(0, ry + TGT_ROW - 1, W, th->dim);
+        bool on = i == targets::selected();
+        char dist[24] = "--";
+        if (have) snprintf(dist, sizeof(dist), "%d m",
+                           (int)lroundf(targets::metresBetween(g.lat, g.lon, t->lat, t->lon)));
+        int rx = tgtRenameX();
+        int dx = tgtDeleteX();
+        int nameW = rx - 120;
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        if (c.textWidth(t->name) > nameW) c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextColor(on ? th->accent : th->fg);
+        c.setClipRect(16, ry, nameW, TGT_ROW);
+        c.drawString(t->name, 24, ry + TGT_ROW / 2);
+        c.clearClipRect();
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(middle_right);
+        c.setTextColor(th->label);
+        c.drawString(dist, rx - 16, ry + TGT_ROW / 2);
+        auto textBtn = [&](int x, const char* label) {
+            c.fillSmoothRoundRect(x, ry + (TGT_ROW - 52) / 2, TGT_BTN_W, 52, 12, th->btn);
+            c.setTextDatum(middle_center);
+            c.setTextColor(th->btnText);
+            c.drawString(label, x + TGT_BTN_W / 2, ry + TGT_ROW / 2);
+        };
+        textBtn(rx, "RENAME");
+        textBtn(dx, "DELETE");
+    }
+    fb::push(c, 0, BAR_H);
+}
+
+void onTargetsTap(int x, int y) {
+    int cy = y - BAR_H;
+    if (tgtEdit >= 0) {
+        Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+        osk::Result r = osk::tap(x, cy, W, 48);
+        if (r == osk::Result::Save) {
+            if (targets::rename(tgtEdit, osk::text())) tgtEdit = -1;
+            else showHint("A target needs a name");
+        } else if (r == osk::Result::Cancel) {
+            tgtEdit = -1;
+        }
+        forceRedraw = true;
+        return;
+    }
+    if (cy < TGT_HEAD) return;
+    int i = (cy - TGT_HEAD + tgtScroll) / TGT_ROW;
+    if (!targets::get(i)) return;
+    if (x >= tgtDeleteX()) {
+        if (tgtEdit == i) tgtEdit = -1;
+        targets::remove(i);
+        if (tgtScroll > tgtMaxScroll()) tgtScroll = tgtMaxScroll();
+        mapRedrawPending = true;
+        return;
+    }
+    if (x >= tgtRenameX()) {
+        const targets::Target* t = targets::get(i);
+        tgtEdit = i;
+        osk::start(t ? t->name : "", targets::NAME_LEN - 1);
+        forceRedraw = true;
+        return;
+    }
+    targets::select(targets::selected() == i ? -1 : i);
+    if (targets::selected() >= 0) {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "Target %s", targets::selectedName());
+        showHint(msg);
+    }
+    mapRedrawPending = true;
+}
+
+constexpr int SEG_HEAD = 80;
+constexpr int SEG_BUILD_HEAD = 108;
+constexpr int SEG_ROW = 84;
+constexpr int SEG_BTN_W = 130;
+int segScroll = 0;
+int segDragY = 0;
+int segScroll0 = 0;
+int segRename = -1;   // segment whose name is on the keyboard, or -1
+int segEdit = -1;     // segment being rebuilt, or -1 for a new one
+bool segBuilding = false;
+int8_t segDraft[segments::MAX_POINTS];
+int segDraftN = 0;
+
+int segDeleteX() { return W - 16 - SEG_BTN_W; }
+int segRenameX() { return segDeleteX() - 8 - SEG_BTN_W; }
+int segEditX() { return segRenameX() - 8 - SEG_BTN_W; }
+int segActionX() { return W - 16 - 150; }
+
+int segHead() { return segBuilding ? SEG_BUILD_HEAD : SEG_HEAD; }
+
+int segMaxScroll() {
+    int rows = segBuilding ? targets::count() : segments::count();
+    int extra = rows * SEG_ROW - ((BTN_Y - BAR_H) - segHead());
+    return extra > 0 ? extra : 0;
+}
+
+void openSegments() {
+    if (screen == Screen::Segments) return;
+    segBack = screen;
+    segScroll = 0;
+    segBuilding = false;
+    segRename = -1;
+    setScreen(Screen::Segments);
+}
+
+void closeSegments() {
+    if (segRename >= 0) {
+        segRename = -1;
+        forceRedraw = true;
+        return;
+    }
+    if (segBuilding) {
+        segBuilding = false;
+        segScroll = 0;
+        forceRedraw = true;
+        return;
+    }
+    setScreen(segBack == Screen::Segments ? Screen::Map : segBack);
+}
+
+void startSegmentBuilder(int editIndex) {
+    segBuilding = true;
+    segEdit = editIndex;
+    segDraftN = 0;
+    segScroll = 0;
+    if (editIndex >= 0) {
+        const segments::Segment* s = segments::get(editIndex);
+        if (s) {
+            segDraftN = s->count;
+            if (segDraftN > segments::MAX_POINTS) segDraftN = segments::MAX_POINTS;
+            for (int i = 0; i < segDraftN; i++) segDraft[i] = s->point[i];
+        }
+    }
+    forceRedraw = true;
+}
+
+int draftOrder(int targetIndex) {
+    for (int i = 0; i < segDraftN; i++)
+        if (segDraft[i] == targetIndex) return i;
+    return -1;
+}
+
+void drawSegments() {
+    if (segRename >= 0) {
+        uint32_t pass = 0;
+        for (const char* p = osk::text(); *p; ++p) pass = pass * 33 + (uint8_t)*p;
+        char ekey[24];
+        snprintf(ekey, sizeof(ekey), "R|%d|%lu", segRename, (unsigned long)pass);
+        static char eshown[24];
+        if (!forceRedraw && strcmp(eshown, ekey) == 0) return;
+        strlcpy(eshown, ekey, sizeof(eshown));
+        M5Canvas& c = wifiC;
+        c.fillSprite(th->bg);
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextSize(1);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        const segments::Segment* s = segments::get(segRename);
+        char title[56];
+        snprintf(title, sizeof(title), "Rename %s", s ? s->name : "");
+        c.setClipRect(24, 0, W - 48, 56);
+        c.drawString(title, 24, 28);
+        c.clearClipRect();
+        Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+        osk::draw(c, 48, pal);
+        fb::push(c, 0, BAR_H);
+        return;
+    }
+
+    if (segScroll > segMaxScroll()) segScroll = segMaxScroll();
+    static char key[1024];
+    int pos = snprintf(key, sizeof(key), "%c|%d|%d|%d|", segBuilding ? 'B' : 'L', segScroll,
+                       segments::selected(), segDraftN);
+    if (segBuilding) {
+        float len = segments::lengthAlong(segDraft, segDraftN);
+        pos += snprintf(key + pos, sizeof(key) - pos, "%d|", len < 0 ? -1 : (int)lroundf(len));
+        for (int i = 0; i < targets::count() && pos < (int)sizeof(key) - 48; i++) {
+            const targets::Target* t = targets::get(i);
+            pos += snprintf(key + pos, sizeof(key) - pos, "%d:%s;", draftOrder(i), t ? t->name : "");
+        }
+    } else {
+        for (int i = 0; i < segments::count() && pos < (int)sizeof(key) - 56; i++) {
+            const segments::Segment* s = segments::get(i);
+            float len = segments::length(i);
+            pos += snprintf(key + pos, sizeof(key) - pos, "%s,%d;", s ? s->name : "",
+                            len < 0 ? -1 : (int)lroundf(len));
+        }
+    }
+    static char shown[1024];
+    if (!forceRedraw && strcmp(shown, key) == 0) return;
+    strlcpy(shown, key, sizeof(shown));
+
+    M5Canvas& c = wifiC;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    int ax = segActionX();
+    if (segBuilding) {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        const segments::Segment* editing = segEdit >= 0 ? segments::get(segEdit) : nullptr;
+        const char* title = editing ? editing->name : "New segment";
+        c.setClipRect(24, 0, ax - 36, 64);
+        c.drawString(title, 24, 32);
+        c.clearClipRect();
+        float len = segments::lengthAlong(segDraft, segDraftN);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextColor(th->label);
+        if (len >= 0) {
+            char sub[40];
+            snprintf(sub, sizeof(sub), "%d m along the points", (int)lroundf(len));
+            c.drawString(sub, 24, 78);
+        } else {
+            c.drawString("Tap in order. First is the start, last is the finish.", 24, 78);
+        }
+        bool ready = segDraftN >= 2;
+        c.fillSmoothRoundRect(ax, 12, 150, 52, 12, ready ? th->accent : th->btn);
+        c.setTextDatum(middle_center);
+        c.setTextColor(ready ? th->bg : th->dim);
+        c.drawString("SAVE", ax + 75, 38);
+    } else {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        c.drawString("SEGMENTS", 24, 36);
+        c.fillSmoothRoundRect(ax, 10, 150, 52, 12, th->btn);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(middle_center);
+        c.setTextColor(th->btnText);
+        c.drawString("NEW", ax + 75, 36);
+    }
+    c.drawFastHLine(0, segHead() - 1, W, th->dim);
+
+    auto textBtn = [&](int x, int ry, const char* label) {
+        c.fillSmoothRoundRect(x, ry + (SEG_ROW - 52) / 2, SEG_BTN_W, 52, 12, th->btn);
+        c.setTextDatum(middle_center);
+        c.setTextColor(th->btnText);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.drawString(label, x + SEG_BTN_W / 2, ry + SEG_ROW / 2);
+    };
+
+    if (segBuilding) {
+        int nt = targets::count();
+        if (nt == 0) {
+            c.setFont(&fonts::FreeSansBold18pt7b);
+            c.setTextDatum(middle_left);
+            c.setTextColor(th->label);
+            c.drawString("Drop targets on the map first", 24, SEG_BUILD_HEAD + 48);
+        }
+        for (int i = 0; i < nt; i++) {
+            int ry = SEG_BUILD_HEAD + i * SEG_ROW - segScroll;
+            if (ry + SEG_ROW <= SEG_BUILD_HEAD || ry >= c.height()) continue;
+            const targets::Target* t = targets::get(i);
+            if (!t) continue;
+            c.drawFastHLine(0, ry + SEG_ROW - 1, W, th->dim);
+            int order = draftOrder(i);
+            const char* role = "";
+            if (order == 0) role = "START";
+            else if (order > 0 && order == segDraftN - 1) role = "FINISH";
+            else if (order > 0) role = "VIA";
+            c.setFont(&fonts::FreeSansBold18pt7b);
+            c.setTextDatum(middle_left);
+            c.setTextColor(order >= 0 ? th->accent : th->fg);
+            if (order >= 0) {
+                char num[4];
+                snprintf(num, sizeof(num), "%d", order + 1);
+                c.drawString(num, 24, ry + SEG_ROW / 2);
+            }
+            int nameW = W - 160;
+            if (c.textWidth(t->name) > nameW - 72) c.setFont(&fonts::FreeSansBold12pt7b);
+            c.setClipRect(64, ry, nameW - 64, SEG_ROW);
+            c.drawString(t->name, 64, ry + SEG_ROW / 2);
+            c.clearClipRect();
+            if (role[0]) {
+                c.setFont(&fonts::FreeSansBold12pt7b);
+                c.setTextDatum(middle_right);
+                c.setTextColor(th->label);
+                c.drawString(role, W - 24, ry + SEG_ROW / 2);
+            }
+        }
+    } else {
+        int ns = segments::count();
+        if (ns == 0) {
+            c.setFont(&fonts::FreeSansBold18pt7b);
+            c.setTextDatum(middle_left);
+            c.setTextColor(th->label);
+            c.drawString("No segments yet", 24, SEG_HEAD + 48);
+        }
+        for (int i = 0; i < ns; i++) {
+            int ry = SEG_HEAD + i * SEG_ROW - segScroll;
+            if (ry + SEG_ROW <= SEG_HEAD || ry >= c.height()) continue;
+            const segments::Segment* s = segments::get(i);
+            if (!s) continue;
+            c.drawFastHLine(0, ry + SEG_ROW - 1, W, th->dim);
+            bool on = i == segments::selected();
+            float len = segments::length(i);
+            char dist[24] = "--";
+            if (len >= 0) snprintf(dist, sizeof(dist), "%d m along", (int)lroundf(len));
+            int ex = segEditX();
+            c.setFont(&fonts::FreeSansBold18pt7b);
+            c.setTextDatum(middle_left);
+            int nameW = ex - 200;
+            if (s->name[0] && c.textWidth(s->name) > nameW) c.setFont(&fonts::FreeSansBold12pt7b);
+            c.setTextColor(on ? th->accent : th->fg);
+            c.setClipRect(16, ry, nameW, SEG_ROW);
+            c.drawString(s->name, 24, ry + SEG_ROW / 2);
+            c.clearClipRect();
+            c.setFont(&fonts::FreeSansBold12pt7b);
+            c.setTextDatum(middle_right);
+            c.setTextColor(th->label);
+            c.drawString(dist, ex - 12, ry + SEG_ROW / 2);
+            textBtn(ex, ry, "EDIT");
+            textBtn(segRenameX(), ry, "RENAME");
+            textBtn(segDeleteX(), ry, "DELETE");
+        }
+    }
+    fb::push(c, 0, BAR_H);
+}
+
+void onSegmentsTap(int x, int y) {
+    int cy = y - BAR_H;
+    if (segRename >= 0) {
+        Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
+        osk::Result r = osk::tap(x, cy, W, 48);
+        if (r == osk::Result::Save) {
+            if (segments::rename(segRename, osk::text())) segRename = -1;
+            else showHint("A segment needs a name");
+        } else if (r == osk::Result::Cancel) {
+            segRename = -1;
+        }
+        forceRedraw = true;
+        return;
+    }
+    if (segBuilding) {
+        if (cy >= 12 && cy < 64 && x >= segActionX()) {
+            if (segDraftN < 2) {
+                showHint("Add a start and a finish");
+                return;
+            }
+            bool ok = segEdit >= 0 ? segments::update(segEdit, segDraft, segDraftN)
+                                   : segments::add(segDraft, segDraftN);
+            if (!ok) {
+                showHint(segEdit >= 0 ? "That segment needs two targets" : "Segment list is full");
+                return;
+            }
+            segBuilding = false;
+            segScroll = 0;
+            if (segments::selected() >= 0) {
+                char msg[48];
+                snprintf(msg, sizeof(msg), "Segment %s", segments::selectedName());
+                showHint(msg);
+            }
+            mapRedrawPending = true;
+            forceRedraw = true;
+            return;
+        }
+        if (cy < SEG_BUILD_HEAD) return;
+        int i = (cy - SEG_BUILD_HEAD + segScroll) / SEG_ROW;
+        if (!targets::get(i)) return;
+        int order = draftOrder(i);
+        if (order >= 0) {
+            for (int k = order; k < segDraftN - 1; k++) segDraft[k] = segDraft[k + 1];
+            segDraftN--;
+        } else if (segDraftN < segments::MAX_POINTS) {
+            segDraft[segDraftN++] = (int8_t)i;
+        }
+        forceRedraw = true;
+        return;
+    }
+    if (cy >= 10 && cy < 62 && x >= segActionX()) {
+        if (targets::count() < 2) showHint("Drop a start and a finish on the map");
+        startSegmentBuilder(-1);
+        return;
+    }
+    if (cy < SEG_HEAD) return;
+    int i = (cy - SEG_HEAD + segScroll) / SEG_ROW;
+    if (!segments::get(i)) return;
+    if (x >= segDeleteX()) {
+        segments::remove(i);
+        if (segScroll > segMaxScroll()) segScroll = segMaxScroll();
+        mapRedrawPending = true;
+        forceRedraw = true;
+        return;
+    }
+    if (x >= segRenameX()) {
+        const segments::Segment* s = segments::get(i);
+        segRename = i;
+        osk::start(s ? s->name : "", segments::NAME_LEN - 1);
+        forceRedraw = true;
+        return;
+    }
+    if (x >= segEditX()) {
+        startSegmentBuilder(i);
+        return;
+    }
+    segments::select(segments::selected() == i ? -1 : i);
+    if (segments::selected() >= 0) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Segment %s", segments::selectedName());
+        showHint(msg);
+    }
+    mapRedrawPending = true;
+    forceRedraw = true;
+}
+
 void nextScreen() {
     if (screen == Screen::Gps) {
         closeGps();
+        return;
+    }
+    if (screen == Screen::Targets) {
+        closeTargets();
+        return;
+    }
+    if (screen == Screen::Segments) {
+        closeSegments();
         return;
     }
     setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + 1) % CYCLE));
@@ -1671,9 +2311,20 @@ void onWifiButton() {
     forceRedraw = true;
 }
 
+void showChosenMap() {
+    mapFollow = false;
+    if (!mapdata::centerLatLon(mapCenterLat, mapCenterLon)) return;
+    setScreen(Screen::Map);
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Map %s", mapdata::current().name);
+    showHint(msg);
+    mapRedrawPending = true;
+}
+
 void onMapsTap(int x, int y) {
     if (y < BTN_Y) {
         mapsui::tap(x, y);
+        if (mapsui::takeShown()) showChosenMap();
         return;
     }
     switch (x / BTN_W) {
@@ -1703,10 +2354,28 @@ void onTap(int x, int y) {
         forceRedraw = true;
         return;
     }
+    if (screen == Screen::Targets && y < BTN_Y) {
+        onTargetsTap(x, y);
+        forceRedraw = true;
+        return;
+    }
+    if (screen == Screen::Segments && y < BTN_Y) {
+        onSegmentsTap(x, y);
+        forceRedraw = true;
+        return;
+    }
     metrics::View v = metrics::view();
     if (screen == Screen::Map && mapsButtonShown() && x >= MAPS_BTN_X && x < MAPS_BTN_X + MAPS_BTN_W &&
         y >= FULL_CAM_Y + MAPS_BTN_Y && y < FULL_CAM_Y + MAPS_BTN_Y + MAPS_BTN_H) {
         setScreen(Screen::Maps);
+        return;
+    }
+    if (targetsButtonHit(x, y)) {
+        openTargets();
+        return;
+    }
+    if (segmentsButtonHit(x, y)) {
+        openSegments();
         return;
     }
     if (y >= BTN_Y) {
@@ -1745,6 +2414,10 @@ void onTap(int x, int y) {
 }
 
 void onHold(int x, int y) {
+    if (mapFullShown() && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
+        addTargetAt(x, y - FULL_CAM_Y);
+        return;
+    }
     if (y < BTN_Y) return;
     int idx = x / BTN_W;
     if (screen == Screen::Maps) {
@@ -1796,6 +2469,14 @@ void dragStart(int x, int y) {
         dragKind = DragKind::Wifi;
         wifiDragY = y;
         wifiScroll0 = wifiScroll;
+    } else if (screen == Screen::Targets && tgtEdit < 0 && y >= BAR_H + TGT_HEAD) {
+        dragKind = DragKind::Targets;
+        tgtDragY = y;
+        tgtScroll0 = tgtScroll;
+    } else if (screen == Screen::Segments && segRename < 0 && y >= BAR_H + segHead()) {
+        dragKind = DragKind::Segments;
+        segDragY = y;
+        segScroll0 = segScroll;
     } else if (mapFullShown() && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
         dragKind = DragKind::Map;
         mapPanX0 = x;
@@ -1819,6 +2500,20 @@ void dragMove(int x, int y) {
         if (next < 0) next = 0;
         int cap = wifiMaxScroll();
         wifiScroll = next > cap ? cap : next;
+        return;
+    }
+    if (dragKind == DragKind::Targets) {
+        int next = tgtScroll0 - (y - tgtDragY);
+        if (next < 0) next = 0;
+        int cap = tgtMaxScroll();
+        tgtScroll = next > cap ? cap : next;
+        return;
+    }
+    if (dragKind == DragKind::Segments) {
+        int next = segScroll0 - (y - segDragY);
+        if (next < 0) next = 0;
+        int cap = segMaxScroll();
+        segScroll = next > cap ? cap : next;
         return;
     }
     if (dragKind == DragKind::Lists) {
@@ -1847,7 +2542,10 @@ void dragEnd(int x, int y) {
 
 void handleDrag(const m5::touch_detail_t& t) {
     bool wifiList = screen == Screen::Settings && settingsTab == TAB_WIFI && !wifiEditing;
-    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown() && !wifiList) return;
+    bool tgtList = screen == Screen::Targets;
+    bool segList = screen == Screen::Segments;
+    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown() && !wifiList && !tgtList && !segList)
+        return;
     if (t.isPressed()) {
         if (!dragging && (abs(t.distanceX()) > 12 || abs(t.distanceY()) > 12)) {
             dragging = true;
@@ -1901,7 +2599,10 @@ void hold(int x, int y) { onHold(x, y); }
 
 void drag(int x0, int y0, int x1, int y1) {
     bool wifiList = screen == Screen::Settings && settingsTab == TAB_WIFI && !wifiEditing;
-    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown() && !wifiList) return;
+    bool tgtList = screen == Screen::Targets;
+    bool segList = screen == Screen::Segments;
+    if (screen != Screen::Maps && screen != Screen::Sessions && !mapFullShown() && !wifiList && !tgtList && !segList)
+        return;
     dragStart(x0, y0);
     for (int i = 1; i <= 8; i++) dragMove(x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8);
     dragEnd(x1, y1);
@@ -1930,6 +2631,8 @@ void command(char c) {
             break;
         case 'G': metrics::start(); break;
         case 'g': openGps(); break;
+        case 't': openTargets(); break;
+        case 's': openSegments(); break;
         case 'X': metrics::stop(); break;
         case 'L': metrics::lap(); break;
         case 'R': metrics::reset(); break;
@@ -1971,11 +2674,23 @@ void loop() {
         metrics::setBattery(level);
     }
 
+    // A selected segment starts the piece when the boat crosses its start line.
+    {
+        gps::Snapshot g = gps::get();
+        if (segments::selected() >= 0 && (g.lat != 0 || g.lon != 0) &&
+            segments::pollStart(g.lat, g.lon, g.speed, g.course, g.distance, g.fix) &&
+            metrics::view().state != metrics::State::Running) {
+            metrics::start();
+            showHint("Started");
+        }
+    }
+
     // Keep the loaded map area in sync with position, and record the track.
     if (millis() - lastMapScan > 1000 && !sessionsui::reviewing()) {
         lastMapScan = millis();
         gps::Snapshot g = gps::get();
         mapdata::update(g.lat, g.lon, g.fix);
+        if (g.lat != 0 || g.lon != 0) segments::track(g.lat, g.lon);
     }
     track::update();
 
@@ -1997,6 +2712,8 @@ void loop() {
         case Screen::Sessions:
         case Screen::Maps: break;
         case Screen::Gps: drawGps(); break;
+        case Screen::Targets: drawTargets(); break;
+        case Screen::Segments: drawSegments(); break;
     }
     drawButtons(v);
     forceRedraw = false;

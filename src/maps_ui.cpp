@@ -35,6 +35,7 @@ uint32_t lastSig = 0;
 
 char msg[80] = "";
 uint32_t msgUntil = 0;
+bool showRequested = false;
 
 // Lists
 int scroll = 0, scrollStart = 0;
@@ -335,7 +336,8 @@ void drawOnCard() {
         fmtBytes(size, sizeof(size), fi.bytes);
         bool confirm = r == confirmIdx;
         if (confirm) snprintf(a, sizeof(a), "Tap the red button again to delete this map");
-        else snprintf(a, sizeof(a), "%.1f x %.1f km   %s%s", wKm, hKm, size, fi.loaded ? "   showing" : "");
+        else snprintf(a, sizeof(a), "%.1f x %.1f km   %s   %s", wKm, hKm, size,
+                     fi.loaded ? "showing" : "tap to show");
         rowText(y, fi.name, a, confirm ? c.warn : fi.loaded ? c.ok : c.label);
         cv.drawFastHLine(0, y + ROW_H - 1, W, c.dim);
         iconButton(renameBtn(r), icons::Icon::Pencil);
@@ -388,6 +390,14 @@ void tapOnCard(int x, int y) {
         dirty = true;
         return;
     }
+    int r = (y - HEADER_H + scroll) / ROW_H;
+    if (r < 0 || r >= mapdata::fileCount()) return;
+    if (!mapdata::showIndex(r)) {
+        message("could not open that map");
+        return;
+    }
+    showRequested = true;
+    dirty = true;
 }
 
 // ---- area picker -----------------------------------------------------------
@@ -613,6 +623,12 @@ void setView(View v) {
     selectMode = false;
     if (v != View::Draw) tiles::clear();
     dirty = true;
+}
+
+bool takeShown() {
+    bool v = showRequested;
+    showRequested = false;
+    return v;
 }
 
 void message(const char* text) {

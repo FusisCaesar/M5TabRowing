@@ -80,6 +80,11 @@ bool removeFile(int i);
 bool renameFile(int i, const char* name);
 // Loads this file now (e.g. a fresh download); update() still switches by position later.
 bool show(const char* path);
+// Loads a file from the card list and keeps it on screen until release(), so a fix
+// on another water does not switch it away while targets are being placed.
+bool showIndex(int i);
+void release();
+bool held();
 
 // Projects lat/lon to the loaded map's decimetre coordinates. False if no map.
 bool project(double lat, double lon, int32_t& x, int32_t& y);

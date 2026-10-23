@@ -59,13 +59,14 @@ Windows notes:
 
 The right-most bottom button cycles six screens. **Maps** is opened with **MAPS**
 on the Map screen between sessions (Wi-Fi is only used there). **GPS diagnostics** opens from the GPS status in the centre of the top bar, or
-from **OPEN** on Settings → Sensors. **BACK** returns to the screen you came
-from. Neither Maps nor GPS diagnostics is part of the six-screen cycle.
+from **OPEN** on Settings → Sensors. **TARGETS** and **SEGMENTS** on the map
+open those lists. **BACK** returns to the screen you came from. Maps, GPS
+diagnostics, the target list and the segment list are not part of the six-screen cycle.
 
 | Screen | Content |
 | --- | --- |
 | Main | eight metric tiles you can rearrange; optional camera or map picture-in-picture |
-| Map | offline waterway map with your position, heading and track |
+| Map | offline waterway map with your position, heading, track, targets and segments |
 | Efficiency | metres per stroke against rate, efficiency score, rec:drive / check / bounce, coaching hint |
 | Plot | last 6 s of surge acceleration with catch, finish and threshold; IMU diagnostics |
 | Settings | **STROKE**, **DISPLAY**, **SENSORS** and **WIFI** tabs |
@@ -146,6 +147,9 @@ heart rate, rec:drive below.
 | AVG HR | bpm | this session |
 | REC:DRIVE | SLOWER / GOOD / QUICKER | recovery ÷ drive, see below |
 | SPEED | m/s | GPS speed over ground |
+| DTT | target or segment name | metres to the selected target. With a segment this is **DTS** (to the start line) until the boat crosses it, then **DTF** (still left along the points). `--` until one is selected and a position is known |
+| TTT | target or segment name | that distance at the current speed (**TTS** / **TTF** for a segment). `--` when nearly stopped |
+| FINISH | target or segment name | that distance at the session average split. Before a segment's start line the label is **START**. `--` until the session has an average |
 
 **PIP** cycles the picture-in-picture pane through **OFF**, **CAMERA** and
 **MAP**. Tap the pane (not a metric tile) to switch between picture-in-picture
@@ -203,11 +207,31 @@ is already up.
 - Drag the map to look ahead. A locate button appears to the left of **−**
   while the map is not following the boat; tap it to centre back on your
   position. Leaving the Map screen, leaving full-width PIP, or tapping locate
-  resumes follow.
+  resumes follow. Opening the target or segment list does not.
+- **Hold** a point on the map to drop a target there. On a named map it is
+  saved as `Map name - T1`; otherwise just `T1`. It is selected immediately and
+  drawn with a line from the boat. **TARGETS** opens the list: tap a row to
+  select it (tap again to clear), **RENAME** changes the name, **DELETE**
+  removes it. The **DTT**, **TTT** and **FINISH** tiles follow the selected target.
+- **SEGMENTS** joins targets into a course. **NEW**, then tap the targets in
+  the order you will row them: the first is the start, the last is the finish,
+  and any in between are via points. Tap one again to take it out. On a named
+  map the segment is saved as `Map name - S1`. The distance is the path along
+  those points, not the straight line from start to finish. Selecting a segment
+  draws that path, and a start line through the start pin, square to the first
+  leg and 40 m to each side. Before the boat crosses that line the distance
+  tiles count down to it (**DTS**). Afterwards they follow what is left along
+  the points (**DTF**). Crossing the line in the direction of the course, with
+  the boat actually moving, starts the session. **EDIT** changes the points,
+  **RENAME** the name, **DELETE** removes it. Deleting a target drops it from
+  every segment.
 
 The map follows your GPS fix and automatically switches to whichever uploaded
 map file covers your position (up to 24 `.rmap` files on the card). Between
-sessions, **MAPS** on the map opens the download screen.
+sessions, **MAPS** on the map opens the download screen. **ON CARD** there,
+tap a map to show that one instead: it stays on screen, centred, so you can
+drop targets and build segments on it. The locate button returns to following
+the boat, and to whichever map covers your position.
 
 ![Map screen](shots/map_screen.png)
 
@@ -413,6 +437,8 @@ The scripts in `tools/` do this.
 | `+` / `-` | zoom the map |
 | `G` / `X` / `L` / `R` | start / stop / lap / reset |
 | `g` | open GPS diagnostics (`N` or BACK returns) |
+| `t` | open the target list (`N` or BACK returns) |
+| `s` | open the segment list (`N` or BACK returns) |
 | `h` | pair the strongest heart rate sensor in range |
 | `S` | screenshot (RGB565; use `screenshot.py`) |
 | `D` | list `/rowing` session files and `/map` files |
@@ -466,11 +492,13 @@ screen is open and off again when you leave it. 2.4 GHz only.
   map you already have). Drag to pan, +/− to zoom, tap **SELECT AREA** and drag
   a rectangle over the water you row on (up to 8 × 8 km), then **DOWNLOAD AREA**.
   Boxes already on the card are shown so you can see coverage.
-- **ON CARD**: the maps on the SD card with their size. The one currently shown
-  on the Map screen is marked. A map you drew is named after its centre
-  (`Area 52.226 5.072`); tap the pencil to give it a proper name with the
-  on-screen keyboard. The file name on the card stays the same. The trash can,
-  tapped twice, removes a map.
+- **ON CARD**: the maps on the SD card with their size. Tap a row to make that
+  map the one on screen. It stays there, centred, until you tap locate on the
+  map, so a fix on another water does not switch it away while you place
+  targets. The one currently shown is marked. A map you drew is named after its
+  centre (`Area 52.226 5.072`); tap the pencil to give it a proper name with
+  the on-screen keyboard. The file name on the card stays the same. The trash
+  can, tapped twice, removes a map.
 
 A download takes 30–60 s, mostly waiting for the Overpass map server; the header
 shows progress. The Tab5 then converts the data itself (about 2 s) and shows the

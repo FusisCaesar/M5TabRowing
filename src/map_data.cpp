@@ -25,6 +25,7 @@ struct FileHeader {
 FileHeader files[cfg::MAP_MAX_FILES];
 int nFiles = 0;
 int curIndex = -1;
+bool pinned = false;  // a chosen file stays loaded until release()
 Map cur;
 
 // Sequential reader over a loaded byte buffer; memcpy avoids unaligned loads.
@@ -217,6 +218,7 @@ Guard::~Guard() { xSemaphoreGiveRecursive(mutex()); }
 void begin() {
     nFiles = 0;
     curIndex = -1;
+    pinned = false;
     File dir = SD_MMC.open("/map");
     if (dir) {
         for (File f = dir.openNextFile(); f && nFiles < cfg::MAP_MAX_FILES; f = dir.openNextFile()) {
@@ -238,6 +240,7 @@ void begin() {
 
 void update(double lat, double lon, bool haveFix) {
     if (nFiles == 0) return;
+    if (pinned && cur.valid) return;
     if (haveFix) {
         if (cur.valid && curIndex >= 0 && headerContains(files[curIndex], lat, lon)) return;
         for (int i = 0; i < nFiles; i++) {
@@ -304,6 +307,17 @@ bool show(const char* path) {
         if (strcmp(files[i].path, path) == 0) return i == curIndex || loadFile(i);
     return false;
 }
+
+bool showIndex(int i) {
+    if (i < 0 || i >= nFiles) return false;
+    bool ok = i == curIndex || loadFile(i);
+    if (ok) pinned = true;
+    return ok;
+}
+
+void release() { pinned = false; }
+
+bool held() { return pinned && cur.valid; }
 
 bool project(double lat, double lon, int32_t& x, int32_t& y) {
     if (!cur.valid) return false;

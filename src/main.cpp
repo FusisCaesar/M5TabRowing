@@ -11,7 +11,9 @@
 #include "metrics.h"
 #include "net.h"
 #include "rtclock.h"
+#include "segments.h"
 #include "settings.h"
+#include "targets.h"
 #include "track.h"
 #include "ui.h"
 
@@ -35,6 +37,8 @@ void setup() {
 
     rtclock::begin();
     settings::begin();
+    targets::begin();
+    segments::begin();
     const Settings& s = settings::get();
     logger::begin();
     logger::setRawEnabled(s.rawLog);
@@ -70,7 +74,9 @@ static void printStatus() {
 // Binary transfers need writes to wait for buffer space; with no timeout the USB driver drops what doesn't fit.
 static constexpr uint32_t BINARY_TX_TIMEOUT_MS = 200;
 
-// 'S' sends the screen as raw RGB565 (see tools/screenshot.py), 'D' lists the SD session files,
+// 'S' sends the screen as raw RGB565 (see tools/screenshot.py), 't' opens the target list,
+// 's' opens the segment list,
+// 'D' lists the SD session files,
 // 'U path size crc' uploads a file (see tools/send_file.py), 'W ssid password' joins Wi-Fi,
 // 'T x y' / 'P x y' / 'Z x0 y0 x1 y1' simulate a tap / hold / drag, 'F' then 'Y' within 10 s formats the SD card,
 // 'B path' downloads a file (see tools/fetch.py), 'h' pairs a heart rate sensor; other keys go to ui::command.

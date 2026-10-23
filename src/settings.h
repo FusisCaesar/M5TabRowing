@@ -18,6 +18,9 @@ enum class TileMetric : uint8_t {
     AvgHr,
     RecDrive,
     Speed,
+    Dtt,      // metres to the selected target, or remaining along the selected segment
+    Ttt,      // that distance at the current speed
+    Finish,   // that distance at the average split
     Count
 };
 constexpr int TILE_SLOTS = 8;
