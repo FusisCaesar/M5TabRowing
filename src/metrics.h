@@ -47,7 +47,7 @@ struct View {
     float avgHr = 0;   // bpm, session
     int maxHr = 0;     // bpm, session
 
-    int battery = -1;
+    int battery = -1;  // 0..100, -1 unknown, -2 USB with no pack
     int session = -1;
     int lapNumber = 1;
     bool hasLap = false;
@@ -60,6 +60,8 @@ void update();
 
 void start();
 void stop();
+// One line in the open session's info file. Ignored when nothing is recording.
+void note(const char* key, const char* value);
 void lap();
 void reset();
 void setBattery(int pct);

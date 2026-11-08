@@ -36,31 +36,43 @@ struct View {
     int trackCount = 0;
 
     // Live targets. The selected one is drawn larger, with a line from the boat
-    // unless a segment route is set, which is drawn instead.
+    // unless a segment route is set, which is drawn instead. The pointers stay
+    // valid until the next frame starts.
     struct Pin {
         double lat = 0, lon = 0;
         bool selected = false;
+        bool editing = false;  // a waypoint being placed or moved; drawn at triple size
         char name[40] = "";
     };
-    static constexpr int MAX_PINS = 12;
-    Pin pins[MAX_PINS];
+    const Pin* pins = nullptr;
     int pinCount = 0;
 
     // Selected segment, start to finish through the via points.
-    static constexpr int MAX_ROUTE = 12;
-    double routeLat[MAX_ROUTE] = {};
-    double routeLon[MAX_ROUTE] = {};
+    const double* routeLat = nullptr;
+    const double* routeLon = nullptr;
     int routeCount = 0;
     int routeNext = 0;  // point the boat is heading for
 
-    // Start line across the first point, already in lat/lon.
+    // Start line across the first point, and finish line across the last, in lat/lon.
     bool showStartLine = false;
     double lineLat[2] = {};
     double lineLon[2] = {};
+    bool showFinishLine = false;
+    double finishLat[2] = {};
+    double finishLon[2] = {};
+
+    // While a waypoint is being dragged the map underneath is left as it was.
+    // That frame is rendered without this pin and without the course, which are
+    // drawn afterwards by paintCourse.
+    int omitPin = -1;
+    bool omitRoute = false;
 };
 
 void begin();  // allocates scratch buffers in PSRAM
 void render(M5Canvas& c, const View& v);
+
+// Course line and the open sight, drawn on a map frame that omitted them.
+void paintCourse(M5Canvas& c, const View& v);
 
 // Rectangles of the on-map buttons, in canvas coordinates, for hit testing.
 bool zoomInRect(const M5Canvas& c, int& x, int& y, int& w, int& h, bool large = false);

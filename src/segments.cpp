@@ -1,8 +1,10 @@
 #include "segments.h"
 
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "config.h"
@@ -20,8 +22,9 @@ constexpr float CONFIRM_PAST_M = 40;    // a crossing still counts this far beyo
 constexpr float CROSS_TRAVEL_M = 4;     // the boat has to actually move across, not sit on the line
 constexpr float HEADING_LIMIT_DEG = 70;
 
-Segment items[MAX];
+Segment* items = nullptr;
 int n = 0;
+int cap = 0;
 int sel = -1;
 int leg = 0;      // leg of the selected segment the boat is on
 int nextPt = 0;   // point the boat is heading for
@@ -29,6 +32,9 @@ bool pastStart = false;
 bool armedBehind = false;
 bool crossPending = false;
 double armTravel = 0;
+bool finishArmed = false;
+bool finishPending = false;
+double finishArmTravel = 0;
 
 void resetRun() {
     leg = 0;
@@ -37,26 +43,86 @@ void resetRun() {
     armedBehind = false;
     crossPending = false;
     armTravel = 0;
+    finishArmed = false;
+    finishPending = false;
+    finishArmTravel = 0;
 }
 
-void persist() {
+bool grow(int need) {
+    if (need <= cap) return true;
+    int ncap = cap < 4 ? 4 : cap;
+    while (ncap < need) ncap *= 2;
+    Segment* p = (Segment*)heap_caps_realloc(items, ncap * sizeof(Segment), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = (Segment*)heap_caps_realloc(items, ncap * sizeof(Segment), MALLOC_CAP_8BIT);
+    if (!p) return false;
+    for (int i = cap; i < ncap; i++) {
+        p[i].name[0] = 0;
+        p[i].count = 0;
+        p[i].point = nullptr;
+    }
+    items = p;
+    cap = ncap;
+    return true;
+}
+
+bool setPoints(Segment& s, const int* points, int npoints) {
+    int16_t* p = nullptr;
+    if (npoints > 0) {
+        p = (int16_t*)heap_caps_malloc(npoints * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!p) p = (int16_t*)heap_caps_malloc(npoints * sizeof(int16_t), MALLOC_CAP_8BIT);
+        if (!p) return false;
+        for (int i = 0; i < npoints; i++) p[i] = (int16_t)points[i];
+    }
+    heap_caps_free(s.point);
+    s.point = p;
+    s.count = npoints;
+    return true;
+}
+
+// False when flash cannot hold the courses.
+bool persist() {
+    size_t bytes = 0;
+    for (int i = 0; i < n; i++) bytes += NAME_LEN + sizeof(uint16_t) + items[i].count * sizeof(int16_t);
+    uint8_t* buf = bytes ? (uint8_t*)malloc(bytes) : nullptr;
+    if (bytes && !buf) return false;
+    uint8_t* w = buf;
+    for (int i = 0; i < n; i++) {
+        memcpy(w, items[i].name, NAME_LEN);
+        w += NAME_LEN;
+        uint16_t c = (uint16_t)items[i].count;
+        memcpy(w, &c, sizeof(c));
+        w += sizeof(c);
+        if (c) {
+            memcpy(w, items[i].point, c * sizeof(int16_t));
+            w += c * sizeof(int16_t);
+        }
+    }
     Preferences prefs;
     prefs.begin("segments", false);
-    prefs.putUChar("n", (uint8_t)n);
-    prefs.putUChar("sel", (uint8_t)(sel + 1));
-    prefs.putBytes("v1", items, sizeof(items));
+    prefs.putUShort("n", (uint16_t)n);
+    prefs.putUShort("sel", (uint16_t)(sel + 1));
+    prefs.putUChar("ver", 2);
+    bool ok = true;
+    if (bytes) ok = prefs.putBytes("v2", buf, bytes) == bytes;
+    else prefs.remove("v2");
     prefs.end();
+    free(buf);
+    return ok;
 }
 
 void eraseAt(int index) {
+    heap_caps_free(items[index].point);
     for (int j = index; j < n - 1; j++) items[j] = items[j + 1];
     n--;
+    items[n].point = nullptr;
+    items[n].count = 0;
+    items[n].name[0] = 0;
     if (sel == index) sel = -1;
     else if (sel > index) sel--;
 }
 
 bool numberUsed(int num) {
-    char tag[8];
+    char tag[16];
     snprintf(tag, sizeof(tag), "S%d", num);
     size_t tlen = strlen(tag);
     for (int i = 0; i < n; i++) {
@@ -70,7 +136,7 @@ bool numberUsed(int num) {
 }
 
 int nextNumber() {
-    for (int num = 1; num < 100; num++)
+    for (int num = 1; num < 100000; num++)
         if (!numberUsed(num)) return num;
     return 0;
 }
@@ -87,20 +153,14 @@ const char* mapNameAt(double lat, double lon) {
     return fallback;
 }
 
-bool valid(const int8_t* points, int npoints) {
-    if (!points || npoints < 2 || npoints > MAX_POINTS) return false;
+bool valid(const int* points, int npoints) {
+    if (!points || npoints < 2) return false;
     for (int i = 0; i < npoints; i++) {
         if (!targets::get(points[i])) return false;
         for (int j = 0; j < i; j++)
             if (points[j] == points[i]) return false;
     }
     return true;
-}
-
-void copyPoints(Segment& s, const int8_t* points, int npoints) {
-    s.count = (uint8_t)npoints;
-    for (int i = 0; i < npoints; i++) s.point[i] = points[i];
-    for (int i = npoints; i < MAX_POINTS; i++) s.point[i] = -1;
 }
 
 void metresDelta(double lat, double lon, double lat2, double lon2, double& east, double& north) {
@@ -147,10 +207,29 @@ struct Axis {
     bool ok = false;
 };
 
-bool axisOf(double lat, double lon, Axis& ax) {
-    if (sel < 0 || sel >= n) return false;
-    const targets::Target* a = pointAt(items[sel], 0);
-    const targets::Target* b = pointAt(items[sel], 1);
+// along is metres past the finish pin, along the last leg. Negative is still on the course.
+bool finishAxisOf(double lat, double lon, Axis& ax) {
+    if (sel < 0 || sel >= n || items[sel].count < 2) return false;
+    const targets::Target* a = pointAt(items[sel], items[sel].count - 2);
+    const targets::Target* b = pointAt(items[sel], items[sel].count - 1);
+    if (!a || !b) return false;
+    double abE, abN, apE, apN;
+    metresDelta(a->lat, a->lon, b->lat, b->lon, abE, abN);
+    double len = sqrt(abE * abE + abN * abN);
+    if (len < 1) return false;
+    metresDelta(b->lat, b->lon, lat, lon, apE, apN);
+    ax.along = (apE * abE + apN * abN) / len;
+    ax.cross = (abE * apN - abN * apE) / len;
+    ax.bearing = atan2(abE, abN) * 180.0 / M_PI;
+    if (ax.bearing < 0) ax.bearing += 360.0;
+    ax.ok = true;
+    return true;
+}
+
+bool axisOfIndex(int index, double lat, double lon, Axis& ax) {
+    if (index < 0 || index >= n || items[index].count < 2) return false;
+    const targets::Target* a = pointAt(items[index], 0);
+    const targets::Target* b = pointAt(items[index], 1);
     if (!a || !b) return false;
     double abE, abN, apE, apN;
     metresDelta(a->lat, a->lon, b->lat, b->lon, abE, abN);
@@ -164,6 +243,8 @@ bool axisOf(double lat, double lon, Axis& ax) {
     ax.ok = true;
     return true;
 }
+
+bool axisOf(double lat, double lon, Axis& ax) { return axisOfIndex(sel, lat, lon, ax); }
 
 void shiftFrom(double lat, double lon, double east, double north, double& outLat, double& outLon) {
     outLat = lat + north / 111320.0;
@@ -206,26 +287,103 @@ float legsFrom(const Segment& s, int first) {
 void begin() {
     Preferences prefs;
     prefs.begin("segments", false);
-    n = prefs.getUChar("n", 0);
-    sel = (int)prefs.getUChar("sel", 0) - 1;
-    if (n < 0 || n > MAX) n = 0;
-    memset(items, 0, sizeof(items));
-    if (n > 0) prefs.getBytes("v1", items, sizeof(items));
-    prefs.end();
+    bool upgrade = prefs.getUChar("ver", 1) < 2;
+    if (!upgrade) {
+        n = prefs.getUShort("n", 0);
+        sel = (int)prefs.getUShort("sel", 0) - 1;
+        size_t len = prefs.getBytesLength("v2");
+        uint8_t* raw = len ? (uint8_t*)malloc(len) : nullptr;
+        if (raw) prefs.getBytes("v2", raw, len);
+        prefs.end();
+        const uint8_t* r = raw;
+        const uint8_t* end = raw ? raw + len : nullptr;
+        int got = 0;
+        bool ok = raw || n == 0;
+        for (int i = 0; ok && i < n; i++) {
+            if (r + NAME_LEN + sizeof(uint16_t) > end) {
+                ok = false;
+                break;
+            }
+            if (!grow(got + 1)) {
+                ok = false;
+                break;
+            }
+            memcpy(items[got].name, r, NAME_LEN);
+            items[got].name[NAME_LEN - 1] = 0;
+            r += NAME_LEN;
+            uint16_t c = 0;
+            memcpy(&c, r, sizeof(c));
+            r += sizeof(c);
+            if (r + c * sizeof(int16_t) > end) {
+                ok = false;
+                break;
+            }
+            int* pts = c ? (int*)malloc(c * sizeof(int)) : nullptr;
+            if (c && !pts) {
+                ok = false;
+                break;
+            }
+            for (int k = 0; k < c; k++) {
+                int16_t id = 0;
+                memcpy(&id, r, sizeof(id));
+                r += sizeof(id);
+                pts[k] = id;
+            }
+            if (!setPoints(items[got], pts, c)) ok = false;
+            free(pts);
+            if (ok) got++;
+        }
+        free(raw);
+        n = ok ? got : 0;
+        if (!ok) {
+            for (int i = 0; i < got; i++) {
+                heap_caps_free(items[i].point);
+                items[i].point = nullptr;
+            }
+            n = 0;
+            sel = -1;
+            resetRun();
+            return;
+        }
+    } else {
+        int nOld = prefs.getUChar("n", 0);
+        sel = (int)prefs.getUChar("sel", 0) - 1;
+        size_t len = prefs.getBytesLength("v1");
+        uint8_t* raw = len ? (uint8_t*)malloc(len) : nullptr;
+        if (raw) prefs.getBytes("v1", raw, len);
+        prefs.end();
+        // The previous build stored eight fixed records: 40-byte name, count, 12 indexes.
+        int stride = 53;
+        if (len >= 8 && len % 8 == 0) stride = (int)(len / 8);
+        if (nOld > 8) nOld = 8;
+        for (int i = 0; raw && i < nOld; i++) {
+            const uint8_t* rec = raw + i * stride;
+            if (rec + 41 > raw + len) break;
+            if (!grow(n + 1)) break;
+            memcpy(items[n].name, rec, NAME_LEN);
+            items[n].name[NAME_LEN - 1] = 0;
+            int c = rec[40];
+            if (c < 0) c = 0;
+            if (c > 12) c = 12;
+            int pts[12];
+            for (int k = 0; k < c; k++) pts[k] = (int8_t)rec[41 + k];
+            if (setPoints(items[n], pts, c)) n++;
+        }
+        free(raw);
+        persist();
+    }
 
     bool dirty = false;
     for (int i = n - 1; i >= 0; i--) {
         int w = 0;
-        int count = items[i].count;
-        if (count < 0 || count > MAX_POINTS) count = 0;
-        for (int j = 0; j < count; j++) {
+        for (int j = 0; j < items[i].count; j++) {
             if (!targets::get(items[i].point[j])) {
                 dirty = true;
                 continue;
             }
             items[i].point[w++] = items[i].point[j];
         }
-        items[i].count = (uint8_t)w;
+        items[i].count = w;
         if (w < 2) {
             eraseAt(i);
             dirty = true;
@@ -261,27 +419,55 @@ void select(int index) {
     persist();
 }
 
-bool add(const int8_t* points, int npoints) {
-    if (n >= MAX || !valid(points, npoints)) return false;
+bool add(const int* points, int npoints) {
+    if (!valid(points, npoints) || !grow(n + 1)) return false;
     int num = nextNumber();
     if (!num) return false;
     const targets::Target* start = targets::get(points[0]);
     const char* map = start ? mapNameAt(start->lat, start->lon) : nullptr;
     if (map && map[0]) snprintf(items[n].name, sizeof(items[n].name), "%s - S%d", map, num);
     else snprintf(items[n].name, sizeof(items[n].name), "S%d", num);
-    copyPoints(items[n], points, npoints);
+    if (!setPoints(items[n], points, npoints)) return false;
+    int prev = sel;
     sel = n;
     n++;
     resetRun();
-    persist();
+    if (!persist()) {
+        heap_caps_free(items[n - 1].point);
+        items[n - 1].point = nullptr;
+        items[n - 1].count = 0;
+        n--;
+        sel = prev;
+        return false;
+    }
     return true;
 }
 
-bool update(int index, const int8_t* points, int npoints) {
+bool duplicate(int index, bool reverse) {
+    if (index < 0 || index >= n || items[index].count < 2) return false;
+    int npoints = items[index].count;
+    int* pts = (int*)malloc((size_t)npoints * sizeof(int));
+    if (!pts) return false;
+    for (int i = 0; i < npoints; i++)
+        pts[i] = items[index].point[reverse ? npoints - 1 - i : i];
+    bool ok = add(pts, npoints);
+    free(pts);
+    return ok;
+}
+
+bool update(int index, const int* points, int npoints) {
     if (index < 0 || index >= n || !valid(points, npoints)) return false;
-    copyPoints(items[index], points, npoints);
+    int16_t* old = items[index].point;
+    int oldCount = items[index].count;
+    items[index].point = nullptr;
+    if (!setPoints(items[index], points, npoints)) {
+        items[index].point = old;
+        items[index].count = oldCount;
+        return false;
+    }
+    heap_caps_free(old);
     if (index == sel) resetRun();
-    persist();
+    if (!persist()) return false;
     return true;
 }
 
@@ -314,10 +500,9 @@ void onTargetRemoved(int targetIndex) {
                 p--;
                 dirty = true;
             }
-            items[i].point[w++] = (int8_t)p;
+            items[i].point[w++] = (int16_t)p;
         }
-        items[i].count = (uint8_t)w;
-        for (int j = w; j < MAX_POINTS; j++) items[i].point[j] = -1;
+        items[i].count = w;
         if (w < 2) {
             eraseAt(i);
             dirty = true;
@@ -328,7 +513,7 @@ void onTargetRemoved(int targetIndex) {
     if (dirty) persist();
 }
 
-float lengthAlong(const int8_t* points, int npoints) {
+float lengthAlong(const int* points, int npoints) {
     if (!points || npoints < 2) return -1;
     float d = 0;
     for (int i = 1; i < npoints; i++) {
@@ -341,8 +526,15 @@ float lengthAlong(const int8_t* points, int npoints) {
 }
 
 float length(int index) {
-    if (index < 0 || index >= n) return -1;
-    return lengthAlong(items[index].point, items[index].count);
+    if (index < 0 || index >= n || items[index].count < 2) return -1;
+    float d = 0;
+    for (int i = 1; i < items[index].count; i++) {
+        const targets::Target* a = pointAt(items[index], i - 1);
+        const targets::Target* b = pointAt(items[index], i);
+        if (!a || !b) return -1;
+        d += targets::metresBetween(a->lat, a->lon, b->lat, b->lon);
+    }
+    return d;
 }
 
 void track(double lat, double lon) {
@@ -413,21 +605,52 @@ int selectedRoute(double* lat, double* lon, int cap) {
     return got;
 }
 
+bool lineSquare(double lat, double lon, double dirE, double dirN, double& lat1, double& lon1, double& lat2,
+                double& lon2) {
+    double len = sqrt(dirE * dirE + dirN * dirN);
+    if (len < 1) return false;
+    double east = -dirN / len * START_LINE_HALF_M;
+    double north = dirE / len * START_LINE_HALF_M;
+    shiftFrom(lat, lon, east, north, lat1, lon1);
+    shiftFrom(lat, lon, -east, -north, lat2, lon2);
+    return true;
+}
+
+bool startLineBetween(double aLat, double aLon, double bLat, double bLon, double& lat1, double& lon1,
+                       double& lat2, double& lon2) {
+    double abE, abN;
+    metresDelta(aLat, aLon, bLat, bLon, abE, abN);
+    return lineSquare(aLat, aLon, abE, abN, lat1, lon1, lat2, lon2);
+}
+
 bool startLine(double& lat1, double& lon1, double& lat2, double& lon2) {
     if (sel < 0 || sel >= n) return false;
     const targets::Target* a = pointAt(items[sel], 0);
     const targets::Target* b = pointAt(items[sel], 1);
     if (!a || !b) return false;
+    return startLineBetween(a->lat, a->lon, b->lat, b->lon, lat1, lon1, lat2, lon2);
+}
+
+bool finishLineBetween(double prevLat, double prevLon, double finLat, double finLon, double& lat1, double& lon1,
+                        double& lat2, double& lon2) {
     double abE, abN;
-    metresDelta(a->lat, a->lon, b->lat, b->lon, abE, abN);
-    double len = sqrt(abE * abE + abN * abN);
-    if (len < 1) return false;
-    // Square to the first leg, START_LINE_HALF_M to each side.
-    double east = -abN / len * START_LINE_HALF_M;
-    double north = abE / len * START_LINE_HALF_M;
-    shiftFrom(a->lat, a->lon, east, north, lat1, lon1);
-    shiftFrom(a->lat, a->lon, -east, -north, lat2, lon2);
-    return true;
+    metresDelta(prevLat, prevLon, finLat, finLon, abE, abN);
+    return lineSquare(finLat, finLon, abE, abN, lat1, lon1, lat2, lon2);
+}
+
+bool finishLine(double& lat1, double& lon1, double& lat2, double& lon2) {
+    if (sel < 0 || sel >= n || items[sel].count < 2) return false;
+    const targets::Target* a = pointAt(items[sel], items[sel].count - 2);
+    const targets::Target* b = pointAt(items[sel], items[sel].count - 1);
+    if (!a || !b) return false;
+    return finishLineBetween(a->lat, a->lon, b->lat, b->lon, lat1, lon1, lat2, lon2);
+}
+
+bool usesTarget(int targetIndex) {
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < items[i].count; k++)
+            if (items[i].point[k] == targetIndex) return true;
+    return false;
 }
 
 bool onCourse() { return sel >= 0 && pastStart; }
@@ -440,6 +663,27 @@ float distanceToStart(double lat, double lon) {
     double side = fabs(ax.cross) - START_LINE_HALF_M;
     if (side < 0) side = 0;
     return (float)hypot(before, side);
+}
+
+// Metres still before this start line. Negative once the boat is on or past it.
+float approachToStart(int index, double lat, double lon) {
+    Axis ax;
+    if ((lat == 0 && lon == 0) || !axisOfIndex(index, lat, lon, ax) || ax.along >= 0) return -1;
+    double side = fabs(ax.cross) - START_LINE_HALF_M;
+    if (side < 0) side = 0;
+    return (float)hypot(-ax.along, side);
+}
+
+int nearestStart(double lat, double lon, float withinM) {
+    int best = -1;
+    float bestD = withinM;
+    for (int i = 0; i < n; i++) {
+        float d = approachToStart(i, lat, lon);
+        if (d < 0 || d > bestD) continue;
+        bestD = d;
+        best = i;
+    }
+    return best;
 }
 
 bool pollStart(double lat, double lon, float speedMps, float courseDeg, double travelled, bool reliable) {
@@ -477,6 +721,52 @@ bool pollStart(double lat, double lon, float speedMps, float courseDeg, double t
     if (diff > HEADING_LIMIT_DEG) return false;
     crossPending = false;
     pastStart = true;
+    return true;
+}
+
+bool pollFinish(double lat, double lon, float speedMps, float courseDeg, double travelled, bool reliable) {
+    if (!pastStart || sel < 0 || sel >= n || (lat == 0 && lon == 0)) {
+        finishArmed = false;
+        finishPending = false;
+        return false;
+    }
+    track(lat, lon);
+    if (sel < 0 || leg < items[sel].count - 2) {
+        finishArmed = false;
+        finishPending = false;
+        return false;
+    }
+    if (!reliable) return false;
+    Axis ax;
+    if (!finishAxisOf(lat, lon, ax)) return false;
+    bool inGate = fabs(ax.cross) <= START_LINE_HALF_M;
+    if (!inGate) {
+        if (ax.along > -LINE_HYST_M) {
+            finishArmed = false;
+            finishPending = false;
+        }
+        return false;
+    }
+    if (ax.along <= -LINE_HYST_M) {
+        if (!finishArmed) finishArmTravel = travelled;
+        finishArmed = true;
+        finishPending = false;
+        return false;
+    }
+    if (finishArmed && ax.along >= LINE_HYST_M) {
+        finishPending = true;
+        finishArmed = false;
+    }
+    if (!finishPending || ax.along > CONFIRM_PAST_M) {
+        if (ax.along > CONFIRM_PAST_M) finishPending = false;
+        return false;
+    }
+    if (speedMps < cfg::GPS_DIR_MIN_SPEED_MPS) return false;
+    if (travelled - finishArmTravel < CROSS_TRAVEL_M) return false;
+    double diff = fabs(courseDeg - ax.bearing);
+    if (diff > 180) diff = 360 - diff;
+    if (diff > HEADING_LIMIT_DEG) return false;
+    finishPending = false;
     return true;
 }
 

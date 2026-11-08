@@ -46,8 +46,13 @@ std::atomic<bool> rawOn{false};
 std::atomic<int> session{-1};
 std::atomic<uint32_t> drops{0};
 int nextSession = 1;
+char pendingLabel[25] = "";
 
 File files[(int)Stream::Count];
+
+bool labelChar(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-';
+}
 
 int scanNextSession() {
     int maxSeen = 0;
@@ -65,9 +70,12 @@ int scanNextSession() {
     return maxSeen + 1;
 }
 
-void openFile(int sessionNo, Stream s) {
-    char path[48];
-    snprintf(path, sizeof(path), "%s/S%04d_%s.csv", DIR, sessionNo, SUFFIX[(int)s]);
+void openFile(int sessionNo, Stream s, const char* label) {
+    char path[96];
+    if (label && label[0])
+        snprintf(path, sizeof(path), "%s/S%04d_%s_%s.csv", DIR, sessionNo, label, SUFFIX[(int)s]);
+    else
+        snprintf(path, sizeof(path), "%s/S%04d_%s.csv", DIR, sessionNo, SUFFIX[(int)s]);
     files[(int)s] = SD_MMC.open(path, FILE_WRITE, true);
     if (files[(int)s]) files[(int)s].print(HEADER[(int)s]);
 }
@@ -85,22 +93,25 @@ void task(void*) {
     Msg msg;
     uint32_t lastFlush = millis();
     int current = -1;
+    char label[32] = "";
     for (;;) {
         if (xQueueReceive(queue, &msg, pdMS_TO_TICKS(500)) == pdTRUE) {
             switch (msg.kind) {
                 case Kind::Start:
                     closeAll();
                     current = msg.session;
-                    for (int i = 0; i < (int)Stream::Raw; i++) openFile(current, (Stream)i);
+                    strlcpy(label, msg.text, sizeof(label));
+                    for (int i = 0; i < (int)Stream::Raw; i++) openFile(current, (Stream)i, label);
                     break;
                 case Kind::End:
                     closeAll();
                     current = -1;
+                    label[0] = '\0';
                     break;
                 case Kind::Line: {
                     if (current < 0) break;
                     File& f = files[(int)msg.stream];
-                    if (!f && msg.stream == Stream::Raw) openFile(current, Stream::Raw);
+                    if (!f && msg.stream == Stream::Raw) openFile(current, Stream::Raw, label);
                     if (f) f.print(msg.text);
                     break;
                 }
@@ -148,12 +159,34 @@ bool begin() {
 
 bool sdReady() { return sdOk; }
 
+void setSessionLabel(const char* name) {
+    pendingLabel[0] = '\0';
+    if (!name || !name[0]) return;
+    size_t k = 0;
+    bool gap = false;
+    for (const char* p = name; *p && k < 19; p++) {
+        if (labelChar(*p)) {
+            if (gap && k && k < 19) pendingLabel[k++] = '_';
+            if (k < 19) pendingLabel[k++] = *p;
+            gap = false;
+        } else {
+            gap = true;
+        }
+    }
+    if (!k) return;
+    memcpy(pendingLabel + k, "_race", 6);
+}
+
 int startSession() {
     if (open) endSession();
+    char label[32];
+    strlcpy(label, pendingLabel, sizeof(label));
+    pendingLabel[0] = '\0';
     if (!sdOk) return -1;
     Msg m{};
     m.kind = Kind::Start;
     m.session = (int16_t)nextSession;
+    strlcpy(m.text, label, sizeof(m.text));
     enqueue(m, pdMS_TO_TICKS(100));
     session = nextSession++;
     open = true;

@@ -1,6 +1,7 @@
 #include "targets.h"
 
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,23 +13,40 @@ namespace targets {
 
 namespace {
 
-Target items[MAX];
+Target* items = nullptr;
 int n = 0;
+int cap = 0;
 int sel = -1;
 
-void persist() {
+bool grow(int need) {
+    if (need <= cap) return true;
+    int ncap = cap < 8 ? 8 : cap;
+    while (ncap < need) ncap *= 2;
+    Target* p = (Target*)heap_caps_realloc(items, ncap * sizeof(Target), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = (Target*)heap_caps_realloc(items, ncap * sizeof(Target), MALLOC_CAP_8BIT);
+    if (!p) return false;
+    items = p;
+    cap = ncap;
+    return true;
+}
+
+// False when flash cannot hold the list. The points stay in memory either way.
+bool persist() {
     Preferences prefs;
     prefs.begin("targets", false);
-    prefs.putUChar("n", (uint8_t)n);
-    prefs.putUChar("sel", (uint8_t)(sel + 1));  // 0 = none
-    prefs.putUChar("v", 2);
-    prefs.putBytes("v2", items, sizeof(items));
+    prefs.putUShort("n", (uint16_t)n);
+    prefs.putUShort("sel", (uint16_t)(sel + 1));  // 0 = none
+    prefs.putUChar("v", 3);
+    bool ok = true;
+    if (n > 0) ok = prefs.putBytes("v3", items, n * sizeof(Target)) == n * sizeof(Target);
+    else prefs.remove("v3");
     prefs.end();
+    return ok;
 }
 
 // True when this target already uses the number, including a renamed "Map - T3".
 bool numberUsed(int num) {
-    char tag[8];
+    char tag[16];
     snprintf(tag, sizeof(tag), "T%d", num);
     size_t tlen = strlen(tag);
     for (int i = 0; i < n; i++) {
@@ -42,7 +60,7 @@ bool numberUsed(int num) {
 }
 
 int nextNumber() {
-    for (int num = 1; num < 100; num++)
+    for (int num = 1; num < 100000; num++)
         if (!numberUsed(num)) return num;
     return 0;
 }
@@ -65,29 +83,46 @@ const char* mapNameAt(double lat, double lon) {
 void begin() {
     Preferences prefs;
     prefs.begin("targets", false);
-    n = prefs.getUChar("n", 0);
-    sel = (int)prefs.getUChar("sel", 0) - 1;
-    if (n < 0 || n > MAX) n = 0;
-    if (n > 0 && prefs.getUChar("v", 1) >= 2) {
-        prefs.getBytes("v2", items, sizeof(items));
-    } else if (n > 0) {
-        // The first version stored a 12-character name in front of the coordinates.
+    int ver = prefs.getUChar("v", 1);
+    bool rewrite = ver < 3;
+    if (ver >= 3) {
+        n = prefs.getUShort("n", 0);
+        sel = (int)prefs.getUShort("sel", 0) - 1;
+        if (n > 0 && grow(n)) prefs.getBytes("v3", items, n * sizeof(Target));
+        else n = 0;
+    } else if (ver >= 2) {
+        n = prefs.getUChar("n", 0);
+        sel = (int)prefs.getUChar("sel", 0) - 1;
+        if (n > 12) n = 12;
+        if (n > 0 && grow(n)) prefs.getBytes("v2", items, n * sizeof(Target));
+        else n = 0;
+    } else if (prefs.getUChar("n", 0) > 0) {
+        // The first version stored twelve 12-character names in front of the coordinates.
+        n = prefs.getUChar("n", 0);
+        sel = (int)prefs.getUChar("sel", 0) - 1;
+        if (n > 12) n = 12;
         struct Old {
             char name[12];
             double lat, lon;
-        } old[MAX];
+        } old[12];
         memset(old, 0, sizeof(old));
         prefs.getBytes("items", old, sizeof(old));
-        for (int i = 0; i < n; i++) {
-            strlcpy(items[i].name, old[i].name, sizeof(items[i].name));
-            items[i].lat = old[i].lat;
-            items[i].lon = old[i].lon;
+        if (grow(n)) {
+            for (int i = 0; i < n; i++) {
+                strlcpy(items[i].name, old[i].name, sizeof(items[i].name));
+                items[i].lat = old[i].lat;
+                items[i].lon = old[i].lon;
+            }
+        } else {
+            n = 0;
         }
-        prefs.putUChar("v", 2);
-        prefs.putBytes("v2", items, sizeof(items));
     }
     prefs.end();
-    if (sel < -1 || sel >= n) sel = -1;
+    if (sel < -1 || sel >= n) {
+        sel = -1;
+        rewrite = true;
+    }
+    if (rewrite) persist();
 }
 
 int count() { return n; }
@@ -112,7 +147,7 @@ void select(int index) {
 }
 
 bool add(double lat, double lon) {
-    if (n >= MAX) return false;
+    if (!grow(n + 1)) return false;
     int num = nextNumber();
     if (!num) return false;
     const char* map = mapNameAt(lat, lon);
@@ -120,10 +155,22 @@ bool add(double lat, double lon) {
     else snprintf(items[n].name, sizeof(items[n].name), "T%d", num);
     items[n].lat = lat;
     items[n].lon = lon;
+    int prev = sel;
     sel = n;
     n++;
-    persist();
+    if (!persist()) {
+        n--;
+        sel = prev;
+        return false;
+    }
     return true;
+}
+
+void move(int index, double lat, double lon, bool save) {
+    if (index < 0 || index >= n) return;
+    items[index].lat = lat;
+    items[index].lon = lon;
+    if (save) persist();
 }
 
 bool rename(int index, const char* name) {

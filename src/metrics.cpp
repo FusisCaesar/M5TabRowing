@@ -163,10 +163,12 @@ void logSecond(int second) {
     }
     char hrText[8] = "";
     if (v.hr > 0) snprintf(hrText, sizeof(hrText), "%d", v.hr);
+    char batText[8] = "";
+    if (v.battery >= 0) snprintf(batText, sizeof(batText), "%d", v.battery);
     char line[200];
-    snprintf(line, sizeof(line), "%d,%s,%.7f,%.7f,%.2f,%.1f,%.1f,%.1f,%.1f,%d,%d,%s\n", second, utc,
+    snprintf(line, sizeof(line), "%d,%s,%.7f,%.7f,%.2f,%.1f,%.1f,%.1f,%.1f,%d,%s,%s\n", second, utc,
              gpsNow.lat, gpsNow.lon, gpsNow.speed, v.split, v.distance, v.rate, gpsNow.hdop,
-             gpsNow.sats, v.battery, hrText);
+             gpsNow.sats, batText, hrText);
     logger::write(logger::Stream::Seconds, line);
 }
 
@@ -324,6 +326,15 @@ void update() {
             logSecond(sec);
         }
     }
+}
+
+void note(const char* key, const char* value) {
+    if (!key || !value || !logger::sessionOpen()) return;
+    char clean[96];
+    size_t i = 0;
+    for (const char* p = value; *p && i + 1 < sizeof(clean); p++) clean[i++] = (*p == ',' || *p == '\n') ? ' ' : *p;
+    clean[i] = '\0';
+    logInfo(key, "%s", clean);
 }
 
 void start() {

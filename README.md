@@ -96,7 +96,8 @@ Laps are stored in `_laps.csv` and become laps in the TCX export.
   banner, or a short hint (for example after pairing). Tap this status to open
   GPS diagnostics. Settings → Sensors has the same **OPEN** button.
 - **Right:** heart-rate state (`HR`, `HR...`, `NO HR`), `WIFI` / `WIFI...` on the
-  Maps screen, `SIM` on a simulation build, local clock, battery.
+  Maps screen, `SIM` on a simulation build, local clock, battery (`BAT n%`,
+  or `USB` when the Tab5 is on USB power with no pack attached).
 
 Dates and times on screen are local (`cfg::TIMEZONE`, Amsterdam by default). Log
 files are UTC. The battery-backed clock is set from internet time whenever Wi-Fi
@@ -212,18 +213,33 @@ is already up.
   saved as `Map name - T1`; otherwise just `T1`. It is selected immediately and
   drawn with a line from the boat. **TARGETS** opens the list: tap a row to
   select it (tap again to clear), **RENAME** changes the name, **DELETE**
-  removes it. The **DTT**, **TTT** and **FINISH** tiles follow the selected target.
-- **SEGMENTS** joins targets into a course. **NEW**, then tap the targets in
-  the order you will row them: the first is the start, the last is the finish,
-  and any in between are via points. Tap one again to take it out. On a named
-  map the segment is saved as `Map name - S1`. The distance is the path along
-  those points, not the straight line from start to finish. Selecting a segment
-  draws that path, and a start line through the start pin, square to the first
-  leg and 40 m to each side. Before the boat crosses that line the distance
-  tiles count down to it (**DTS**). Afterwards they follow what is left along
-  the points (**DTF**). Crossing the line in the direction of the course, with
-  the boat actually moving, starts the session. **EDIT** changes the points,
-  **RENAME** the name, **DELETE** removes it. Deleting a target drops it from
+  asks for a second tap before it removes it. The **DTT**, **TTT** and **FINISH** tiles follow the selected target.
+- **SEGMENTS** joins points into a course. **NEW** opens the map: tap to drop
+  each point and it is connected to the one before. The first is the start,
+  the last is the finish, and any in between are via points. Tap an existing
+  target to use that one. Drag a point to move it. **UNDO** removes the last
+  point, **SAVE** keeps the course; leaving the map discards the new points.
+  On a named map the segment is saved as `Map name - S1`. The distance is the
+  path along those points, not the straight line from start to finish.
+  Within 100 m of a start, that segment's name appears on the map. Tap it to
+  select the segment: the course is drawn and the distance tiles count down to
+  the start line (**DTS**). Selecting a segment draws that path and its name on the map, and a start line
+  through the start pin, square to the first leg and 40 m to each side. The
+  points stay put while you look. **EDIT** on the map arms them: drag a point
+  to reposition it (a point shared with another segment moves there too). Before
+  the boat crosses the start line the distance tiles count down to it (**DTS**).
+  Afterwards they follow what is left along the points (**DTF**). A finish line
+  crosses the last pin, square to the last leg, the same 40 m to each side, drawn
+  in red. Crossing the start line in the direction of the course, with the boat
+  actually moving, starts the piece. Crossing the finish line the same way stops
+  it and shows the time, distance, split, rate, strokes and heart rate. **DONE**
+  closes that. The piece is saved as a race session named after the segment.
+  In the list those actions are large icons, the same size as on Settings: a
+  course to **EDIT** which targets are included and their order, two pages to
+  **COPY** the same course or the points in opposite order, a pencil to
+  **RENAME**, and a trash can for **DELETE**, which asks for a second tap
+  before it removes the segment.
+  Deleting a target drops it from
   every segment.
 
 The map follows your GPS fix and automatically switches to whichever uploaded
@@ -328,7 +344,8 @@ dropped, and `build: hardware` or `build: SIMULATION`.
 ### Sessions screen
 
 Lists every session on the card with its number, start date and time, duration
-and size. The header reminds you of `python tools\fetch.py COM10` to copy them
+and size. A race finished on a segment is named after it, for example
+`Tromp - S2 race`. The header reminds you of `python tools\fetch.py COM10` to copy them
 off.
 
 - The pencil gives a session a name such as `Bosbaan intervals` (on-screen
