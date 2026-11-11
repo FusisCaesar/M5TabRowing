@@ -60,6 +60,19 @@ constexpr float FINISH_FRACTION = 0.35f;
 constexpr int RATE_AVG_STROKES = 3;
 constexpr float STROKE_TIMEOUT_S = 6.0f;
 
+// Gap-fill for a catch the normal threshold missed. Once two real intervals have
+// set the rhythm, a shallower dip counts too, but only inside the window where
+// the next stroke is expected. A rescued catch keeps the rhythm, so a run of
+// light strokes stays tracked; a normal catch or a pause clears the chain.
+constexpr float RESCUE_WINDOW_LO = 0.75f;          // x recent average interval; where a dip may start
+constexpr float RESCUE_ACCEPT_LO = 0.90f;          // the catch itself must be this late, or a recovery
+                                                   // wiggle counts and the real catch is blocked
+constexpr float RESCUE_WINDOW_HI = 1.35f;
+constexpr float RESCUE_THRESHOLD_FACTOR = 0.5f;    // x the normal threshold
+constexpr float RESCUE_THRESHOLD_FLOOR_G = 0.06f;  // relaxed threshold never goes below this
+constexpr int RESCUE_MIN_INTERVALS = 2;
+constexpr int RESCUE_CHAIN_MAX = 120;
+
 constexpr int TECHNIQUE_AVG_STROKES = 5;
 
 constexpr float FUSION_CROSSOVER_HZ = 0.3f;
@@ -81,6 +94,7 @@ constexpr float GPS_SPEED_ZERO_MPS = 0.3f;
 // ---- Metrics ------------------------------------------------------------
 constexpr float SPLIT_IDLE_WINDOW_S = 3.0f;
 constexpr float MIN_SPLIT_SPEED_MPS = 0.5f;
+constexpr int SPLIT_AVG_STROKES = 3;  // displayed split averages this many strokes
 constexpr int SPEED_HISTORY = 256;   // ~25 s at 10 Hz
 
 // ---- Map / track --------------------------------------------------------

@@ -6,7 +6,8 @@ Usage:
   python tools/analyse.py recordings/S0007 --replay --k 2.0 --floor 0.10 --minima
 
 Writes into recordings/S0007_analysis/:
-  summary.txt         duration, sample rate, strokes, rate and the suspicious strokes
+  summary.txt         duration, sample rate, strokes against a periodicity estimate,
+                      split jitter, and the suspicious strokes
   overview.png        stroke rate, interval and GPS speed over the whole session
   strokes.png         every stroke overlaid at the catch, plus the average shape per rate band
   timeline_NNN_*.png  the detector's view of the whole session, one page per minute
@@ -73,6 +74,54 @@ def load_info(path):
         return {}
     with open(path, newline="") as f:
         return {r["key"]: r["value"] for r in csv.DictReader(f)}
+
+
+def expected_strokes(t, surge):
+    """How many strokes the surge's own periodicity implies, with no threshold involved.
+
+    Each 12 s window that repeats every 1.4-4 s (15-43 spm) contributes one hop's worth of
+    strokes at that period. Windows without a clear rhythm, or that are nearly still, add nothing.
+    """
+    if len(t) < 200:
+        return 0.0
+    dt = float(np.median(np.diff(t)))
+    if dt <= 0:
+        return 0.0
+    fs = 1.0 / dt
+    window = int(round(12 * fs))
+    hop = window // 2
+    lo, hi = int(1.4 * fs), int(4.0 * fs)
+    if window < 50 or hop < 1 or hi >= window or hi <= lo + 1:
+        return 0.0
+    total = 0.0
+    for a in range(0, len(surge) - window, hop):
+        seg = surge[a:a + window]
+        if float(np.std(seg)) < 0.03:
+            continue
+        seg = seg - np.mean(seg)
+        ac = np.correlate(seg, seg, "full")[window - 1:]
+        ac = ac / ac[0]
+        k = lo + int(np.argmax(ac[lo:hi]))
+        if ac[k] > 0.25:
+            total += hop / k
+    return total
+
+
+def split_jitter(split, interval):
+    """Median and 90th percentile of the stroke-to-stroke change, in s/500m.
+
+    Pauses and strokes with no split are left out. Returns None when there are too few.
+    """
+    if split is None or len(split) < 5:
+        return None
+    change = np.abs(np.diff(split))
+    good = (split[1:] > 0) & (split[:-1] > 0)
+    if interval is not None and len(interval) == len(split):
+        kept = (interval > 0) & (interval <= STROKE_TIMEOUT_S)
+        good &= kept[1:] & kept[:-1]
+    if int(good.sum()) < 4:
+        return None
+    return float(np.median(change[good])), float(np.percentile(change[good], 90)), int(good.sum())
 
 
 def find_suspects(catch_t):
@@ -230,10 +279,11 @@ def main():
     }
     # The IMU file flags the sample where a catch was confirmed; the strokes file holds the catch time itself.
     catch_t = t[imu["catch"] > 0]
+    stroke_cols = None
     if "strokes" in files:
-        st = load_columns(files["strokes"])
-        if "t_s" in st and len(st["t_s"]):
-            catch_t = st["t_s"] - t0
+        stroke_cols = load_columns(files["strokes"])
+        if "t_s" in stroke_cols and len(stroke_cols["t_s"]):
+            catch_t = stroke_cols["t_s"] - t0
     finish_t = t[imu["finish"] > 0] if "finish" in imu else np.array([])
     gps = imu.get("gps_mps", np.full(len(t), -1.0))
 
@@ -268,6 +318,17 @@ def main():
                      f"(range {rates.min():.1f}-{rates.max():.1f})")
     else:
         lines.append(f"Device strokes {len(catch_t)}")
+    expected = expected_strokes(t, d["surge"])
+    if expected >= 1:
+        lines.append(f"Expected strokes from surge periodicity: {expected:.0f} "
+                     f"(device found {len(catch_t)}, {100.0 * len(catch_t) / expected:.0f}%)")
+    if stroke_cols is not None:
+        interval = stroke_cols.get("interval_s")
+        for column, label in (("split_s", "one stroke"), ("split3_s", "3-stroke")):
+            jitter = split_jitter(stroke_cols.get(column), interval)
+            if jitter:
+                med, p90, n = jitter
+                lines.append(f"Split jitter, {label}: median {med:.1f} s/500m, 90th {p90:.1f} ({n} strokes)")
     if replay_t is not None:
         matched = sum(1 for c in catch_t if np.any(np.abs(replay_t - c) < 0.3))
         lines.append(f"Replay ({replay_label}): {len(replay_t)} strokes, {matched} of the device's "

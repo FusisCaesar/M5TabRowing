@@ -34,6 +34,18 @@ double prevCatch = -1;
 double prevFused = -1;
 float strokeSplit = 0;
 
+// Displayed split is the speed over the last few strokes, averaged as distance
+// over time. One stroke of GPS speed swings with the catch and the drive.
+struct PaceSample {
+    float interval;
+    float speed;
+};
+PaceSample paces[cfg::SPLIT_AVG_STROKES];
+int paceHead = 0;
+int paceCount = 0;
+
+void clearPace() { paceHead = paceCount = 0; }
+
 float ratios[cfg::TECHNIQUE_AVG_STROKES], checks[cfg::TECHNIQUE_AVG_STROKES],
     bounces[cfg::TECHNIQUE_AVG_STROKES];
 int techHead = 0, techCount = 0;
@@ -77,6 +89,15 @@ float meanSpeed(int64_t fromUs, int64_t toUs) {
 
 float splitFromSpeed(float s) { return s >= cfg::MIN_SPLIT_SPEED_MPS ? 500.0f / s : 0; }
 
+float smoothedSplit() {
+    double dist = 0, time = 0;
+    for (int i = 0; i < paceCount; i++) {
+        dist += (double)paces[i].speed * paces[i].interval;
+        time += paces[i].interval;
+    }
+    return time > 0 ? splitFromSpeed((float)(dist / time)) : 0;
+}
+
 float avgOf(const float* a) {
     float sum = 0;
     int n = 0;
@@ -97,11 +118,20 @@ void onStroke(const StrokeEvent& ev) {
     int64_t catchUs = (int64_t)(ev.catchTime * 1e6);
     float meanV = -1;
     float dps = 0;
+    float rawSplit = 0;
     bool fused = false;
 
     if (ev.interval > 0 && prevCatch > 0) {
         meanV = meanSpeed((int64_t)(prevCatch * 1e6), catchUs);
-        strokeSplit = meanV > 0 ? splitFromSpeed(meanV) : 0;
+        rawSplit = meanV > 0 ? splitFromSpeed(meanV) : 0;
+        if (meanV > 0) {
+            paces[paceHead] = {ev.interval, meanV};
+            paceHead = (paceHead + 1) % cfg::SPLIT_AVG_STROKES;
+            if (paceCount < cfg::SPLIT_AVG_STROKES) paceCount++;
+            strokeSplit = smoothedSplit();
+        } else if (paceCount == 0) {
+            strokeSplit = 0;
+        }
         if (settings::get().fusion && ev.fusedDistanceM >= 0 && prevFused >= 0) {
             dps = (float)(ev.fusedDistanceM - prevFused);
             fused = true;
@@ -109,7 +139,9 @@ void onStroke(const StrokeEvent& ev) {
             dps = meanV * ev.interval;
         }
     } else {
+        rawSplit = 0;
         strokeSplit = 0;
+        clearPace();
     }
     prevCatch = ev.catchTime;
     prevFused = ev.fusedDistanceM;
@@ -141,13 +173,13 @@ void onStroke(const StrokeEvent& ev) {
         lapRateSum += ev.rateSpm;
         lapRateCount++;
     }
-    char line[200];
+    char line[240];
     float elapsed = (float)((catchUs - startUs) * 1e-6);
     snprintf(line, sizeof(line),
-             "%.2f,%d,%.1f,%.3f,%.3f,%.3f,%.2f,%.1f,%.2f,%.2f,%.1f,%.3f,%.1f,%.1f,%.7f,%.7f,%.3f\n",
-             elapsed, v.strokes, ev.rateSpm, ev.interval, ev.driveTime, ev.recoveryTime, ratio,
-             strokeSplit, meanV > 0 ? meanV : 0, dps, v.distance, ev.peakDecelG, ev.checkMg,
-             ev.bounceMg, gpsNow.lat, gpsNow.lon, ev.catchTime);
+             "%.2f,%d,%.1f,%.3f,%.3f,%.3f,%.2f,%.1f,%.2f,%.2f,%.1f,%.3f,%.1f,%.1f,%.7f,%.7f,%.3f,%d,%.1f\n",
+             elapsed, v.strokes, ev.rateSpm, ev.interval, ev.driveTime, ev.recoveryTime, ratio, rawSplit,
+             meanV > 0 ? meanV : 0, dps, v.distance, ev.peakDecelG, ev.checkMg, ev.bounceMg, gpsNow.lat,
+             gpsNow.lon, ev.catchTime, ev.rescued ? 1 : 0, strokeSplit);
     logger::write(logger::Stream::Strokes, line);
 }
 
@@ -230,6 +262,7 @@ void clearSession() {
     lastLoggedSecond = -1;
     efficiency::reset();
     anatomy::reset();
+    clearPace();
 }
 
 void logInfo(const char* key, const char* fmt, ...) {

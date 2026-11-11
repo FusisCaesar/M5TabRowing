@@ -32,6 +32,13 @@ MAX_DIP_DURATION_S = 0.8
 FINISH_FRACTION = 0.35
 RATE_AVG_STROKES = 3
 STROKE_TIMEOUT_S = 6.0
+RESCUE_WINDOW_LO = 0.75
+RESCUE_ACCEPT_LO = 0.90
+RESCUE_WINDOW_HI = 1.35
+RESCUE_THRESHOLD_FACTOR = 0.5
+RESCUE_THRESHOLD_FLOOR_G = 0.06
+RESCUE_MIN_INTERVALS = 2
+RESCUE_CHAIN_MAX = 120
 WARMUP_S = 3.0
 MAX_DRIVE_S = 2.5
 STANDARD_GRAVITY = 9.80665
@@ -103,6 +110,8 @@ class StrokeDetector:
         self.cxy = self.cxx2 = self.cyy2 = 0.0
         self.gps_dir_n = 0
         self.in_dip = False
+        self.in_rescue = False
+        self.rescue_chain = 0
         self.last_catch = -1.0
         self.intervals, self.minima = [], []
         self.seq = 0
@@ -138,6 +147,57 @@ class StrokeDetector:
         if self.use_minima and len(self.minima) >= MINIMA_COUNT:
             mag = max(self.floor, MINIMA_FACTOR * -min(min(self.minima), 0.0))
         return mag
+
+    def rescue_period(self):
+        if self.last_catch < 0 or len(self.intervals) < RESCUE_MIN_INTERVALS:
+            return None
+        period = sum(self.intervals) / len(self.intervals)
+        return period if period > 0 else None
+
+    def in_rescue_window(self, t, lo_factor):
+        if self.rescue_chain >= RESCUE_CHAIN_MAX:
+            return False
+        period = self.rescue_period()
+        if period is None or t - self.last_catch > STROKE_TIMEOUT_S:
+            return False
+        lo = self.last_catch + lo_factor * period
+        hi = self.last_catch + RESCUE_WINDOW_HI * period
+        cap = self.last_catch + STROKE_TIMEOUT_S
+        if hi > cap:
+            hi = cap
+        return lo <= t <= hi
+
+    def accept_catch(self, t, catch_t, dip_min, rescued):
+        """Shared tail of a normal and a rescued catch. None when the interval is too short."""
+        if self.last_catch >= 0 and catch_t - self.last_catch < MIN_STROKE_INTERVAL_S:
+            return None
+        interval = 0.0 if self.last_catch < 0 else catch_t - self.last_catch
+        if interval > STROKE_TIMEOUT_S:
+            interval = 0.0
+        self.seq += 1
+        event = {"seq": self.seq, "t": catch_t, "interval": interval, "drive": 0.0, "recovery": 0.0,
+                 "peak": dip_min, "check": 0.0, "bounce": 0.0, "rescued": rescued}
+        if interval > 0:
+            if self.finish_t > self.last_catch and self.drive_time > 0:
+                event["drive"] = self.drive_time
+                event["recovery"] = catch_t - self.finish_t
+            n, st, sx, stt, stx, sxx = self.rec
+            if n >= 10:
+                ctt, ctx, cxx = stt - st * st / n, stx - st * sx / n, sxx - sx * sx / n
+                resid = cxx - ctx * ctx / ctt if ctt > 1e-9 else cxx
+                event["check"] = math.sqrt(max(resid, 0) / n) * 1000
+            if self.v_n:
+                event["bounce"] = math.sqrt(self.v_sum2 / self.v_n) * 1000
+            self.intervals = (self.intervals + [interval])[-RATE_AVG_STROKES:]
+        else:
+            self.intervals = []
+        self.minima = (self.minima + [dip_min])[-MINIMA_COUNT:]
+        self.last_catch = catch_t
+        event["rate"] = self.rate(t)
+        self.reset_cycle()
+        self.phase = "drive"
+        self.rescue_chain = self.rescue_chain + 1 if rescued and interval > 0 else 0
+        return event
 
     def update_axis(self, h, gu):
         c = self.cov
@@ -219,11 +279,20 @@ class StrokeDetector:
         x = self.sign * p
         self.ms += (x * x - self.ms) * self.aR
         if flipped:
-            self.in_dip, self.phase = False, None
+            self.in_dip, self.in_rescue, self.phase = False, False, None
             self.reset_cycle()
 
-        thr_mag = self.dip_thr if self.in_dip else self.thr_mag()
-        thr = -thr_mag
+        normal_mag = self.thr_mag()
+        normal_thr_mag = self.dip_thr if self.in_dip else normal_mag
+        relax_mag = max(RESCUE_THRESHOLD_FACTOR * normal_mag, RESCUE_THRESHOLD_FLOOR_G)
+        relax_useful = relax_mag + 1e-4 < normal_mag
+        shown = normal_thr_mag
+        if warm and not self.in_dip:
+            if self.in_rescue:
+                shown = self.rescue_thr
+            elif relax_useful and self.in_rescue_window(t, RESCUE_WINDOW_LO):
+                shown = relax_mag
+        thr = -shown
         self.v_sum2 += vert * vert
         self.v_n += 1
         finish = False
@@ -237,50 +306,44 @@ class StrokeDetector:
                 self.phase, finish = "recovery", True
             elif t - self.last_catch > MAX_DRIVE_S:
                 self.phase = None
-        elif self.phase == "recovery" and not self.in_dip:
+        elif self.phase == "recovery" and not self.in_dip and not self.in_rescue:
             rt = t - self.finish_t
             for i, v in enumerate((1, rt, x, rt * rt, rt * x, x * x)):
                 self.rec[i] += v
 
         event = None
+        normal_thr = -normal_thr_mag
         if not warm:
             self.in_dip = False
-        elif not self.in_dip:
-            if self.prev_x >= thr > x:
-                self.t_down = self.prev_t + (thr - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
-                self.dip_min, self.dip_thr, self.in_dip = x, thr_mag, True
-        else:
+            self.in_rescue = False
+        elif not self.in_dip and self.prev_x >= normal_thr > x:
+            # Deep enough for the normal threshold: this dip belongs to it, not the gap-fill.
+            self.t_down = self.prev_t + (normal_thr - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
+            self.dip_min, self.dip_thr, self.in_dip = x, normal_thr_mag, True
+            self.in_rescue = False
+        elif not self.in_dip and not self.in_rescue and relax_useful and self.in_rescue_window(t, RESCUE_WINDOW_LO) \
+                and self.prev_x >= -relax_mag > x:
+            self.rescue_t_down = self.prev_t + (-relax_mag - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
+            self.rescue_min, self.rescue_thr, self.in_rescue = x, relax_mag, True
+        elif not self.in_dip and self.in_rescue:
+            rescue_thr = -self.rescue_thr
+            self.rescue_min = min(self.rescue_min, x)
+            if x >= rescue_thr:
+                t_up = self.prev_t + (rescue_thr - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
+                catch_t = 0.5 * (self.rescue_t_down + t_up)
+                self.in_rescue = False
+                if self.in_rescue_window(catch_t, RESCUE_ACCEPT_LO):
+                    event = self.accept_catch(t, catch_t, self.rescue_min, True)
+            elif t - self.rescue_t_down > MAX_DIP_DURATION_S:
+                self.in_rescue = False
+        elif self.in_dip:
             self.dip_min = min(self.dip_min, x)
-            if x >= thr:
-                t_up = self.prev_t + (thr - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
+            if x >= normal_thr:
+                t_up = self.prev_t + (normal_thr - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
                 catch_t = 0.5 * (self.t_down + t_up)
                 self.in_dip = False
-                if self.last_catch < 0 or catch_t - self.last_catch >= MIN_STROKE_INTERVAL_S:
-                    interval = 0.0 if self.last_catch < 0 else catch_t - self.last_catch
-                    if interval > STROKE_TIMEOUT_S:
-                        interval = 0.0
-                    self.seq += 1
-                    event = {"seq": self.seq, "t": catch_t, "interval": interval, "drive": 0.0,
-                             "recovery": 0.0, "peak": self.dip_min, "check": 0.0, "bounce": 0.0}
-                    if interval > 0:
-                        if self.finish_t > self.last_catch and self.drive_time > 0:
-                            event["drive"] = self.drive_time
-                            event["recovery"] = catch_t - self.finish_t
-                        n, st, sx, stt, stx, sxx = self.rec
-                        if n >= 10:
-                            ctt, ctx, cxx = stt - st * st / n, stx - st * sx / n, sxx - sx * sx / n
-                            resid = cxx - ctx * ctx / ctt if ctt > 1e-9 else cxx
-                            event["check"] = math.sqrt(max(resid, 0) / n) * 1000
-                        if self.v_n:
-                            event["bounce"] = math.sqrt(self.v_sum2 / self.v_n) * 1000
-                        self.intervals = (self.intervals + [interval])[-RATE_AVG_STROKES:]
-                    else:
-                        self.intervals = []
-                    self.minima = (self.minima + [self.dip_min])[-MINIMA_COUNT:]
-                    self.last_catch = catch_t
-                    event["rate"] = self.rate(t)
-                    self.reset_cycle()
-                    self.phase = "drive"
+                self.in_rescue = False
+                event = self.accept_catch(t, catch_t, self.dip_min, False)
             elif t - self.t_down > MAX_DIP_DURATION_S:
                 self.in_dip = False
 
@@ -352,7 +415,8 @@ def summarize(events, rows, label=""):
     drives = [e["drive"] for e in events if e["drive"] > 0]
     recs = [e["recovery"] for e in events if e["recovery"] > 0]
     device = [r[0] for r in rows if r[4]]
-    line = f"{label}strokes {len(events):4d}"
+    rescued = sum(1 for e in events if e.get("rescued"))
+    line = f"{label}strokes {len(events):4d}  rescued {rescued:3d}"
     if rates:
         line += f"  rate mean {statistics.mean(rates):5.1f} spm  min {min(rates):5.1f}  max {max(rates):5.1f}"
     if drives:
