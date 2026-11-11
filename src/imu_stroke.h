@@ -4,6 +4,10 @@
 
 #include "stroke_detector.h"
 
+namespace anatomy {
+struct Cycle;
+}
+
 namespace imu {
 
 struct Live {
@@ -38,6 +42,8 @@ void setFusionEnabled(bool on);
 void setGpsSpeed(float speedMps, bool valid);
 
 bool popStroke(StrokeEvent& ev);
+// The cycle cut for the stroke most recently popped, if it had a finish.
+bool popCycle(anatomy::Cycle& cycle);
 Live live();
 
 // Copies the newest `n` plot points (oldest first); returns how many were copied.

@@ -9,6 +9,7 @@
 #include "fusion.h"
 #include "logger.h"
 #include "sim.h"
+#include "stroke_anatomy.h"
 
 namespace imu {
 
@@ -16,8 +17,18 @@ namespace {
 
 StrokeDetector detector;
 SpeedFusion fusion;
+anatomy::Recorder recorder;
 QueueHandle_t strokeQueue = nullptr;
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+
+// One queue entry so the stroke and its cycle can't get out of step.
+struct Packed {
+    StrokeEvent ev;
+    anatomy::Cycle cycle;
+    bool hasCycle;
+};
+anatomy::Cycle pendingCycle;
+bool pendingHas = false;
 
 Live liveState;
 StrokeParams pendingParams;
@@ -72,13 +83,23 @@ void task(void*) {
 
         detector.setGps(gpsV, gpsOk);
         bool stroke = detector.process(t, ax, ay, az, out, ev);
+        recorder.push(t, out.surgeLinear, gpsV, gpsOk);
 
         fusion.setGps(gpsV, gpsOk && fusionEnabled);
         fusion.step(out.surgeLinear * cfg::STANDARD_GRAVITY, cfg::IMU_DT_S);
 
         if (stroke) {
             ev.fusedDistanceM = fusion.active() ? fusion.distance() : -1.0;
-            xQueueSend(strokeQueue, &ev, 0);
+            // Static: a cycle is about a kilobyte, and this task's stack is shared with the detector.
+            static Packed msg;
+            msg.ev = ev;
+            msg.cycle = anatomy::Cycle{};
+            msg.hasCycle = false;
+            if (ev.interval > 0 && ev.driveTime > 0) {
+                double prevCatch = ev.catchTime - ev.interval;
+                msg.hasCycle = recorder.cut(ev.catchTime, prevCatch, prevCatch + ev.driveTime, msg.cycle);
+            }
+            xQueueSend(strokeQueue, &msg, 0);
         }
 
         uint32_t head = plotHead.load(std::memory_order_relaxed);
@@ -138,7 +159,7 @@ void begin(const StrokeParams& p, bool fusionOn) {
     detector.setParams(p);
     fusion.setCrossoverHz(cfg::FUSION_CROSSOVER_HZ);
     fusionEnabled = fusionOn;
-    strokeQueue = xQueueCreate(16, sizeof(StrokeEvent));
+    strokeQueue = xQueueCreate(12, sizeof(Packed));
     xTaskCreatePinnedToCore(task, "imu", 8192, nullptr, configMAX_PRIORITIES - 2, nullptr, 0);
 }
 
@@ -158,7 +179,21 @@ void setGpsSpeed(float speedMps, bool valid) {
     portEXIT_CRITICAL(&mux);
 }
 
-bool popStroke(StrokeEvent& ev) { return strokeQueue && xQueueReceive(strokeQueue, &ev, 0) == pdTRUE; }
+bool popStroke(StrokeEvent& ev) {
+    Packed msg;
+    if (!strokeQueue || xQueueReceive(strokeQueue, &msg, 0) != pdTRUE) return false;
+    ev = msg.ev;
+    pendingCycle = msg.cycle;
+    pendingHas = msg.hasCycle;
+    return true;
+}
+
+bool popCycle(anatomy::Cycle& cycle) {
+    if (!pendingHas) return false;
+    pendingHas = false;
+    cycle = pendingCycle;
+    return cycle.ok;
+}
 
 Live live() {
     portENTER_CRITICAL(&mux);

@@ -57,17 +57,18 @@ Windows notes:
 
 ## Using it
 
-The right-most bottom button cycles six screens. **Maps** is opened with **MAPS**
+The right-most bottom button cycles seven screens. **Maps** is opened with **MAPS**
 on the Map screen between sessions (Wi-Fi is only used there). **GPS diagnostics** opens from the GPS status in the centre of the top bar, or
 from **OPEN** on Settings → Sensors. **TARGETS** and **SEGMENTS** on the map
 open those lists. **BACK** returns to the screen you came from. Maps, GPS
-diagnostics, the target list and the segment list are not part of the six-screen cycle.
+diagnostics, the target list and the segment list are not part of the seven-screen cycle.
 
 | Screen | Content |
 | --- | --- |
 | Main | eight metric tiles you can rearrange; optional camera or map picture-in-picture |
 | Map | offline waterway map with your position, heading, track, targets and segments |
 | Efficiency | metres per stroke against rate, efficiency score, rec:drive / check / bounce, coaching hint |
+| Stroke | one stroke split into catch, drive, finish, run and approach, against acceleration and GPS speed, with one coaching hint |
 | Plot | last 6 s of surge acceleration with catch, finish and threshold; IMU diagnostics |
 | Settings | **STROKE**, **DISPLAY**, **SENSORS** and **WIFI** tabs |
 | Sessions | recordings on the card: review, rename, delete |
@@ -280,6 +281,28 @@ it clears when you start a new session, and **hold CLEAR** clears it after you
 turn into the wind.
 
 ![Efficiency screen](shots/efficiency.png)
+
+### Stroke screen
+
+The **Stroke** screen splits the stroke you are rowing into five phases and compares the last few strokes with your own best at the same rate.
+
+The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. A green line marks the catch and a cyan line the finish, as on the Plot screen.
+
+The shaded bands are the phases:
+
+- **Catch.** The dip as the blade goes in: how long it lasts, how deep it is, and how much speed it costs.
+- **Drive.** The push: the speed it adds, and whether the peak comes early or late.
+- **Finish.** The release: how fast the push dies away, and any dip as the blade comes out.
+- **Run.** The glide: how hard the boat is slowing, and when the speed peaks.
+- **Approach.** The run-in to the next catch: how long before the catch the boat starts to slow.
+
+The line above the buttons gives the one most useful hint. In order: catch together, dip later, a quicker catch, push harder, build the drive earlier or hold it through, then a cleaner release. With nothing to correct it says the stroke matches your reference.
+
+**CREW** sets the boat to 1, 2, 4 or 8. With one rower a wide catch is worded as your own entry, because a single sensor on the hull cannot tell a slow blade from rowers out of time. With more than one it is worded as catching and finishing together: it can say the crew is not together, not which seat. **Hold** the button to clear the reference, as on Efficiency.
+
+The reference is this session only. A stroke counts as one of your best when its distance per stroke is within 5% of your best at that rate on the Efficiency screen; until then the comparison is your usual stroke at that rate. It clears when a new session starts.
+
+![Stroke screen](shots/stroke.png)
 
 ### Plot screen
 

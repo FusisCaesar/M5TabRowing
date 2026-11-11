@@ -5,6 +5,7 @@
 #include "board.h"
 #include "config.h"
 #include "efficiency.h"
+#include "stroke_anatomy.h"
 #include "gps_nav.h"
 #include "imu_stroke.h"
 #include "logger.h"
@@ -88,6 +89,10 @@ float avgOf(const float* a) {
 }
 
 void onStroke(const StrokeEvent& ev) {
+    // The IMU task queues the cycle ahead of the stroke, so this matches it.
+    static anatomy::Cycle cycle;
+    bool haveCycle = imu::popCycle(cycle);
+
     int64_t catchUs = (int64_t)(ev.catchTime * 1e6);
     float meanV = -1;
     float dps = 0;
@@ -120,6 +125,7 @@ void onStroke(const StrokeEvent& ev) {
     v.checkMg = avgOf(checks);
     v.bounceMg = avgOf(bounces);
     if (ev.interval > 0) efficiency::addStroke({ev.rateSpm, dps, ratio, ev.checkMg, ev.bounceMg});
+    if (haveCycle && ev.interval > 0 && ev.driveTime > 0) anatomy::addStroke(cycle, ev.rateSpm, dps);
 
     Serial.printf("[stroke] #%lu rate %.1f int %.2fs drive %.2f rec %.2f split %.1f dps %.2f%s\n",
                   (unsigned long)ev.seq, ev.rateSpm, ev.interval, ev.driveTime, ev.recoveryTime,
@@ -222,6 +228,7 @@ void clearSession() {
     hrCount = 0;
     lastLoggedSecond = -1;
     efficiency::reset();
+    anatomy::reset();
 }
 
 void logInfo(const char* key, const char* fmt, ...) {
@@ -262,6 +269,7 @@ void logSessionInfo(int session) {
     logInfo("fusion", "%d", s.fusion ? 1 : 0);
     logInfo("raw_log", "%d", s.rawLog ? 1 : 0);
     logInfo("ratio_shift", "%.1f", s.ratioShift);
+    logInfo("crew", "%d", s.crew);
     logInfo("screen_flipped", "%d", s.flip ? 1 : 0);
     logInfo("bandpass_hz", "%.2f-%.2f", cfg::BANDPASS_LOW_HZ, cfg::BANDPASS_HIGH_HZ);
     logInfo("min_stroke_interval_s", "%.2f", cfg::MIN_STROKE_INTERVAL_S);

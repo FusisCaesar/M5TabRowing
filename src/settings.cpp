@@ -36,6 +36,8 @@ void begin() {
         s.mapOrientation = prefs.getBool("mapHeadUp", true) ? mapview::BowUp : mapview::NorthUp;
     }
     s.ratioShift = prefs.getFloat("ratioShift", 0.0f);
+    s.crew = prefs.getUChar("crew", 1);
+    if (s.crew != 1 && s.crew != 2 && s.crew != 4 && s.crew != 8) s.crew = 1;
     static const uint8_t TILE_DEFAULT[TILE_SLOTS] = {
         (uint8_t)TileMetric::Split,     (uint8_t)TileMetric::Rate,      (uint8_t)TileMetric::Distance,
         (uint8_t)TileMetric::Time,      (uint8_t)TileMetric::DistStroke, (uint8_t)TileMetric::AvgSplit,
@@ -66,6 +68,7 @@ void save() {
     prefs.putUChar("mapZoom", s.mapZoom);
     prefs.putUChar("mapOrient", s.mapOrientation);
     prefs.putFloat("ratioShift", s.ratioShift);
+    prefs.putUChar("crew", s.crew);
     prefs.putBytes("tiles", s.tiles, TILE_SLOTS);
     prefs.end();
 }

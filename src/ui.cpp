@@ -27,6 +27,7 @@
 #include "segments.h"
 #include "sessions_ui.h"
 #include "settings.h"
+#include "stroke_anatomy.h"
 #include "targets.h"
 #include "track.h"
 
@@ -60,8 +61,8 @@ constexpr float PLOT_RANGE_G = 0.6f;
 // screen; GPS diagnostics opens from the top bar; the target and segment lists
 // open from the map. None of those is part of the cycle.
 // Screens from Sessions on draw their own content area (sessions_ui, maps_ui).
-enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps, Gps, Targets, Segments };
-constexpr int CYCLE = 6;
+enum class Screen { Main, Map, Efficiency, Stroke, Plot, Settings, Sessions, Maps, Gps, Targets, Segments };
+constexpr int CYCLE = 7;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
 // Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
 constexpr int EFF_H = BTN_Y - ROW_H - BAR_H;
@@ -127,6 +128,7 @@ struct RaceResult {
 uint32_t lastFrame = 0;
 uint32_t lastPlot = 0;
 uint32_t lastEff = 0, effVersion = 0;
+uint32_t lastStroke = 0, strokeVersion = 0;
 uint32_t lastBattery = 0;
 
 imu::PlotPoint plotBuf[PLOT_POINTS];
@@ -415,13 +417,16 @@ void drawButton(int idx, const char* label, bool enabled, bool lit = false) {
     fb::push(c, idx * BTN_W, BTN_Y);
 }
 
-void drawRow(int idx, int y, const char* left, const char* right, uint16_t color) {
-    char key[96];
-    snprintf(key, sizeof(key), "%s|%s", left, right);
+void drawRow(int idx, int y, const char* left, const char* right, uint16_t color, bool large = false) {
+    char key[120];
+    snprintf(key, sizeof(key), "%c%s|%s", large ? 'L' : 's', left, right);
     if (!changed(rowCache[idx], key)) return;
     rowC.fillSprite(th->bg);
-    rowC.setFont(&fonts::FreeSans12pt7b);
     rowC.setTextSize(1);
+    rowC.setFont(large ? &fonts::FreeSansBold18pt7b : &fonts::FreeSans12pt7b);
+    // A long hint stays on one line; the bold 12 pt face still reads larger than the old text.
+    if (large && rowC.textWidth(left) + rowC.textWidth(right) > W - 96)
+        rowC.setFont(&fonts::FreeSansBold12pt7b);
     rowC.setTextColor(color);
     rowC.setTextDatum(middle_left);
     rowC.drawString(left, 24, ROW_H / 2);
@@ -563,6 +568,10 @@ void drawButtons(const metrics::View& v) {
                    s.mapOrientation != mapview::NorthUp);
     } else if (screen == Screen::Efficiency) {
         drawButton(3, "HOLD: CLEAR", efficiency::strokeCount() > 0);
+    } else if (screen == Screen::Stroke) {
+        char crew[12];
+        snprintf(crew, sizeof(crew), "CREW %d", settings::get().crew);
+        drawButton(3, crew, true);
     } else if (screen == Screen::Sessions) {
         bool inner = sessionsui::reviewing() || sessionsui::editing();
         drawButton(3, inner ? "BACK" : "", inner);
@@ -576,7 +585,8 @@ void drawButtons(const metrics::View& v) {
     }
     const char* next = screen == Screen::Main         ? "MAP"
                        : screen == Screen::Map        ? "EFFICIENCY"
-                       : screen == Screen::Efficiency ? "PLOT"
+                       : screen == Screen::Efficiency ? "STROKE"
+                       : screen == Screen::Stroke     ? "PLOT"
                        : screen == Screen::Plot       ? "SETTINGS"
                        : screen == Screen::Settings   ? "SESSIONS"
                                                       : "METRICS";
@@ -767,14 +777,15 @@ void drawEffPanel(const efficiency::Summary& s) {
     c.setTextSize(1);
     c.setTextDatum(middle_left);
     c.drawString("%", EFF_PANEL_W / 2 + 100, 112);
-    c.setFont(&fonts::FreeSans12pt7b);
+    c.setFont(&fonts::FreeSansBold18pt7b);
     c.setTextDatum(top_center);
     c.setTextColor(th->label);
     if (s.score > 0) snprintf(b, sizeof(b), "of your best %.1f m at %d spm", s.best, (int)lroundf(s.rate));
     else if (s.rate > 0) snprintf(b, sizeof(b), "learning your best at %d spm", (int)lroundf(s.rate));
     else snprintf(b, sizeof(b), "distance per stroke vs your best");
-    c.drawString(b, EFF_PANEL_W / 2, 152);
-    c.drawFastHLine(16, 188, EFF_PANEL_W - 32, th->dim);
+    if (c.textWidth(b) > EFF_PANEL_W - 32) c.setFont(&fonts::FreeSansBold12pt7b);
+    c.drawString(b, EFF_PANEL_W / 2, 148);
+    c.drawFastHLine(16, 194, EFF_PANEL_W - 32, th->dim);
 
     // Recovery:drive against the target band.
     const efficiency::RatioCheck& rc = s.ratioCheck;
@@ -824,7 +835,332 @@ void drawEfficiency(const metrics::View& v) {
     drawEffPanel(s);
     char right[32];
     snprintf(right, sizeof(right), "%d strokes", efficiency::strokeCount());
-    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg);
+    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg, true);
+}
+
+// ---- stroke anatomy screen ---------------------------------------------------
+
+uint16_t strokeBand(int phase) {
+    // Dark tints at night, pale ones by day, so the trace stays readable on top.
+    static const uint16_t night[5] = {0x5042, 0x118E, 0x130C, 0x3306, 0x6202};
+    static const uint16_t day[5] = {0xFD1C, 0xC55F, 0xB65F, 0xE61C, 0xFDD4};
+    return (th == &NIGHT ? night : day)[phase];
+}
+
+// Green within 10% of the reference, orange within 25%, red beyond. `lower` means smaller is better.
+uint16_t strokeVs(float now, float ref, bool lower, bool haveRef) {
+    if (!haveRef || ref <= 0 || now <= 0) return th->fg;
+    float ratio = lower ? now / ref : ref / now;
+    return ratio <= 1.10f ? th->ok : ratio <= 1.25f ? th->caution : th->warn;
+}
+
+uint16_t strokeWorse(uint16_t a, uint16_t b) {
+    auto rank = [&](uint16_t c) { return c == th->warn ? 3 : c == th->caution ? 2 : c == th->ok ? 1 : 0; };
+    return rank(a) >= rank(b) ? a : b;
+}
+
+void drawStrokeChart(const anatomy::Summary& s) {
+    M5Canvas& c = effC;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    const int L = 58, R = EFF_CHART_W - 14;
+    const int aT = 34, aB = 242, sT = 268, sB = 474;
+    const float tLeft = -anatomy::PREROLL_S;
+
+    if (!s.have) {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_center);
+        c.setTextColor(th->label);
+        c.drawString("STROKE", EFF_CHART_W / 2, EFF_H / 2 - 24);
+        c.setFont(&fonts::FreeSans12pt7b);
+        c.drawString("The phases appear after a few strokes", EFF_CHART_W / 2, EFF_H / 2 + 16);
+        fb::push(c, 0, BAR_H);
+        return;
+    }
+
+    const float tRight = fmaxf(0.8f, s.driveS + s.recS);
+    auto X = [&](float t) { return L + (int)lroundf((t - tLeft) / (tRight - tLeft) * (R - L)); };
+
+    float aLo = 0, aHi = 0;
+    auto acc = [&](float v) { aLo = fminf(aLo, v); aHi = fmaxf(aHi, v); };
+    for (int i = 0; i < anatomy::PREROLL_N; i++) acc(s.preroll[i]);
+    for (int i = 0; i < anatomy::BINS; i++) acc(s.accel[i]);
+    if (s.haveRef) {
+        for (int i = 0; i < anatomy::PREROLL_N; i++) acc(s.refPreroll[i]);
+        for (int i = 0; i < anatomy::BINS; i++) acc(s.refAccel[i]);
+    }
+    float aPad = 0.10f * (aHi - aLo) + 0.04f;
+    aLo -= aPad;
+    aHi += aPad;
+
+    float vLo = 1e9f, vHi = -1e9f;
+    auto vel = [&](float v) { vLo = fminf(vLo, v); vHi = fmaxf(vHi, v); };
+    for (int i = 0; i < anatomy::PREROLL_N + anatomy::BINS; i++) vel(s.speed[i]);
+    for (int i = 0; i < s.gpsN; i++) vel(s.gpsV[i]);
+    if (vHi < vLo) {
+        vLo = -0.4f;
+        vHi = 0.4f;
+    }
+    float vPad = 0.12f * (vHi - vLo) + 0.05f;
+    vLo -= vPad;
+    vHi += vPad;
+
+    auto Ya = [&](float g) { return (int)lroundf(aB - (g - aLo) / (aHi - aLo) * (aB - aT)); };
+    auto Yv = [&](float v) { return (int)lroundf(sB - (v - vLo) / (vHi - vLo) * (sB - sT)); };
+
+    if (s.now.valid) {
+        const float edge[6] = {s.bounds.catch0, s.bounds.catch1, s.bounds.finish, s.bounds.finishEnd, s.bounds.approach,
+                                s.bounds.interval};
+        const char* name[5] = {"CATCH", "DRIVE", "FINISH", "RUN", "APPROACH"};
+        c.setFont(&fonts::FreeSans9pt7b);
+        c.setTextDatum(top_center);
+        for (int p = 0; p < 5; p++) {
+            float u0 = fmaxf(tLeft, edge[p]), u1 = fminf(tRight, edge[p + 1]);
+            if (u1 - u0 < 0.02f) continue;
+            int x0 = X(u0), x1 = X(u1);
+            c.fillRect(x0, aT, x1 - x0, sB - aT, strokeBand(p));
+            if (x1 - x0 > c.textWidth(name[p]) + 6) {
+                c.setTextColor(th->fg);
+                c.drawString(name[p], (x0 + x1) / 2, aT + 3);
+            }
+        }
+    }
+
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextColor(th->label);
+    c.setTextDatum(middle_right);
+    for (float g : {aLo, 0.0f, aHi}) {
+        if (g < aLo - 0.01f || g > aHi + 0.01f) continue;
+        int y = Ya(g);
+        c.drawFastHLine(L, y, R - L, g == 0 ? th->label : th->dim);
+        char t[12];
+        snprintf(t, sizeof(t), "%+.1f", g);
+        if (y > aT + 8 && y < aB - 8) c.drawString(t, L - 4, y);
+    }
+    c.drawFastHLine(L, Yv(vLo), R - L, th->dim);
+    c.drawFastHLine(L, Yv(vHi), R - L, th->dim);
+    float vMid = (vLo + vHi) * 0.5f;
+    c.drawFastHLine(L, Yv(vMid), R - L, th->dim);
+    char t[16];
+    snprintf(t, sizeof(t), "%.1f", vMid);
+    c.drawString(t, L - 4, Yv(vMid));
+
+    int xCatch = X(0), xFinish = X(s.driveS);
+    c.drawFastVLine(xCatch, aT, sB - aT, th->ok);
+    c.drawFastVLine(xFinish, aT, sB - aT, TFT_CYAN);
+
+    auto trace = [&](const float* preroll, const float* accel, const float* speed, uint16_t color, bool accelTrace) {
+        int prevX = -1, prevY = -1;
+        for (int i = 0; i < anatomy::PREROLL_N + anatomy::BINS; i++) {
+            float time = i < anatomy::PREROLL_N ? anatomy::prerollTime(i)
+                                                 : anatomy::binTime(i - anatomy::PREROLL_N, s.driveS, s.recS);
+            float value = speed ? speed[i] : (i < anatomy::PREROLL_N ? preroll[i] : accel[i - anatomy::PREROLL_N]);
+            int x = X(time), y = accelTrace ? Ya(value) : Yv(value);
+            if (prevX >= 0) {
+                c.drawLine(prevX, prevY, x, y, color);
+                if (color == th->accent) c.drawLine(prevX, prevY + 1, x, y + 1, color);
+            }
+            prevX = x;
+            prevY = y;
+        }
+    };
+
+    c.setClipRect(L, aT, R - L + 1, aB - aT + 1);
+    if (s.haveRef) trace(s.refPreroll, s.refAccel, nullptr, th->label, true);
+    trace(s.preroll, s.accel, nullptr, th->accent, true);
+    c.clearClipRect();
+
+    c.setClipRect(L, sT, R - L + 1, sB - sT + 1);
+    trace(nullptr, nullptr, s.speed, th->accent, false);
+    for (int i = 0; i < s.gpsN; i++) {
+        int x = X(s.gpsT[i]), y = Yv(s.gpsV[i]);
+        if (x >= L && x <= R) c.fillCircle(x, y, 3, th->fg);
+    }
+    c.clearClipRect();
+
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextDatum(top_center);
+    c.setTextColor(th->label);
+    for (float tick = 0; tick <= tRight + 0.01f; tick += 0.5f) {
+        int x = X(tick);
+        c.drawFastVLine(x, sB, 4, th->dim);
+        snprintf(t, sizeof(t), "%.1f", tick);
+        c.drawString(t, x, sB + 4);
+    }
+
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(top_left);
+    c.setTextColor(th->fg);
+    c.drawString("STROKE", 12, 6);
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextDatum(top_right);
+    int lx = R;
+    const char* legend[] = {"gps", "reference", "now", "finish", "catch"};
+    const uint16_t legendColor[] = {th->fg, th->label, th->accent, TFT_CYAN, th->ok};
+    for (int i = 0; i < 5; i++) {
+        if (i == 0 && s.gpsN == 0) continue;
+        if (i == 1 && !s.haveRef) continue;
+        c.setTextColor(legendColor[i]);
+        c.drawString(legend[i], lx, 8);
+        lx -= c.textWidth(legend[i]) + 14;
+    }
+    fb::push(c, 0, BAR_H);
+}
+
+void drawStrokePanel(const anatomy::Summary& s) {
+    M5Canvas& c = effP;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    c.drawFastVLine(0, 0, EFF_H, th->dim);
+
+    char value[32], caption[64];
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_left);
+    c.setTextColor(th->fg);
+    if (s.have && s.rate > 0) snprintf(value, sizeof(value), "%d spm", (int)lroundf(s.rate));
+    else snprintf(value, sizeof(value), "--");
+    c.drawString(value, 24, 8);
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->label);
+    const char* vs = !s.have ? "waiting" : !s.haveRef ? "learning" : s.vsBest ? "vs your best" : "vs your usual";
+    c.drawString(vs, EFF_PANEL_W - 20, 14);
+    c.setFont(&fonts::FreeSans12pt7b);
+    c.setTextDatum(top_left);
+    if (s.samples > 0) snprintf(caption, sizeof(caption), "%d-stroke average", s.samples);
+    else snprintf(caption, sizeof(caption), "no stroke yet");
+    c.drawString(caption, 24, 44);
+    c.drawFastHLine(16, 70, EFF_PANEL_W - 32, th->dim);
+
+    const int rows = s.crew > 1 ? 6 : 5;
+    const int rowY0 = 78;
+    const int pitch = (EFF_H - rowY0 - 4) / rows;
+    int rowY = rowY0;
+
+    auto gauge = [&](const char* label, int phase, const char* val, const char* cap, uint16_t color, float frac,
+                      float refFrac) {
+        if (phase >= 0) c.fillRoundRect(20, rowY + 4, 12, 12, 2, strokeBand(phase));
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(top_left);
+        c.setTextColor(th->label);
+        c.drawString(label, phase >= 0 ? 40 : 20, rowY);
+        c.setTextDatum(top_right);
+        c.setTextColor(color);
+        c.drawString(val, EFF_PANEL_W - 20, rowY);
+        const int bx = 20, bw = EFF_PANEL_W - 40, bh = 14;
+        int by = rowY + 26;
+        c.drawRoundRect(bx, by, bw, bh, 4, th->dim);
+        int fw = (int)(fmaxf(0, fminf(1.0f, frac)) * (bw - 4));
+        if (fw > 0) c.fillRoundRect(bx + 2, by + 2, fw, bh - 4, 3, color);
+        if (refFrac > 0.02f && refFrac < 1.15f) {
+            int rx = bx + (int)(fminf(1.0f, refFrac) * (bw - 4));
+            c.drawFastVLine(rx, by - 3, bh + 6, th->fg);
+        }
+        c.setFont(&fonts::FreeSans12pt7b);
+        c.setTextDatum(top_left);
+        c.setTextColor(th->label);
+        c.drawString(cap, 20, rowY + 44);
+        rowY += pitch;
+    };
+
+    const anatomy::Features& now = s.now;
+    const anatomy::Features& ref = s.ref;
+    bool ok = s.now.valid;
+    auto scaleOf = [&](float refV, float fallback) { return s.haveRef && refV > 0 ? refV * 1.8f : fallback; };
+
+    if (!ok) snprintf(value, sizeof(value), "--"), snprintf(caption, sizeof(caption), "");
+    else snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.catchWidthS * 1000));
+    if (ok) snprintf(caption, sizeof(caption), "%.2f g deep, loses %.2f m/s", now.catchDepthG, now.catchLoss);
+    float catchScale = scaleOf(ref.catchWidthS, 0.30f);
+    gauge("CATCH", 0, value, caption, strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef && ok),
+          ok ? now.catchWidthS / catchScale : 0, s.haveRef ? ref.catchWidthS / catchScale : 0);
+
+    uint16_t driveColor = th->fg;
+    if (ok) {
+        uint16_t gain = strokeVs(now.driveGain, ref.driveGain, false, s.haveRef);
+        uint16_t peak = th->fg;
+        if (s.haveRef) {
+            float d = fabsf(now.drivePeakPct - ref.drivePeakPct);
+            peak = d <= 0.10f ? th->ok : d <= 0.20f ? th->caution : th->warn;
+        }
+        driveColor = strokeWorse(gain, peak);
+        snprintf(value, sizeof(value), "+%.2f m/s", now.driveGain);
+        snprintf(caption, sizeof(caption), "peak %d%%, sag %.2f g", (int)lroundf(now.drivePeakPct * 100), now.driveSagG);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float driveScale = scaleOf(ref.driveGain, 1.2f);
+    gauge("DRIVE", 1, value, caption, driveColor, ok ? now.driveGain / driveScale : 0,
+          s.haveRef ? ref.driveGain / driveScale : 0);
+
+    uint16_t finishColor = th->fg;
+    if (ok) {
+        finishColor = strokeWorse(strokeVs(now.fallTimeS, ref.fallTimeS, true, s.haveRef),
+                                   strokeVs(now.releaseDipG, ref.releaseDipG, true, s.haveRef));
+        snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.fallTimeS * 1000));
+        snprintf(caption, sizeof(caption), "release dip %.2f g", now.releaseDipG);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float fallScale = scaleOf(ref.fallTimeS, 0.30f);
+    gauge("FINISH", 2, value, caption, finishColor, ok ? now.fallTimeS / fallScale : 0,
+          s.haveRef ? ref.fallTimeS / fallScale : 0);
+
+    if (ok) {
+        snprintf(value, sizeof(value), "%d mg", (int)lroundf(now.runDecelMg));
+        snprintf(caption, sizeof(caption), "speed peaks at %.1f s", now.speedPeakS);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float runScale = scaleOf(ref.runDecelMg, 80.0f);
+    gauge("RUN", 3, value, caption, strokeVs(now.runDecelMg, ref.runDecelMg, true, s.haveRef && ok),
+          ok ? now.runDecelMg / runScale : 0, s.haveRef ? ref.runDecelMg / runScale : 0);
+
+    if (ok) {
+        snprintf(value, sizeof(value), "%.2f s", now.approachLeadS);
+        snprintf(caption, sizeof(caption), "loses %.2f m/s before the blade is in", now.approachLoss);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float leadScale = scaleOf(ref.approachLeadS, 0.50f);
+    gauge("APPROACH", 4, value, caption, strokeVs(now.approachLeadS, ref.approachLeadS, true, s.haveRef && ok),
+          ok ? now.approachLeadS / leadScale : 0, s.haveRef ? ref.approachLeadS / leadScale : 0);
+
+    if (s.crew > 1) {
+        uint16_t col = th->fg;
+        if (ok) {
+            uint16_t notches = th->fg;
+            if (s.haveRef && now.notches >= ref.notches + 0.8f) notches = th->warn;
+            else if (s.haveRef) notches = th->ok;
+            col = strokeWorse(strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef), notches);
+            snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.catchWidthS * 1000));
+            if (now.notches < 1.5f) snprintf(caption, sizeof(caption), "1 notch in the catch");
+            else snprintf(caption, sizeof(caption), "%.0f notches in the catch", now.notches);
+        } else {
+            snprintf(value, sizeof(value), "--");
+            caption[0] = 0;
+        }
+        gauge("TOGETHER", -1, value, caption, col, ok ? now.catchWidthS / catchScale : 0,
+              s.haveRef ? ref.catchWidthS / catchScale : 0);
+    }
+    fb::push(c, EFF_CHART_W, BAR_H);
+}
+
+void drawStroke(const metrics::View& v) {
+    uint32_t ver = anatomy::version();
+    if (!forceRedraw && ver == strokeVersion && millis() - lastStroke < 1000) return;
+    strokeVersion = ver;
+    lastStroke = millis();
+    const anatomy::Summary& s = anatomy::summary(v.rate);
+    drawStrokeChart(s);
+    drawStrokePanel(s);
+    char right[24];
+    snprintf(right, sizeof(right), "%d stroke%s", s.samples, s.samples == 1 ? "" : "s");
+    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg, true);
 }
 
 // ---- live plot screen ------------------------------------------------------
@@ -3241,7 +3577,15 @@ void onTap(int x, int y) {
                 if (screen == Screen::Main) cyclePip();
                 else if (screen == Screen::Map) cycleOrientation();
                 else if (screen == Screen::Efficiency) showHint("Hold to clear the chart and your best line");
-                else if (screen == Screen::Sessions) {
+                else if (screen == Screen::Stroke) {
+                    Settings& st = settings::get();
+                    st.crew = st.crew == 1 ? 2 : st.crew == 2 ? 4 : st.crew == 4 ? 8 : 1;
+                    settings::save();
+                    char msg[24];
+                    snprintf(msg, sizeof(msg), "Crew of %d", st.crew);
+                    showHint(msg);
+                    forceRedraw = true;
+                } else if (screen == Screen::Sessions) {
                     sessionsui::back();
                     forceRedraw = true;
                 }
@@ -3287,6 +3631,11 @@ void onHold(int x, int y) {
     if (idx == 2) metrics::reset();
     if (idx == 3 && screen == Screen::Efficiency) {
         efficiency::reset();
+        forceRedraw = true;
+    }
+    if (idx == 3 && screen == Screen::Stroke) {
+        anatomy::reset();
+        showHint("Stroke reference cleared");
         forceRedraw = true;
     }
 }
@@ -3644,6 +3993,7 @@ void loop() {
             case Screen::Main: drawMain(v); break;
             case Screen::Map: drawTopTiles(v); break;
             case Screen::Efficiency: drawEfficiency(v); break;
+            case Screen::Stroke: drawStroke(v); break;
             case Screen::Plot: drawPlot(v); break;
             case Screen::Settings: drawSettings(); break;
             case Screen::Sessions:
