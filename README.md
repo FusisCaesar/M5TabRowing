@@ -672,3 +672,35 @@ Tuning hints:
   times a second.
 - **Clock**: logs are UTC; the screen shows local time. NTP when Wi-Fi is up,
   GPS time once there is a fix, RTC in between.
+
+## Contributing
+
+Rowers and developers are both welcome. The project is MIT licensed, so you can use it, change it, and send the changes back.
+
+If you row with it, a recorded session is the most useful thing you can share. Turn raw IMU logging on, row a mix of steady pieces, rate changes, light paddling and rough water, then name the session and open an issue. Those files show where the stroke detector misses a catch or counts one twice. A water that is missing from the map library, a mounting trick that keeps the Tab5 steady, or a coaching language you want on the screen are welcome too. Another language is a column in `src/i18n.cpp`.
+
+If you write code, fork the repository and open a pull request. Firmware is in `src/`. When you change the stroke detector, keep `tools/replay.py` in step with `src/stroke_detector.cpp`, and say which recorded session you checked it against.
+
+## License
+
+MIT License
+
+Copyright (c) 2026 Marco de Keizer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
