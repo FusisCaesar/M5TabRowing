@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "board.h"
 #include "camera.h"
@@ -15,6 +16,7 @@
 #include "icons.h"
 #include "keyboard.h"
 #include "imu_stroke.h"
+#include "i18n.h"
 #include "logger.h"
 #include "map_data.h"
 #include "map_job.h"
@@ -26,6 +28,7 @@
 #include "segments.h"
 #include "sessions_ui.h"
 #include "settings.h"
+#include "stroke_anatomy.h"
 #include "targets.h"
 #include "track.h"
 
@@ -59,8 +62,8 @@ constexpr float PLOT_RANGE_G = 0.6f;
 // screen; GPS diagnostics opens from the top bar; the target and segment lists
 // open from the map. None of those is part of the cycle.
 // Screens from Sessions on draw their own content area (sessions_ui, maps_ui).
-enum class Screen { Main, Map, Efficiency, Plot, Settings, Sessions, Maps, Gps, Targets, Segments };
-constexpr int CYCLE = 6;
+enum class Screen { Main, Map, Efficiency, Stroke, Plot, Settings, Sessions, Maps, Gps, Targets, Segments };
+constexpr int CYCLE = 7;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
 // Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
 constexpr int EFF_H = BTN_Y - ROW_H - BAR_H;
@@ -106,9 +109,27 @@ Cache tileCache[TILE_SLOTS], btnCache[BTN_COUNT], barCache, rowCache[12];
 
 char hint[48] = "";
 uint32_t hintUntil = 0;
+
+// A piece started by the start line. The finish line stops it and opens the result.
+struct RaceResult {
+    bool open = false;
+    int segment = -1;
+    bool live = false;
+    char name[48] = "";
+    char saved[16] = "";
+    float course = 0;
+    float elapsed = 0;
+    float distance = 0;
+    float avgSplit = 0;
+    float avgRate = 0;
+    int strokes = 0;
+    float avgHr = 0;
+    int maxHr = 0;
+} race;
 uint32_t lastFrame = 0;
 uint32_t lastPlot = 0;
 uint32_t lastEff = 0, effVersion = 0;
+uint32_t lastStroke = 0, strokeVersion = 0;
 uint32_t lastBattery = 0;
 
 imu::PlotPoint plotBuf[PLOT_POINTS];
@@ -397,13 +418,16 @@ void drawButton(int idx, const char* label, bool enabled, bool lit = false) {
     fb::push(c, idx * BTN_W, BTN_Y);
 }
 
-void drawRow(int idx, int y, const char* left, const char* right, uint16_t color) {
-    char key[96];
-    snprintf(key, sizeof(key), "%s|%s", left, right);
+void drawRow(int idx, int y, const char* left, const char* right, uint16_t color, bool large = false) {
+    char key[120];
+    snprintf(key, sizeof(key), "%c%s|%s", large ? 'L' : 's', left, right);
     if (!changed(rowCache[idx], key)) return;
     rowC.fillSprite(th->bg);
-    rowC.setFont(&fonts::FreeSans12pt7b);
     rowC.setTextSize(1);
+    rowC.setFont(large ? &fonts::FreeSansBold18pt7b : &fonts::FreeSans12pt7b);
+    // A long hint stays on one line; the bold 12 pt face still reads larger than the old text.
+    if (large && rowC.textWidth(left) + rowC.textWidth(right) > W - 96)
+        rowC.setFont(&fonts::FreeSansBold12pt7b);
     rowC.setTextColor(color);
     rowC.setTextDatum(middle_left);
     rowC.drawString(left, 24, ROW_H / 2);
@@ -474,6 +498,7 @@ void drawTopBar(const metrics::View& v) {
         strftime(clock, sizeof(clock), "%H:%M  ", &l);
     }
     if (v.battery >= 0) snprintf(right, sizeof(right), "%s%s%s%sBAT %d%%", hrText, wifi, sim, clock, v.battery);
+    else if (v.battery == -2) snprintf(right, sizeof(right), "%s%s%s%sUSB", hrText, wifi, sim, clock);
     else snprintf(right, sizeof(right), "%s%s%s%s", hrText, wifi, sim, clock);
 
     char key[160];
@@ -516,6 +541,14 @@ void drawMapsButtons() {
 
 void drawButtons(const metrics::View& v) {
     using metrics::State;
+    if (race.open) {
+        drawButton(0, "", false);
+        drawButton(1, "", false);
+        drawButton(2, "", false);
+        drawButton(3, "", false);
+        drawButton(4, "DONE", true);
+        return;
+    }
     if (screen == Screen::Maps) {
         drawMapsButtons();
         return;
@@ -536,6 +569,10 @@ void drawButtons(const metrics::View& v) {
                    s.mapOrientation != mapview::NorthUp);
     } else if (screen == Screen::Efficiency) {
         drawButton(3, "HOLD: CLEAR", efficiency::strokeCount() > 0);
+    } else if (screen == Screen::Stroke) {
+        char crew[12];
+        snprintf(crew, sizeof(crew), i18n::tr(i18n::CrewButton), settings::get().crew);
+        drawButton(3, crew, true);
     } else if (screen == Screen::Sessions) {
         bool inner = sessionsui::reviewing() || sessionsui::editing();
         drawButton(3, inner ? "BACK" : "", inner);
@@ -549,7 +586,8 @@ void drawButtons(const metrics::View& v) {
     }
     const char* next = screen == Screen::Main         ? "MAP"
                        : screen == Screen::Map        ? "EFFICIENCY"
-                       : screen == Screen::Efficiency ? "PLOT"
+                       : screen == Screen::Efficiency ? "STROKE"
+                       : screen == Screen::Stroke     ? "PLOT"
                        : screen == Screen::Plot       ? "SETTINGS"
                        : screen == Screen::Settings   ? "SESSIONS"
                                                       : "METRICS";
@@ -691,15 +729,15 @@ void drawEffChart(const efficiency::Summary& s) {
     c.setFont(&fonts::FreeSansBold12pt7b);
     c.setTextDatum(top_left);
     c.setTextColor(th->label);
-    c.drawString("METRES PER STROKE", 16, 10);
+    c.drawString(i18n::tr(i18n::EffMetres), 16, 10);
     c.setTextDatum(top_right);
     c.setTextColor(th->accent);
-    c.drawString("your best", R - 150, 10);
+    c.drawString(i18n::tr(i18n::EffYourBest), R - 180, 10);
     c.setTextColor(th->label);
-    c.drawString("equal split", R, 10);
+    c.drawString(i18n::tr(i18n::EffEqualSplit), R, 10);
     c.setFont(&fonts::FreeSans9pt7b);
     c.setTextDatum(bottom_right);
-    c.drawString("stroke rate (spm)", R, EFF_H - 4);
+    c.drawString(i18n::tr(i18n::EffRateAxis), R, EFF_H - 4);
     fb::push(c, 0, BAR_H);
 }
 
@@ -727,7 +765,11 @@ void drawEffPanel(const efficiency::Summary& s) {
     c.drawFastVLine(0, 0, EFF_H, th->dim);
     char a[48], b[64];
 
-    effSection(c, 12, "EFFICIENCY", "", th->fg);
+    effSection(c, 12, i18n::tr(i18n::EffTitle), "", th->fg);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->accent);
+    c.drawString(i18n::code(), EFF_PANEL_W - 16, 8);
     uint16_t sc = scoreColor(s.score);
     if (s.score > 0) snprintf(a, sizeof(a), "%d", s.score);
     else snprintf(a, sizeof(a), "--");
@@ -740,21 +782,22 @@ void drawEffPanel(const efficiency::Summary& s) {
     c.setTextSize(1);
     c.setTextDatum(middle_left);
     c.drawString("%", EFF_PANEL_W / 2 + 100, 112);
-    c.setFont(&fonts::FreeSans12pt7b);
+    c.setFont(&fonts::FreeSansBold18pt7b);
     c.setTextDatum(top_center);
     c.setTextColor(th->label);
-    if (s.score > 0) snprintf(b, sizeof(b), "of your best %.1f m at %d spm", s.best, (int)lroundf(s.rate));
-    else if (s.rate > 0) snprintf(b, sizeof(b), "learning your best at %d spm", (int)lroundf(s.rate));
-    else snprintf(b, sizeof(b), "distance per stroke vs your best");
-    c.drawString(b, EFF_PANEL_W / 2, 152);
-    c.drawFastHLine(16, 188, EFF_PANEL_W - 32, th->dim);
+    if (s.score > 0) snprintf(b, sizeof(b), i18n::tr(i18n::EffOfBest), s.best, (int)lroundf(s.rate));
+    else if (s.rate > 0) snprintf(b, sizeof(b), i18n::tr(i18n::EffLearningRate), (int)lroundf(s.rate));
+    else snprintf(b, sizeof(b), "%s", i18n::tr(i18n::EffVsBest));
+    if (c.textWidth(b) > EFF_PANEL_W - 32) c.setFont(&fonts::FreeSansBold12pt7b);
+    c.drawString(b, EFF_PANEL_W / 2, 148);
+    c.drawFastHLine(16, 194, EFF_PANEL_W - 32, th->dim);
 
     // Recovery:drive against the target band.
     const efficiency::RatioCheck& rc = s.ratioCheck;
     uint16_t rcol = adviceColor(rc);
-    if (rc.target > 0) snprintf(a, sizeof(a), "%.1f  aim %.1f", s.ratio, rc.target);
+    if (rc.target > 0) snprintf(a, sizeof(a), i18n::tr(i18n::EffAim), s.ratio, rc.target);
     else snprintf(a, sizeof(a), "--");
-    effSection(c, 200, "REC:DRIVE", a, rcol);
+    effSection(c, 200, i18n::tr(i18n::EffRecDrive), a, rcol);
     const float RLO = 0.5f, RHI = 3.5f;
     const int bx = 24, bw = EFF_PANEL_W - 48, by = 236;
     auto rx = [&](float r) { return bx + (int)((fmaxf(RLO, fminf(RHI, r)) - RLO) / (RHI - RLO) * bw); };
@@ -775,15 +818,15 @@ void drawEffPanel(const efficiency::Summary& s) {
     // Check and bounce relative to this session's usual values (lower is better).
     auto usualSection = [&](int y, const char* label, float v, float usual) {
         if (v <= 0) snprintf(a, sizeof(a), "--");
-        else if (usual > 0) snprintf(a, sizeof(a), "%.0f mg  usual %.0f", v, usual);
+        else if (usual > 0) snprintf(a, sizeof(a), i18n::tr(i18n::EffUsualMg), v, usual);
         else snprintf(a, sizeof(a), "%.0f mg", v);
         uint16_t col = usualColor(v, usual);
         effSection(c, y, label, a, col);
         float scale = usual > 0 ? 2 * usual : fmaxf(v, 1) * 1.5f;
         effBar(c, y + 36, v / scale, col);
     };
-    usualSection(332, "CHECK", s.checkMg, s.checkUsualMg);
-    usualSection(414, "BOUNCE", s.bounceMg, s.bounceUsualMg);
+    usualSection(332, i18n::tr(i18n::EffCheck), s.checkMg, s.checkUsualMg);
+    usualSection(414, i18n::tr(i18n::EffBounce), s.bounceMg, s.bounceUsualMg);
     fb::push(c, EFF_CHART_W, BAR_H);
 }
 
@@ -796,8 +839,344 @@ void drawEfficiency(const metrics::View& v) {
     drawEffChart(s);
     drawEffPanel(s);
     char right[32];
-    snprintf(right, sizeof(right), "%d strokes", efficiency::strokeCount());
-    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg);
+    int nStrokes = efficiency::strokeCount();
+    snprintf(right, sizeof(right), i18n::tr(nStrokes == 1 ? i18n::StrokeOne : i18n::StrokeMany), nStrokes);
+    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg, true);
+}
+
+// ---- stroke anatomy screen ---------------------------------------------------
+
+uint16_t strokeBand(int phase) {
+    // Dark tints at night, pale ones by day, so the trace stays readable on top.
+    static const uint16_t night[5] = {0x5042, 0x118E, 0x130C, 0x3306, 0x6202};
+    static const uint16_t day[5] = {0xFD1C, 0xC55F, 0xB65F, 0xE61C, 0xFDD4};
+    return (th == &NIGHT ? night : day)[phase];
+}
+
+// Green within 10% of the reference, orange within 25%, red beyond. `lower` means smaller is better.
+uint16_t strokeVs(float now, float ref, bool lower, bool haveRef) {
+    if (!haveRef || ref <= 0 || now <= 0) return th->fg;
+    float ratio = lower ? now / ref : ref / now;
+    return ratio <= 1.10f ? th->ok : ratio <= 1.25f ? th->caution : th->warn;
+}
+
+uint16_t strokeWorse(uint16_t a, uint16_t b) {
+    auto rank = [&](uint16_t c) { return c == th->warn ? 3 : c == th->caution ? 2 : c == th->ok ? 1 : 0; };
+    return rank(a) >= rank(b) ? a : b;
+}
+
+void drawStrokeChart(const anatomy::Summary& s) {
+    M5Canvas& c = effC;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    const int L = 58, R = EFF_CHART_W - 14;
+    const int aT = 34, aB = 242, sT = 268, sB = 474;
+    const float tLeft = -anatomy::PREROLL_S;
+
+    if (!s.have) {
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_center);
+        c.setTextColor(th->label);
+        c.drawString(i18n::tr(i18n::StrokeTitle), EFF_CHART_W / 2, EFF_H / 2 - 24);
+        c.setFont(&fonts::FreeSans12pt7b);
+        c.drawString(i18n::tr(i18n::StrokeWaitPhases), EFF_CHART_W / 2, EFF_H / 2 + 16);
+        fb::push(c, 0, BAR_H);
+        return;
+    }
+
+    const float tRight = fmaxf(0.8f, s.driveS + s.recS);
+    auto X = [&](float t) { return L + (int)lroundf((t - tLeft) / (tRight - tLeft) * (R - L)); };
+
+    float aLo = 0, aHi = 0;
+    auto acc = [&](float v) { aLo = fminf(aLo, v); aHi = fmaxf(aHi, v); };
+    for (int i = 0; i < anatomy::PREROLL_N; i++) acc(s.preroll[i]);
+    for (int i = 0; i < anatomy::BINS; i++) acc(s.accel[i]);
+    if (s.haveRef) {
+        for (int i = 0; i < anatomy::PREROLL_N; i++) acc(s.refPreroll[i]);
+        for (int i = 0; i < anatomy::BINS; i++) acc(s.refAccel[i]);
+    }
+    float aPad = 0.10f * (aHi - aLo) + 0.04f;
+    aLo -= aPad;
+    aHi += aPad;
+
+    float vLo = 1e9f, vHi = -1e9f;
+    auto vel = [&](float v) { vLo = fminf(vLo, v); vHi = fmaxf(vHi, v); };
+    for (int i = 0; i < anatomy::PREROLL_N + anatomy::BINS; i++) vel(s.speed[i]);
+    for (int i = 0; i < s.gpsN; i++) vel(s.gpsV[i]);
+    if (vHi < vLo) {
+        vLo = -0.4f;
+        vHi = 0.4f;
+    }
+    float vPad = 0.12f * (vHi - vLo) + 0.05f;
+    vLo -= vPad;
+    vHi += vPad;
+
+    auto Ya = [&](float g) { return (int)lroundf(aB - (g - aLo) / (aHi - aLo) * (aB - aT)); };
+    auto Yv = [&](float v) { return (int)lroundf(sB - (v - vLo) / (vHi - vLo) * (sB - sT)); };
+
+    if (s.now.valid) {
+        const float edge[6] = {s.bounds.catch0, s.bounds.catch1, s.bounds.finish, s.bounds.finishEnd, s.bounds.approach,
+                                s.bounds.interval};
+        const char* name[5] = {i18n::tr(i18n::PhaseCatch), i18n::tr(i18n::PhaseDrive),
+                                i18n::tr(i18n::PhaseFinish), i18n::tr(i18n::PhaseRun),
+                                i18n::tr(i18n::PhaseApproach)};
+        c.setFont(&fonts::FreeSans9pt7b);
+        c.setTextDatum(top_center);
+        for (int p = 0; p < 5; p++) {
+            float u0 = fmaxf(tLeft, edge[p]), u1 = fminf(tRight, edge[p + 1]);
+            if (u1 - u0 < 0.02f) continue;
+            int x0 = X(u0), x1 = X(u1);
+            c.fillRect(x0, aT, x1 - x0, sB - aT, strokeBand(p));
+            if (x1 - x0 > c.textWidth(name[p]) + 6) {
+                c.setTextColor(th->fg);
+                c.drawString(name[p], (x0 + x1) / 2, aT + 3);
+            }
+        }
+    }
+
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextColor(th->label);
+    c.setTextDatum(middle_right);
+    for (float g : {aLo, 0.0f, aHi}) {
+        if (g < aLo - 0.01f || g > aHi + 0.01f) continue;
+        int y = Ya(g);
+        c.drawFastHLine(L, y, R - L, g == 0 ? th->label : th->dim);
+        char t[12];
+        snprintf(t, sizeof(t), "%+.1f", g);
+        if (y > aT + 8 && y < aB - 8) c.drawString(t, L - 4, y);
+    }
+    c.drawFastHLine(L, Yv(vLo), R - L, th->dim);
+    c.drawFastHLine(L, Yv(vHi), R - L, th->dim);
+    float vMid = (vLo + vHi) * 0.5f;
+    c.drawFastHLine(L, Yv(vMid), R - L, th->dim);
+    char t[16];
+    snprintf(t, sizeof(t), "%.1f", vMid);
+    c.drawString(t, L - 4, Yv(vMid));
+
+    int xCatch = X(0), xFinish = X(s.driveS);
+    c.drawFastVLine(xCatch, aT, sB - aT, th->ok);
+    c.drawFastVLine(xFinish, aT, sB - aT, TFT_CYAN);
+
+    auto trace = [&](const float* preroll, const float* accel, const float* speed, uint16_t color, bool accelTrace) {
+        int prevX = -1, prevY = -1;
+        for (int i = 0; i < anatomy::PREROLL_N + anatomy::BINS; i++) {
+            float time = i < anatomy::PREROLL_N ? anatomy::prerollTime(i)
+                                                 : anatomy::binTime(i - anatomy::PREROLL_N, s.driveS, s.recS);
+            float value = speed ? speed[i] : (i < anatomy::PREROLL_N ? preroll[i] : accel[i - anatomy::PREROLL_N]);
+            int x = X(time), y = accelTrace ? Ya(value) : Yv(value);
+            if (prevX >= 0) {
+                c.drawLine(prevX, prevY, x, y, color);
+                if (color == th->accent) c.drawLine(prevX, prevY + 1, x, y + 1, color);
+            }
+            prevX = x;
+            prevY = y;
+        }
+    };
+
+    c.setClipRect(L, aT, R - L + 1, aB - aT + 1);
+    if (s.haveRef) trace(s.refPreroll, s.refAccel, nullptr, th->label, true);
+    trace(s.preroll, s.accel, nullptr, th->accent, true);
+    c.clearClipRect();
+
+    c.setClipRect(L, sT, R - L + 1, sB - sT + 1);
+    trace(nullptr, nullptr, s.speed, th->accent, false);
+    for (int i = 0; i < s.gpsN; i++) {
+        int x = X(s.gpsT[i]), y = Yv(s.gpsV[i]);
+        if (x >= L && x <= R) c.fillCircle(x, y, 3, th->fg);
+    }
+    c.clearClipRect();
+
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextDatum(top_center);
+    c.setTextColor(th->label);
+    for (float tick = 0; tick <= tRight + 0.01f; tick += 0.5f) {
+        int x = X(tick);
+        c.drawFastVLine(x, sB, 4, th->dim);
+        snprintf(t, sizeof(t), "%.1f", tick);
+        c.drawString(t, x, sB + 4);
+    }
+
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(top_left);
+    c.setTextColor(th->fg);
+    c.drawString(i18n::tr(i18n::StrokeTitle), 12, 6);
+    c.setFont(&fonts::FreeSans9pt7b);
+    c.setTextDatum(top_right);
+    int lx = R;
+    const char* legend[] = {i18n::tr(i18n::LegGps), i18n::tr(i18n::LegRef), i18n::tr(i18n::LegNow),
+                            i18n::tr(i18n::LegFinish), i18n::tr(i18n::LegCatch)};
+    const uint16_t legendColor[] = {th->fg, th->label, th->accent, TFT_CYAN, th->ok};
+    for (int i = 0; i < 5; i++) {
+        if (i == 0 && s.gpsN == 0) continue;
+        if (i == 1 && !s.haveRef) continue;
+        c.setTextColor(legendColor[i]);
+        c.drawString(legend[i], lx, 8);
+        lx -= c.textWidth(legend[i]) + 14;
+    }
+    fb::push(c, 0, BAR_H);
+}
+
+void drawStrokePanel(const anatomy::Summary& s) {
+    M5Canvas& c = effP;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    c.drawFastVLine(0, 0, EFF_H, th->dim);
+
+    char value[32], caption[64];
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_left);
+    c.setTextColor(th->fg);
+    if (s.have && s.rate > 0) snprintf(value, sizeof(value), "%d spm", (int)lroundf(s.rate));
+    else snprintf(value, sizeof(value), "--");
+    c.drawString(value, 24, 8);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->accent);
+    c.drawString(i18n::code(), EFF_PANEL_W - 16, 8);
+    c.setFont(&fonts::FreeSans12pt7b);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->label);
+    const char* vs = !s.have ? i18n::tr(i18n::StrokeWaiting)
+                     : !s.haveRef ? i18n::tr(i18n::StrokeLearning)
+                     : s.vsBest   ? i18n::tr(i18n::StrokeVsBest)
+                                  : i18n::tr(i18n::StrokeVsUsual);
+    c.setTextDatum(top_left);
+    if (s.samples > 0) snprintf(caption, sizeof(caption), i18n::tr(i18n::StrokeAverage), s.samples);
+    else snprintf(caption, sizeof(caption), "%s", i18n::tr(i18n::StrokeNone));
+    c.drawString(caption, 24, 44);
+    c.setTextDatum(top_right);
+    c.drawString(vs, EFF_PANEL_W - 20, 44);
+    c.drawFastHLine(16, 70, EFF_PANEL_W - 32, th->dim);
+
+    const int rows = s.crew > 1 ? 6 : 5;
+    const int rowY0 = 78;
+    const int pitch = (EFF_H - rowY0 - 4) / rows;
+    int rowY = rowY0;
+
+    auto gauge = [&](const char* label, int phase, const char* val, const char* cap, uint16_t color, float frac,
+                      float refFrac) {
+        if (phase >= 0) c.fillRoundRect(20, rowY + 4, 12, 12, 2, strokeBand(phase));
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(top_left);
+        c.setTextColor(th->label);
+        c.drawString(label, phase >= 0 ? 40 : 20, rowY);
+        c.setTextDatum(top_right);
+        c.setTextColor(color);
+        c.drawString(val, EFF_PANEL_W - 20, rowY);
+        const int bx = 20, bw = EFF_PANEL_W - 40, bh = 14;
+        int by = rowY + 26;
+        c.drawRoundRect(bx, by, bw, bh, 4, th->dim);
+        int fw = (int)(fmaxf(0, fminf(1.0f, frac)) * (bw - 4));
+        if (fw > 0) c.fillRoundRect(bx + 2, by + 2, fw, bh - 4, 3, color);
+        if (refFrac > 0.02f && refFrac < 1.15f) {
+            int rx = bx + (int)(fminf(1.0f, refFrac) * (bw - 4));
+            c.drawFastVLine(rx, by - 3, bh + 6, th->fg);
+        }
+        c.setFont(&fonts::FreeSans12pt7b);
+        c.setTextDatum(top_left);
+        c.setTextColor(th->label);
+        c.drawString(cap, 20, rowY + 44);
+        rowY += pitch;
+    };
+
+    const anatomy::Features& now = s.now;
+    const anatomy::Features& ref = s.ref;
+    bool ok = s.now.valid;
+    auto scaleOf = [&](float refV, float fallback) { return s.haveRef && refV > 0 ? refV * 1.8f : fallback; };
+
+    if (!ok) snprintf(value, sizeof(value), "--"), snprintf(caption, sizeof(caption), "");
+    else snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.catchWidthS * 1000));
+    if (ok) snprintf(caption, sizeof(caption), i18n::tr(i18n::CapCatch), now.catchDepthG, now.catchLoss);
+    float catchScale = scaleOf(ref.catchWidthS, 0.30f);
+    gauge(i18n::tr(i18n::PhaseCatch), 0, value, caption, strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef && ok),
+          ok ? now.catchWidthS / catchScale : 0, s.haveRef ? ref.catchWidthS / catchScale : 0);
+
+    uint16_t driveColor = th->fg;
+    if (ok) {
+        uint16_t gain = strokeVs(now.driveGain, ref.driveGain, false, s.haveRef);
+        uint16_t peak = th->fg;
+        if (s.haveRef) {
+            float d = fabsf(now.drivePeakPct - ref.drivePeakPct);
+            peak = d <= 0.10f ? th->ok : d <= 0.20f ? th->caution : th->warn;
+        }
+        driveColor = strokeWorse(gain, peak);
+        snprintf(value, sizeof(value), "+%.2f m/s", now.driveGain);
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapDrive), (int)lroundf(now.drivePeakPct * 100), now.driveSagG);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float driveScale = scaleOf(ref.driveGain, 1.2f);
+    gauge(i18n::tr(i18n::PhaseDrive), 1, value, caption, driveColor, ok ? now.driveGain / driveScale : 0,
+          s.haveRef ? ref.driveGain / driveScale : 0);
+
+    uint16_t finishColor = th->fg;
+    if (ok) {
+        finishColor = strokeWorse(strokeVs(now.fallTimeS, ref.fallTimeS, true, s.haveRef),
+                                   strokeVs(now.releaseDipG, ref.releaseDipG, true, s.haveRef));
+        snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.fallTimeS * 1000));
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapFinish), now.releaseDipG);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float fallScale = scaleOf(ref.fallTimeS, 0.30f);
+    gauge(i18n::tr(i18n::PhaseFinish), 2, value, caption, finishColor, ok ? now.fallTimeS / fallScale : 0,
+          s.haveRef ? ref.fallTimeS / fallScale : 0);
+
+    if (ok) {
+        snprintf(value, sizeof(value), "%d mg", (int)lroundf(now.runDecelMg));
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapRun), now.speedPeakS);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float runScale = scaleOf(ref.runDecelMg, 80.0f);
+    gauge(i18n::tr(i18n::PhaseRun), 3, value, caption, strokeVs(now.runDecelMg, ref.runDecelMg, true, s.haveRef && ok),
+          ok ? now.runDecelMg / runScale : 0, s.haveRef ? ref.runDecelMg / runScale : 0);
+
+    if (ok) {
+        snprintf(value, sizeof(value), "%.2f s", now.approachLeadS);
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapApproach), now.approachLoss);
+    } else {
+        snprintf(value, sizeof(value), "--");
+        caption[0] = 0;
+    }
+    float leadScale = scaleOf(ref.approachLeadS, 0.50f);
+    gauge(i18n::tr(i18n::PhaseApproach), 4, value, caption, strokeVs(now.approachLeadS, ref.approachLeadS, true, s.haveRef && ok),
+          ok ? now.approachLeadS / leadScale : 0, s.haveRef ? ref.approachLeadS / leadScale : 0);
+
+    if (s.crew > 1) {
+        uint16_t col = th->fg;
+        if (ok) {
+            uint16_t notches = th->fg;
+            if (s.haveRef && now.notches >= ref.notches + 0.8f) notches = th->warn;
+            else if (s.haveRef) notches = th->ok;
+            col = strokeWorse(strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef), notches);
+            snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.catchWidthS * 1000));
+            if (now.notches < 1.5f) snprintf(caption, sizeof(caption), "%s", i18n::tr(i18n::CapNotch));
+            else snprintf(caption, sizeof(caption), i18n::tr(i18n::CapNotches), now.notches);
+        } else {
+            snprintf(value, sizeof(value), "--");
+            caption[0] = 0;
+        }
+        gauge(i18n::tr(i18n::PhaseTogether), -1, value, caption, col, ok ? now.catchWidthS / catchScale : 0,
+              s.haveRef ? ref.catchWidthS / catchScale : 0);
+    }
+    fb::push(c, EFF_CHART_W, BAR_H);
+}
+
+void drawStroke(const metrics::View& v) {
+    uint32_t ver = anatomy::version();
+    if (!forceRedraw && ver == strokeVersion && millis() - lastStroke < 1000) return;
+    strokeVersion = ver;
+    lastStroke = millis();
+    const anatomy::Summary& s = anatomy::summary(v.rate);
+    drawStrokeChart(s);
+    drawStrokePanel(s);
+    char right[32];
+    snprintf(right, sizeof(right), i18n::tr(s.samples == 1 ? i18n::StrokeOne : i18n::StrokeMany), s.samples);
+    drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg, true);
 }
 
 // ---- live plot screen ------------------------------------------------------
@@ -1389,7 +1768,82 @@ double mapPanLat0 = 0, mapPanLon0 = 0;
 int mapPanX0 = 0, mapPanY0 = 0;
 float mapPanMpp = 1, mapPanCourse = 0;
 uint8_t mapPanOrientation = mapview::NorthUp;
-enum class DragKind : uint8_t { None, Lists, Map, Wifi, Targets, Segments } dragKind = DragKind::None;
+enum class DragKind : uint8_t { None, Lists, Map, Wifi, Targets, Segments, Waypoint } dragKind = DragKind::None;
+
+// A course being dropped on the map: each tap adds a point and joins it to the last.
+bool segPlacing = false;
+// Looking at a segment leaves its points where they are. Edit mode is what lets a drag move them.
+bool segMapEdit = false;
+// A segment whose start is within 100 m, offered on the map until it is selected.
+constexpr float NEAR_START_M = 100;
+int nearIdx = -1;
+int nearX = 0, nearY = 0, nearW = 0, nearH = 0;
+int segPlacePrev = -1;
+int* segDraft = nullptr;
+int segDraftN = 0;
+int segDraftCap = 0;
+int* segMade = nullptr;  // targets created for this draft, dropped if it is discarded
+int segMadeN = 0;
+int segMadeCap = 0;
+int wpDrag = -1;
+// The Tab5 panel is 5 inches at 1280x720, about 116 px per centimetre. A dragged
+// waypoint is placed this far above the finger so the point stays visible.
+constexpr int WP_LIFT_PX = 116;
+// One map frame, with the moving sight and its course left out. Further finger
+// movement paints on top of this copy instead of redrawing the water.
+uint8_t* wpHold = nullptr;
+size_t wpHoldBytes = 0;
+bool wpBasePending = false;
+bool wpCaptureThis = false;
+bool wpHoldReady = false;
+bool wpSightMoved = false;
+mapview::View wpView;
+
+mapview::View::Pin* pinSnap = nullptr;
+int pinSnapCap = 0;
+double* routeLatSnap = nullptr;
+double* routeLonSnap = nullptr;
+int routeSnapCap = 0;
+
+bool growInts(int*& buf, int& cap, int need) {
+    if (need <= cap) return true;
+    int ncap = cap < 8 ? 8 : cap;
+    while (ncap < need) ncap *= 2;
+    int* p = (int*)heap_caps_realloc(buf, ncap * sizeof(int), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = (int*)heap_caps_realloc(buf, ncap * sizeof(int), MALLOC_CAP_8BIT);
+    if (!p) return false;
+    buf = p;
+    cap = ncap;
+    return true;
+}
+
+bool ensureMapSnap(int pins, int route) {
+    if (pins > pinSnapCap) {
+        int ncap = pinSnapCap < 8 ? 8 : pinSnapCap;
+        while (ncap < pins) ncap *= 2;
+        auto* p = (mapview::View::Pin*)heap_caps_realloc(pinSnap, ncap * sizeof(mapview::View::Pin),
+                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!p)
+            p = (mapview::View::Pin*)heap_caps_realloc(pinSnap, ncap * sizeof(mapview::View::Pin), MALLOC_CAP_8BIT);
+        if (!p) return false;
+        pinSnap = p;
+        pinSnapCap = ncap;
+    }
+    if (route > routeSnapCap) {
+        int ncap = routeSnapCap < 8 ? 8 : routeSnapCap;
+        while (ncap < route) ncap *= 2;
+        double* lat = (double*)heap_caps_realloc(routeLatSnap, ncap * sizeof(double), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!lat) lat = (double*)heap_caps_realloc(routeLatSnap, ncap * sizeof(double), MALLOC_CAP_8BIT);
+        if (!lat) return false;
+        routeLatSnap = lat;
+        double* lon = (double*)heap_caps_realloc(routeLonSnap, ncap * sizeof(double), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!lon) lon = (double*)heap_caps_realloc(routeLonSnap, ncap * sizeof(double), MALLOC_CAP_8BIT);
+        if (!lon) return false;
+        routeLonSnap = lon;
+        routeSnapCap = ncap;
+    }
+    return true;
+}
 
 void mapTaskRun(void*) {
     for (;;) {
@@ -1420,6 +1874,15 @@ void segmentsButtonRect(int& x, int& y, int& w, int& h) {
     h = th;
 }
 
+void editButtonRect(int& x, int& y, int& w, int& h) {
+    int sx, sy, sw, sh;
+    segmentsButtonRect(sx, sy, sw, sh);
+    x = sx + sw + 12;
+    y = sy;
+    w = 150;
+    h = sh;
+}
+
 bool mapCornerHit(int px, int py, void (*rect)(int&, int&, int&, int&)) {
     if (screen != Screen::Map) return false;
     int x, y, w, h;
@@ -1429,8 +1892,40 @@ bool mapCornerHit(int px, int py, void (*rect)(int&, int&, int&, int&)) {
 
 bool targetsButtonHit(int px, int py) { return mapCornerHit(px, py, targetsButtonRect); }
 bool segmentsButtonHit(int px, int py) { return mapCornerHit(px, py, segmentsButtonRect); }
+bool editButtonHit(int px, int py) {
+    if (segPlacing || segments::selected() < 0) return false;
+    return mapCornerHit(px, py, editButtonRect);
+}
+
+bool nearStartHit(int px, int py) {
+    if (nearIdx < 0 || segPlacing || screen != Screen::Map) return false;
+    return px >= nearX && px < nearX + nearW && py >= FULL_CAM_Y + nearY && py < FULL_CAM_Y + nearY + nearH;
+}
+
+void placeUndoRect(int& x, int& y, int& w, int& h) {
+    int sx, sy, sw, sh;
+    segmentsButtonRect(sx, sy, sw, sh);
+    x = MAPS_BTN_X;
+    y = sy + sh + 12;
+    w = 150;
+    h = MAPS_BTN_H;
+}
+
+void placeSaveRect(int& x, int& y, int& w, int& h) {
+    placeUndoRect(x, y, w, h);
+    x += w + 12;
+}
+
+bool placeButtonHit(int px, int py, bool save) {
+    if (!segPlacing || screen != Screen::Map) return false;
+    int x, y, w, h;
+    if (save) placeSaveRect(x, y, w, h);
+    else placeUndoRect(x, y, w, h);
+    return px >= x && px < x + w && py >= FULL_CAM_Y + y && py < FULL_CAM_Y + y + h;
+}
 
 void pushMap(M5Canvas* cv, int sx, int sy) {
+    if (race.open) return;
     cv->setFont(&fonts::FreeSansBold12pt7b);
     cv->setTextSize(1);
     cv->setTextDatum(middle_center);
@@ -1449,11 +1944,97 @@ void pushMap(M5Canvas* cv, int sx, int sy) {
         cv->setTextColor(lit ? th->bg : th->btnText);
         cv->drawString("TARGETS", x + w / 2, y + h / 2);
         segmentsButtonRect(x, y, w, h);
-        lit = segments::selected() >= 0;
+        lit = segments::selected() >= 0 || segPlacing;
         cv->fillRoundRect(x, y, w, h, 10, lit ? th->accent : th->btn);
         cv->drawRoundRect(x, y, w, h, 10, th->dim);
         cv->setTextColor(lit ? th->bg : th->btnText);
         cv->drawString("SEGMENTS", x + w / 2, y + h / 2);
+        const char* segName = segments::selectedName();
+        if (segName[0] && !segPlacing) {
+            editButtonRect(x, y, w, h);
+            cv->fillRoundRect(x, y, w, h, 10, segMapEdit ? th->accent : th->btn);
+            cv->drawRoundRect(x, y, w, h, 10, th->dim);
+            cv->setTextColor(segMapEdit ? th->bg : th->btnText);
+            cv->drawString(segMapEdit ? "EDITING" : "EDIT", x + w / 2, y + h / 2);
+            int nx = x + w + 16;
+            int nw = cv->width() - nx - 56;
+            if (nw > 80) {
+                cv->setFont(&fonts::FreeSansBold18pt7b);
+                int tw = cv->textWidth(segName);
+                int boxW = tw + 48;
+                if (boxW > nw) boxW = nw;
+                cv->fillRoundRect(nx, y, boxW, h, 10, th->bg);
+                cv->drawRoundRect(nx, y, boxW, h, 10, th->accent);
+                cv->setTextDatum(middle_left);
+                cv->setTextColor(th->accent);
+                cv->setClipRect(nx + 8, y, boxW - 16, h);
+                cv->drawString(segName, nx + 24, y + h / 2);
+                cv->clearClipRect();
+                cv->setTextDatum(middle_center);
+                cv->setFont(&fonts::FreeSansBold12pt7b);
+            }
+        }
+        nearIdx = -1;
+        if (!segPlacing) {
+            gps::Snapshot g = gps::get();
+            int offer = (g.lat != 0 || g.lon != 0) ? segments::nearestStart(g.lat, g.lon, NEAR_START_M) : -1;
+            const segments::Segment* near = segments::get(offer);
+            if (near && near->name[0] && segments::selected() < 0) {
+                int sx, sy, sw, sh;
+                segmentsButtonRect(sx, sy, sw, sh);
+                int x = sx + sw + 12;
+                int y = sy;
+                int h = sh;
+                int maxW = cv->width() - x - 56;
+                if (maxW >= 80) {
+                    cv->setFont(&fonts::FreeSansBold18pt7b);
+                    int boxW = cv->textWidth(near->name) + 48;
+                    if (boxW > maxW) boxW = maxW;
+                    cv->fillRoundRect(x, y, boxW, h, 10, th->btn);
+                    cv->drawRoundRect(x, y, boxW, h, 10, th->accent);
+                    cv->setTextDatum(middle_left);
+                    cv->setTextColor(th->accent);
+                    cv->setClipRect(x + 8, y, boxW - 16, h);
+                    cv->drawString(near->name, x + 24, y + h / 2);
+                    cv->clearClipRect();
+                    cv->setTextDatum(middle_center);
+                    cv->setFont(&fonts::FreeSansBold12pt7b);
+                    nearIdx = offer;
+                    nearX = x;
+                    nearY = y;
+                    nearW = boxW;
+                    nearH = h;
+                }
+            }
+        }
+        if (segPlacing) {
+            int ux, uy, uw, uh, vx, vy, vw, vh;
+            placeUndoRect(ux, uy, uw, uh);
+            placeSaveRect(vx, vy, vw, vh);
+            bool ready = segDraftN >= 2;
+            cv->fillRoundRect(ux, uy, uw, uh, 10, th->btn);
+            cv->drawRoundRect(ux, uy, uw, uh, 10, th->dim);
+            cv->setTextColor(segDraftN > 0 ? th->btnText : th->dim);
+            cv->drawString("UNDO", ux + uw / 2, uy + uh / 2);
+            cv->fillRoundRect(vx, vy, vw, vh, 10, ready ? th->accent : th->btn);
+            cv->drawRoundRect(vx, vy, vw, vh, 10, th->dim);
+            cv->setTextColor(ready ? th->bg : th->dim);
+            cv->drawString("SAVE", vx + vw / 2, vy + vh / 2);
+            cv->setTextDatum(middle_left);
+            cv->setTextColor(th->label);
+            char cap[40];
+            if (segDraftN >= 2) {
+                float len = segments::lengthAlong(segDraft, segDraftN);
+                snprintf(cap, sizeof(cap), "%d m along", len < 0 ? 0 : (int)lroundf(len));
+            } else if (segDraftN == 1) {
+                snprintf(cap, sizeof(cap), "Tap the next point");
+            } else {
+                snprintf(cap, sizeof(cap), "Tap the map to add a point");
+            }
+            cv->setClipRect(vx + vw + 16, vy, cv->width() - (vx + vw + 28), uh);
+            cv->drawString(cap, vx + vw + 16, vy + uh / 2);
+            cv->clearClipRect();
+        }
     }
     fb::push(*cv, sx, sy);
 }
@@ -1475,31 +2056,161 @@ void fillLiveMapView(mapview::View& mv, bool full, int canvasW) {
     mv.day = s.dayTheme;
     int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
     mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)canvasW;
-    mv.pinCount = targets::count();
-    if (mv.pinCount > mapview::View::MAX_PINS) mv.pinCount = mapview::View::MAX_PINS;
-    int sel = targets::selected();
-    for (int i = 0; i < mv.pinCount; i++) {
-        const targets::Target* t = targets::get(i);
-        if (!t) continue;
-        mv.pins[i].lat = t->lat;
-        mv.pins[i].lon = t->lon;
-        mv.pins[i].selected = i == sel;
-        strlcpy(mv.pins[i].name, t->name, sizeof(mv.pins[i].name));
+    int pinN = targets::count();
+    int routeN = 0;
+    const segments::Segment* liveSeg = nullptr;
+    if (segPlacing) routeN = segDraftN;
+    else if (segments::selected() >= 0) {
+        liveSeg = segments::get(segments::selected());
+        if (liveSeg) routeN = liveSeg->count;
     }
+    mv.pins = nullptr;
+    mv.pinCount = 0;
+    mv.routeLat = nullptr;
+    mv.routeLon = nullptr;
     mv.routeCount = 0;
     mv.routeNext = 0;
     mv.showStartLine = false;
-    if (segments::selected() >= 0) {
+    mv.showFinishLine = false;
+    if (!ensureMapSnap(pinN, routeN)) return;
+    int sel = targets::selected();
+    for (int i = 0; i < pinN; i++) {
+        const targets::Target* t = targets::get(i);
+        if (!t) continue;
+        pinSnap[i].lat = t->lat;
+        pinSnap[i].lon = t->lon;
+        bool inDraft = false;
+        bool onRoute = false;
+        if (segPlacing) {
+            for (int k = 0; k < segDraftN; k++)
+                if (segDraft[k] == i) inDraft = true;
+        } else if (liveSeg) {
+            for (int k = 0; k < liveSeg->count; k++)
+                if (liveSeg->point[k] == i) onRoute = true;
+        }
+        pinSnap[i].selected = inDraft || i == sel;
+        pinSnap[i].editing = inDraft || (onRoute && segMapEdit);
+        strlcpy(pinSnap[i].name, t->name, sizeof(pinSnap[i].name));
+    }
+    mv.pins = pinSnap;
+    mv.pinCount = pinN;
+    if (segPlacing) {
+        for (int i = 0; i < routeN; i++) {
+            const targets::Target* t = targets::get(segDraft[i]);
+            if (!t) {
+                routeN = i;
+                break;
+            }
+            routeLatSnap[i] = t->lat;
+            routeLonSnap[i] = t->lon;
+        }
+        mv.routeLat = routeLatSnap;
+        mv.routeLon = routeLonSnap;
+        mv.routeCount = routeN;
+        mv.routeNext = -1;
+        if (routeN >= 2) {
+            mv.showStartLine = segments::startLineBetween(routeLatSnap[0], routeLonSnap[0], routeLatSnap[1],
+                                                           routeLonSnap[1], mv.lineLat[0], mv.lineLon[0],
+                                                           mv.lineLat[1], mv.lineLon[1]);
+            mv.showFinishLine = segments::finishLineBetween(
+                routeLatSnap[routeN - 2], routeLonSnap[routeN - 2], routeLatSnap[routeN - 1], routeLonSnap[routeN - 1],
+                mv.finishLat[0], mv.finishLon[0], mv.finishLat[1], mv.finishLon[1]);
+        }
+    } else if (liveSeg) {
         if (g.lat != 0 || g.lon != 0) segments::track(g.lat, g.lon);
-        mv.routeCount = segments::selectedRoute(mv.routeLat, mv.routeLon, mapview::View::MAX_ROUTE);
+        for (int i = 0; i < routeN; i++) {
+            const targets::Target* t = targets::get(liveSeg->point[i]);
+            if (!t) {
+                routeN = i;
+                break;
+            }
+            routeLatSnap[i] = t->lat;
+            routeLonSnap[i] = t->lon;
+        }
+        mv.routeLat = routeLatSnap;
+        mv.routeLon = routeLonSnap;
+        mv.routeCount = routeN;
         int nx = segments::nextPoint();
         mv.routeNext = nx < 0 ? 0 : nx;
         mv.showStartLine = segments::startLine(mv.lineLat[0], mv.lineLon[0], mv.lineLat[1], mv.lineLon[1]);
+        mv.showFinishLine = segments::finishLine(mv.finishLat[0], mv.finishLon[0], mv.finishLat[1], mv.finishLon[1]);
     }
+    mv.omitPin = wpBasePending && wpDrag >= 0 ? wpDrag : -1;
+    mv.omitRoute = wpBasePending && wpDrag >= 0;
+}
+
+void refreshDragCourse() {
+    if (wpDrag >= 0 && wpDrag < pinSnapCap) {
+        const targets::Target* moved = targets::get(wpDrag);
+        if (moved) {
+            pinSnap[wpDrag].lat = moved->lat;
+            pinSnap[wpDrag].lon = moved->lon;
+        }
+    }
+    int routeN = 0;
+    if (segPlacing) {
+        routeN = segDraftN < routeSnapCap ? segDraftN : routeSnapCap;
+        for (int i = 0; i < routeN; i++) {
+            const targets::Target* t = targets::get(segDraft[i]);
+            if (!t) {
+                routeN = i;
+                break;
+            }
+            routeLatSnap[i] = t->lat;
+            routeLonSnap[i] = t->lon;
+        }
+        wpView.routeNext = -1;
+        wpView.showStartLine = false;
+        wpView.showFinishLine = false;
+        if (routeN >= 2) {
+            wpView.showStartLine = segments::startLineBetween(
+                routeLatSnap[0], routeLonSnap[0], routeLatSnap[1], routeLonSnap[1], wpView.lineLat[0], wpView.lineLon[0],
+                wpView.lineLat[1], wpView.lineLon[1]);
+            wpView.showFinishLine = segments::finishLineBetween(
+                routeLatSnap[routeN - 2], routeLonSnap[routeN - 2], routeLatSnap[routeN - 1], routeLonSnap[routeN - 1],
+                wpView.finishLat[0], wpView.finishLon[0], wpView.finishLat[1], wpView.finishLon[1]);
+        }
+    } else {
+        wpView.showStartLine = false;
+        wpView.showFinishLine = false;
+        const segments::Segment* live = segments::selected() >= 0 ? segments::get(segments::selected()) : nullptr;
+        if (live) {
+            routeN = live->count < routeSnapCap ? live->count : routeSnapCap;
+            for (int i = 0; i < routeN; i++) {
+                const targets::Target* t = targets::get(live->point[i]);
+                if (!t) {
+                    routeN = i;
+                    break;
+                }
+                routeLatSnap[i] = t->lat;
+                routeLonSnap[i] = t->lon;
+            }
+            int nx = segments::nextPoint();
+            wpView.routeNext = nx < 0 ? 0 : nx;
+            wpView.showStartLine = segments::startLine(wpView.lineLat[0], wpView.lineLon[0], wpView.lineLat[1],
+                                                        wpView.lineLon[1]);
+            wpView.showFinishLine =
+                segments::finishLine(wpView.finishLat[0], wpView.finishLon[0], wpView.finishLat[1], wpView.finishLon[1]);
+        }
+    }
+    wpView.routeLat = routeLatSnap;
+    wpView.routeLon = routeLonSnap;
+    wpView.routeCount = routeN;
+    wpView.pins = pinSnap;
+    wpView.omitPin = wpDrag;
+    wpView.omitRoute = true;
+}
+
+void paintFrozenSight(M5Canvas* cv, int sx, int sy) {
+    if (!cv || !wpHold || !cv->getBuffer()) return;
+    memcpy(cv->getBuffer(), wpHold, wpHoldBytes);
+    refreshDragCourse();
+    mapview::paintCourse(*cv, wpView);
+    pushMap(cv, sx, sy);
 }
 
 void drawMapContent() {
-    if (forceRedraw) {
+    if (forceRedraw && !wpHoldReady && !wpBasePending) {
         layoutGen++;
         mapRedrawPending = true;
     }
@@ -1509,10 +2220,31 @@ void drawMapContent() {
 
     if (mapJob == MapJob::Done) {
         bool current = cv && cv == mapJobCanvas && mapJobLayout == layoutGen;
+        bool take = current && wpCaptureThis && wpHold;
         mapJob = MapJob::Idle;
         // The gap before the next frame starts now, so the map task never hogs its core.
         lastMap = millis();
-        if (current) pushMap(cv, sx, sy);
+        if (take) {
+            memcpy(wpHold, cv->getBuffer(), wpHoldBytes);
+            wpHoldReady = true;
+            wpBasePending = false;
+            wpCaptureThis = false;
+            wpSightMoved = true;
+        } else if (current) {
+            pushMap(cv, sx, sy);
+        }
+        if (!take && wpCaptureThis) {
+            wpCaptureThis = false;
+            mapRedrawPending = true;
+            lastMap = 0;
+        }
+    }
+    if (wpHoldReady) {
+        if (wpSightMoved && cv) {
+            paintFrozenSight(cv, sx, sy);
+            wpSightMoved = false;
+        }
+        return;
     }
     if (!cv || mapJob != MapJob::Idle) return;
     if (!mapRedrawPending && millis() - lastMap < cfg::MAP_FRAME_MS) return;
@@ -1521,6 +2253,10 @@ void drawMapContent() {
     if (!full && !mapdata::held()) mapFollow = true;
     mapview::View mv;
     fillLiveMapView(mv, full, cv->width());
+    if (wpBasePending) {
+        wpView = mv;
+        wpCaptureThis = true;
+    }
     mapJobCanvas = cv;
     mapJobView = mv;
     mapJobLayout = layoutGen;
@@ -1562,7 +2298,7 @@ void addTargetAt(int cx, int cy) {
         return;
     }
     if (!targets::add(lat, lon)) {
-        showHint("Target list is full");
+        showHint("Could not save that point");
         return;
     }
     char msg[32];
@@ -1597,6 +2333,9 @@ bool mapControlHit(int px, int py) {
         return true;
     if (targetsButtonHit(px, py)) return true;
     if (segmentsButtonHit(px, py)) return true;
+    if (editButtonHit(px, py)) return true;
+    if (nearStartHit(px, py)) return true;
+    if (placeButtonHit(px, py, false) || placeButtonHit(px, py, true)) return true;
     return false;
 }
 
@@ -1749,8 +2488,11 @@ void clearScreen() {
     forceRedraw = true;
 }
 
+void cancelPlaceSegment();
+
 void setScreen(Screen next) {
     if (next == screen) return;
+    if (segPlacing && next != Screen::Map) cancelPlaceSegment();
     if (screen == Screen::Maps) {
         mapsui::leave();
         // Wi-Fi is only for downloading maps; keep it while a download or the setup page runs.
@@ -1792,6 +2534,8 @@ int tgtScroll = 0;
 int tgtDragY = 0;
 int tgtScroll0 = 0;
 int tgtEdit = -1;  // row whose name is on the keyboard, or -1
+int tgtConfirm = -1;
+uint32_t tgtConfirmUntil = 0;
 
 int tgtDeleteX() { return W - 20 - TGT_BTN_W; }
 int tgtRenameX() { return tgtDeleteX() - 12 - TGT_BTN_W; }
@@ -1809,6 +2553,11 @@ void openTargets() {
 }
 
 void closeTargets() {
+    if (tgtConfirm >= 0) {
+        tgtConfirm = -1;
+        forceRedraw = true;
+        return;
+    }
     tgtEdit = -1;
     setScreen(tgtBack == Screen::Targets ? Screen::Map : tgtBack);
 }
@@ -1837,11 +2586,13 @@ void drawTargets() {
         fb::push(c, 0, BAR_H);
         return;
     }
+    if (tgtConfirm >= 0 && millis() > tgtConfirmUntil) tgtConfirm = -1;
     if (tgtScroll > tgtMaxScroll()) tgtScroll = tgtMaxScroll();
     gps::Snapshot g = gps::get();
     bool have = g.lat != 0 || g.lon != 0;
     static char key[768];
-    int pos = snprintf(key, sizeof(key), "%d|%d|%d|", targets::selected(), tgtScroll, targets::count());
+    int pos = snprintf(key, sizeof(key), "%d|%d|%d|%d|", targets::selected(), tgtScroll, targets::count(),
+                       tgtConfirm);
     for (int i = 0; i < targets::count() && pos < (int)sizeof(key) - 16; i++) {
         const targets::Target* t = targets::get(i);
         int metres = have && t ? (int)lroundf(targets::metresBetween(g.lat, g.lon, t->lat, t->lon)) : -1;
@@ -1895,14 +2646,14 @@ void drawTargets() {
         c.setTextDatum(middle_right);
         c.setTextColor(th->label);
         c.drawString(dist, rx - 16, ry + TGT_ROW / 2);
-        auto textBtn = [&](int x, const char* label) {
-            c.fillSmoothRoundRect(x, ry + (TGT_ROW - 52) / 2, TGT_BTN_W, 52, 12, th->btn);
+        auto textBtn = [&](int x, const char* label, bool armed) {
+            c.fillSmoothRoundRect(x, ry + (TGT_ROW - 52) / 2, TGT_BTN_W, 52, 12, armed ? th->warn : th->btn);
             c.setTextDatum(middle_center);
-            c.setTextColor(th->btnText);
+            c.setTextColor(armed ? TFT_WHITE : th->btnText);
             c.drawString(label, x + TGT_BTN_W / 2, ry + TGT_ROW / 2);
         };
-        textBtn(rx, "RENAME");
-        textBtn(dx, "DELETE");
+        textBtn(rx, "RENAME", false);
+        textBtn(dx, "DELETE", i == tgtConfirm);
     }
     fb::push(c, 0, BAR_H);
 }
@@ -1925,12 +2676,21 @@ void onTargetsTap(int x, int y) {
     int i = (cy - TGT_HEAD + tgtScroll) / TGT_ROW;
     if (!targets::get(i)) return;
     if (x >= tgtDeleteX()) {
-        if (tgtEdit == i) tgtEdit = -1;
-        targets::remove(i);
-        if (tgtScroll > tgtMaxScroll()) tgtScroll = tgtMaxScroll();
-        mapRedrawPending = true;
+        if (tgtConfirm == i && millis() <= tgtConfirmUntil) {
+            tgtConfirm = -1;
+            if (tgtEdit == i) tgtEdit = -1;
+            targets::remove(i);
+            if (tgtScroll > tgtMaxScroll()) tgtScroll = tgtMaxScroll();
+            mapRedrawPending = true;
+        } else {
+            tgtConfirm = i;
+            tgtConfirmUntil = millis() + 4000;
+            showHint("Tap DELETE again to remove it");
+        }
+        forceRedraw = true;
         return;
     }
+    tgtConfirm = -1;
     if (x >= tgtRenameX()) {
         const targets::Target* t = targets::get(i);
         tgtEdit = i;
@@ -1949,20 +2709,22 @@ void onTargetsTap(int x, int y) {
 
 constexpr int SEG_HEAD = 80;
 constexpr int SEG_BUILD_HEAD = 108;
-constexpr int SEG_ROW = 84;
-constexpr int SEG_BTN_W = 130;
+constexpr int SEG_ROW = 90;
+constexpr int SEG_ICON = 74;
 int segScroll = 0;
 int segDragY = 0;
 int segScroll0 = 0;
 int segRename = -1;   // segment whose name is on the keyboard, or -1
 int segEdit = -1;     // segment being rebuilt, or -1 for a new one
+int segConfirm = -1;
+uint32_t segConfirmUntil = 0;
+int segCopy = -1;  // segment waiting for same-order or reversed copy, or -1
 bool segBuilding = false;
-int8_t segDraft[segments::MAX_POINTS];
-int segDraftN = 0;
 
-int segDeleteX() { return W - 16 - SEG_BTN_W; }
-int segRenameX() { return segDeleteX() - 8 - SEG_BTN_W; }
-int segEditX() { return segRenameX() - 8 - SEG_BTN_W; }
+int segDeleteX() { return W - 20 - SEG_ICON; }
+int segRenameX() { return segDeleteX() - 16 - SEG_ICON; }
+int segEditX() { return segRenameX() - 16 - SEG_ICON; }
+int segCopyX() { return segEditX() - 16 - SEG_ICON; }
 int segActionX() { return W - 16 - 150; }
 
 int segHead() { return segBuilding ? SEG_BUILD_HEAD : SEG_HEAD; }
@@ -1979,10 +2741,22 @@ void openSegments() {
     segScroll = 0;
     segBuilding = false;
     segRename = -1;
+    segConfirm = -1;
+    segCopy = -1;
     setScreen(Screen::Segments);
 }
 
 void closeSegments() {
+    if (segCopy >= 0) {
+        segCopy = -1;
+        forceRedraw = true;
+        return;
+    }
+    if (segConfirm >= 0) {
+        segConfirm = -1;
+        forceRedraw = true;
+        return;
+    }
     if (segRename >= 0) {
         segRename = -1;
         forceRedraw = true;
@@ -2004,9 +2778,8 @@ void startSegmentBuilder(int editIndex) {
     segScroll = 0;
     if (editIndex >= 0) {
         const segments::Segment* s = segments::get(editIndex);
-        if (s) {
+        if (s && growInts(segDraft, segDraftCap, s->count)) {
             segDraftN = s->count;
-            if (segDraftN > segments::MAX_POINTS) segDraftN = segments::MAX_POINTS;
             for (int i = 0; i < segDraftN; i++) segDraft[i] = s->point[i];
         }
     }
@@ -2017,6 +2790,210 @@ int draftOrder(int targetIndex) {
     for (int i = 0; i < segDraftN; i++)
         if (segDraft[i] == targetIndex) return i;
     return -1;
+}
+
+bool fingerOnMap(int sx, int sy, double& lat, double& lon, float& mpp) {
+    int ox, oy;
+    bool full;
+    M5Canvas* cv = mapCanvasFor(ox, oy, full);
+    if (!cv || !full) return false;
+    mapview::View mv;
+    const Settings& s = settings::get();
+    gps::Snapshot g = gps::get();
+    mv.lat = g.lat;
+    mv.lon = g.lon;
+    mv.course = g.course;
+    mv.haveFix = g.fix;
+    mv.orientation = s.mapOrientation;
+    mv.followBoat = mapFollow;
+    mv.centerLat = mapCenterLat;
+    mv.centerLon = mapCenterLon;
+    int zi = s.mapZoom < cfg::MAP_ZOOM_COUNT ? s.mapZoom : cfg::MAP_ZOOM_DEFAULT;
+    mv.metersPerPixel = cfg::MAP_ZOOM_M[zi] / (float)cv->width();
+    mpp = mv.metersPerPixel;
+    return mapview::latLonAt(mv, cv->width(), cv->height(), (float)(sx - ox), (float)(sy - oy), lat, lon);
+}
+
+int nearestPoint(double lat, double lon, const int* ids, int nids, float radiusM) {
+    int best = -1;
+    float bestD = radiusM;
+    for (int i = 0; i < nids; i++) {
+        const targets::Target* t = targets::get(ids[i]);
+        if (!t) continue;
+        float d = targets::metresBetween(lat, lon, t->lat, t->lon);
+        if (d <= bestD) {
+            bestD = d;
+            best = ids[i];
+        }
+    }
+    return best;
+}
+
+int waypointUnder(int sx, int sy) {
+    if (!segPlacing && !segMapEdit) return -1;
+    double lat, lon;
+    float mpp;
+    if (!fingerOnMap(sx, sy, lat, lon, mpp)) return -1;
+    // Editable waypoints are drawn at triple size, so the grab radius grows with them.
+    float radius = fmaxf(16.f, 144.f * mpp);
+    if (segPlacing) return nearestPoint(lat, lon, segDraft, segDraftN, radius);
+    const segments::Segment* s = segments::selected() >= 0 ? segments::get(segments::selected()) : nullptr;
+    if (!s || s->count < 1) return -1;
+    int best = -1;
+    float bestD = radius;
+    for (int i = 0; i < s->count; i++) {
+        const targets::Target* t = targets::get(s->point[i]);
+        if (!t) continue;
+        float d = targets::metresBetween(lat, lon, t->lat, t->lon);
+        if (d <= bestD) {
+            bestD = d;
+            best = s->point[i];
+        }
+    }
+    return best;
+}
+
+void discardMade() {
+    bool again = true;
+    while (again) {
+        again = false;
+        int best = -1, bestAt = -1;
+        for (int i = 0; i < segMadeN; i++) {
+            int idx = segMade[i];
+            if (segments::usesTarget(idx)) continue;
+            if (idx > best) {
+                best = idx;
+                bestAt = i;
+            }
+        }
+        if (best < 0) break;
+        targets::remove(best);
+        for (int i = bestAt; i < segMadeN - 1; i++) segMade[i] = segMade[i + 1];
+        segMadeN--;
+        for (int i = 0; i < segMadeN; i++)
+            if (segMade[i] > best) segMade[i]--;
+        for (int i = 0; i < segDraftN; i++)
+            if (segDraft[i] > best) segDraft[i]--;
+        again = true;
+    }
+    segMadeN = 0;
+    segDraftN = 0;
+}
+
+void cancelPlaceSegment() {
+    if (!segPlacing) return;
+    segPlacing = false;
+    discardMade();
+    int prev = segPlacePrev;
+    segPlacePrev = -1;
+    if (prev >= 0 && prev < segments::count()) segments::select(prev);
+    mapRedrawPending = true;
+}
+
+void beginPlaceSegment() {
+    segMapEdit = false;
+    segPlacePrev = segments::selected();
+    if (segPlacePrev >= 0) segments::select(-1);
+    segPlacing = true;
+    segBuilding = false;
+    segDraftN = 0;
+    segMadeN = 0;
+    setScreen(Screen::Map);
+    showHint("Tap the map to add a point");
+    mapRedrawPending = true;
+}
+
+void undoSegmentPoint() {
+    if (segDraftN <= 0) return;
+    int idx = segDraft[segDraftN - 1];
+    segDraftN--;
+    int madeAt = -1;
+    for (int i = 0; i < segMadeN; i++)
+        if (segMade[i] == idx) madeAt = i;
+    bool still = draftOrder(idx) >= 0;
+    if (madeAt >= 0 && !still && !segments::usesTarget(idx)) {
+        for (int i = madeAt; i < segMadeN - 1; i++) segMade[i] = segMade[i + 1];
+        segMadeN--;
+        targets::remove(idx);
+        for (int i = 0; i < segDraftN; i++)
+            if (segDraft[i] > idx) segDraft[i]--;
+        for (int i = 0; i < segMadeN; i++)
+            if (segMade[i] > idx) segMade[i]--;
+    }
+    mapRedrawPending = true;
+    forceRedraw = true;
+}
+
+void savePlacedSegment() {
+    if (segDraftN < 2) {
+        showHint("Add a start and a finish");
+        return;
+    }
+    if (!segments::add(segDraft, segDraftN)) {
+        showHint("Could not save that segment");
+        return;
+    }
+    segPlacing = false;
+    segMadeN = 0;
+    segDraftN = 0;
+    segPlacePrev = -1;
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Segment %s", segments::selectedName());
+    showHint(msg);
+    mapRedrawPending = true;
+    forceRedraw = true;
+}
+
+void addSegmentPoint(int sx, int sy) {
+    if (!growInts(segDraft, segDraftCap, segDraftN + 1)) {
+        showHint("Could not save that point");
+        return;
+    }
+    double lat, lon;
+    float mpp;
+    if (!fingerOnMap(sx, sy, lat, lon, mpp)) {
+        showHint("No map to mark");
+        return;
+    }
+    float radius = fmaxf(16.f, 48.f * mpp);
+    int hit = -1;
+    float bestD = radius;
+    for (int i = 0; i < targets::count(); i++) {
+        const targets::Target* t = targets::get(i);
+        if (!t) continue;
+        float d = targets::metresBetween(lat, lon, t->lat, t->lon);
+        if (d <= bestD) {
+            bestD = d;
+            hit = i;
+        }
+    }
+    if (hit < 0) {
+        if (!targets::add(lat, lon)) {
+            showHint("Could not save that point");
+            return;
+        }
+        hit = targets::selected();
+        if (hit < 0 || !growInts(segMade, segMadeCap, segMadeN + 1)) {
+            if (hit >= 0) targets::remove(hit);
+            showHint("Could not save that point");
+            return;
+        }
+        segMade[segMadeN++] = hit;
+    } else if (draftOrder(hit) >= 0) {
+        showHint("Already in this segment");
+        return;
+    }
+    segDraft[segDraftN++] = hit;
+    if (segDraftN >= 2) {
+        float len = segments::lengthAlong(segDraft, segDraftN);
+        char msg[40];
+        snprintf(msg, sizeof(msg), "%d points, %d m", segDraftN, len < 0 ? 0 : (int)lroundf(len));
+        showHint(msg);
+    } else {
+        showHint("Tap the next point");
+    }
+    mapRedrawPending = true;
+    forceRedraw = true;
 }
 
 void drawSegments() {
@@ -2045,11 +3022,49 @@ void drawSegments() {
         fb::push(c, 0, BAR_H);
         return;
     }
+    if (segCopy >= 0) {
+        const segments::Segment* s = segments::get(segCopy);
+        if (!s) {
+            segCopy = -1;
+        } else {
+            static int shown = -2;
+            if (!forceRedraw && shown == segCopy) return;
+            shown = segCopy;
+            M5Canvas& c = wifiC;
+            c.fillSprite(th->bg);
+            c.setTextSize(1);
+            c.setFont(&fonts::FreeSansBold18pt7b);
+            c.setTextDatum(middle_left);
+            c.setTextColor(th->fg);
+            char title[56];
+            snprintf(title, sizeof(title), "Copy %s", s->name);
+            c.setClipRect(24, 0, W - 48, 64);
+            c.drawString(title, 24, 36);
+            c.clearClipRect();
+            c.setFont(&fonts::FreeSansBold12pt7b);
+            c.setTextColor(th->label);
+            c.drawString("Same order keeps this start and finish.", 24, 120);
+            c.drawString("Opposite runs the course back the other way.", 24, 156);
+            auto choice = [&](int x, const char* label) {
+                c.fillSmoothRoundRect(x, 220, 460, 88, 16, th->btn);
+                c.setTextDatum(middle_center);
+                c.setFont(&fonts::FreeSansBold18pt7b);
+                c.setTextColor(th->btnText);
+                c.drawString(label, x + 230, 264);
+            };
+            int sameX = (W - 460 * 2 - 24) / 2;
+            choice(sameX, "SAME ORDER");
+            choice(sameX + 460 + 24, "OPPOSITE");
+            fb::push(c, 0, BAR_H);
+            return;
+        }
+    }
 
+    if (segConfirm >= 0 && millis() > segConfirmUntil) segConfirm = -1;
     if (segScroll > segMaxScroll()) segScroll = segMaxScroll();
     static char key[1024];
-    int pos = snprintf(key, sizeof(key), "%c|%d|%d|%d|", segBuilding ? 'B' : 'L', segScroll,
-                       segments::selected(), segDraftN);
+    int pos = snprintf(key, sizeof(key), "%c|%d|%d|%d|%d|", segBuilding ? 'B' : 'L', segScroll,
+                       segments::selected(), segDraftN, segConfirm);
     if (segBuilding) {
         float len = segments::lengthAlong(segDraft, segDraftN);
         pos += snprintf(key + pos, sizeof(key) - pos, "%d|", len < 0 ? -1 : (int)lroundf(len));
@@ -2110,12 +3125,11 @@ void drawSegments() {
     }
     c.drawFastHLine(0, segHead() - 1, W, th->dim);
 
-    auto textBtn = [&](int x, int ry, const char* label) {
-        c.fillSmoothRoundRect(x, ry + (SEG_ROW - 52) / 2, SEG_BTN_W, 52, 12, th->btn);
-        c.setTextDatum(middle_center);
-        c.setTextColor(th->btnText);
-        c.setFont(&fonts::FreeSansBold12pt7b);
-        c.drawString(label, x + SEG_BTN_W / 2, ry + SEG_ROW / 2);
+    auto iconBtn = [&](int x, int ry, icons::Icon icon, bool armed) {
+        int y = ry + (SEG_ROW - SEG_ICON) / 2;
+        uint16_t fill = armed ? th->warn : th->btn;
+        c.fillSmoothRoundRect(x, y, SEG_ICON, SEG_ICON, 16, fill);
+        icons::draw(c, icon, x + SEG_ICON / 2, y + SEG_ICON / 2, 36, armed ? TFT_WHITE : th->btnText, fill);
     };
 
     if (segBuilding) {
@@ -2176,9 +3190,10 @@ void drawSegments() {
             char dist[24] = "--";
             if (len >= 0) snprintf(dist, sizeof(dist), "%d m along", (int)lroundf(len));
             int ex = segEditX();
+            int cxb = segCopyX();
             c.setFont(&fonts::FreeSansBold18pt7b);
             c.setTextDatum(middle_left);
-            int nameW = ex - 200;
+            int nameW = cxb - 200;
             if (s->name[0] && c.textWidth(s->name) > nameW) c.setFont(&fonts::FreeSansBold12pt7b);
             c.setTextColor(on ? th->accent : th->fg);
             c.setClipRect(16, ry, nameW, SEG_ROW);
@@ -2187,10 +3202,11 @@ void drawSegments() {
             c.setFont(&fonts::FreeSansBold12pt7b);
             c.setTextDatum(middle_right);
             c.setTextColor(th->label);
-            c.drawString(dist, ex - 12, ry + SEG_ROW / 2);
-            textBtn(ex, ry, "EDIT");
-            textBtn(segRenameX(), ry, "RENAME");
-            textBtn(segDeleteX(), ry, "DELETE");
+            c.drawString(dist, cxb - 12, ry + SEG_ROW / 2);
+            iconBtn(cxb, ry, icons::Icon::Copy, false);
+            iconBtn(ex, ry, icons::Icon::Route, false);
+            iconBtn(segRenameX(), ry, icons::Icon::Pencil, false);
+            iconBtn(segDeleteX(), ry, icons::Icon::Trash, i == segConfirm);
         }
     }
     fb::push(c, 0, BAR_H);
@@ -2198,6 +3214,25 @@ void drawSegments() {
 
 void onSegmentsTap(int x, int y) {
     int cy = y - BAR_H;
+    if (segCopy >= 0) {
+        int sameX = (W - 460 * 2 - 24) / 2;
+        bool same = x >= sameX && x < sameX + 460 && cy >= 220 && cy < 308;
+        bool opp = x >= sameX + 484 && x < sameX + 944 && cy >= 220 && cy < 308;
+        if (same || opp) {
+            int src = segCopy;
+            segCopy = -1;
+            if (!segments::duplicate(src, opp)) showHint("Could not save that segment");
+            else {
+                segScroll = segMaxScroll();
+                char msg[48];
+                snprintf(msg, sizeof(msg), "Segment %s", segments::selectedName());
+                showHint(msg);
+                mapRedrawPending = true;
+            }
+        }
+        forceRedraw = true;
+        return;
+    }
     if (segRename >= 0) {
         Palette pal{th->bg, th->fg, th->label, th->accent, th->dim, th->btn, th->btnText, th->warn, th->ok};
         osk::Result r = osk::tap(x, cy, W, 48);
@@ -2219,7 +3254,7 @@ void onSegmentsTap(int x, int y) {
             bool ok = segEdit >= 0 ? segments::update(segEdit, segDraft, segDraftN)
                                    : segments::add(segDraft, segDraftN);
             if (!ok) {
-                showHint(segEdit >= 0 ? "That segment needs two targets" : "Segment list is full");
+                showHint(segEdit >= 0 ? "That segment needs two targets" : "Could not save that segment");
                 return;
             }
             segBuilding = false;
@@ -2240,27 +3275,34 @@ void onSegmentsTap(int x, int y) {
         if (order >= 0) {
             for (int k = order; k < segDraftN - 1; k++) segDraft[k] = segDraft[k + 1];
             segDraftN--;
-        } else if (segDraftN < segments::MAX_POINTS) {
-            segDraft[segDraftN++] = (int8_t)i;
+        } else if (growInts(segDraft, segDraftCap, segDraftN + 1)) {
+            segDraft[segDraftN++] = i;
         }
         forceRedraw = true;
         return;
     }
     if (cy >= 10 && cy < 62 && x >= segActionX()) {
-        if (targets::count() < 2) showHint("Drop a start and a finish on the map");
-        startSegmentBuilder(-1);
+        beginPlaceSegment();
         return;
     }
     if (cy < SEG_HEAD) return;
     int i = (cy - SEG_HEAD + segScroll) / SEG_ROW;
     if (!segments::get(i)) return;
     if (x >= segDeleteX()) {
-        segments::remove(i);
-        if (segScroll > segMaxScroll()) segScroll = segMaxScroll();
-        mapRedrawPending = true;
+        if (segConfirm == i && millis() <= segConfirmUntil) {
+            segConfirm = -1;
+            segments::remove(i);
+            if (segScroll > segMaxScroll()) segScroll = segMaxScroll();
+            mapRedrawPending = true;
+        } else {
+            segConfirm = i;
+            segConfirmUntil = millis() + 4000;
+            showHint("Tap the red button again to remove it");
+        }
         forceRedraw = true;
         return;
     }
+    segConfirm = -1;
     if (x >= segRenameX()) {
         const segments::Segment* s = segments::get(i);
         segRename = i;
@@ -2272,6 +3314,13 @@ void onSegmentsTap(int x, int y) {
         startSegmentBuilder(i);
         return;
     }
+    if (x >= segCopyX()) {
+        segCopy = i;
+        segConfirm = -1;
+        forceRedraw = true;
+        return;
+    }
+    segMapEdit = false;
     segments::select(segments::selected() == i ? -1 : i);
     if (segments::selected() >= 0) {
         char msg[48];
@@ -2282,7 +3331,129 @@ void onSegmentsTap(int x, int y) {
     forceRedraw = true;
 }
 
+void dismissRace() {
+    race.open = false;
+    mapRedrawPending = true;
+    forceRedraw = true;
+}
+
+void beginRace() {
+    logger::setSessionLabel(segments::selectedName());
+    metrics::start();
+    race.live = true;
+    race.segment = segments::selected();
+    strlcpy(race.name, segments::selectedName(), sizeof(race.name));
+    race.course = segments::length(race.segment);
+    metrics::note("kind", "race");
+    metrics::note("segment", race.name);
+    char metres[16];
+    if (race.course >= 0) {
+        snprintf(metres, sizeof(metres), "%.0f", race.course);
+        metrics::note("course_m", metres);
+    }
+    showHint("Started");
+}
+
+void finishRace() {
+    metrics::update();
+    metrics::View v = metrics::view();
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%.1f", v.elapsed);
+    metrics::note("race_time_s", buf);
+    snprintf(buf, sizeof(buf), "%.1f", v.distance);
+    metrics::note("race_distance_m", buf);
+    int session = v.session;
+    metrics::stop();
+    race.live = false;
+    race.elapsed = v.elapsed;
+    race.distance = v.distance;
+    race.avgSplit = v.avgSplit;
+    race.avgRate = v.avgRate;
+    race.strokes = v.strokes;
+    race.avgHr = v.avgHr;
+    race.maxHr = v.maxHr;
+    if (session >= 0) snprintf(race.saved, sizeof(race.saved), "S%04d", session);
+    else snprintf(race.saved, sizeof(race.saved), "NO CARD");
+    race.open = true;
+    forceRedraw = true;
+    Serial.printf("[race] finish %s  %.1f s  %.0f m  session %d\n", race.name, race.elapsed, race.distance, session);
+}
+
+void drawRaceModal() {
+    M5Canvas& c = wifiC;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    c.setTextDatum(top_left);
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextColor(th->accent);
+    c.drawString("RACE", 28, 10);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextColor(th->fg);
+    c.setClipRect(28, 34, W - 56, 36);
+    c.drawString(race.name[0] ? race.name : "Segment", 28, 34);
+    c.clearClipRect();
+
+    c.fillRoundRect(24, 78, W - 48, 132, 18, th->btn);
+    c.drawRoundRect(24, 78, W - 48, 132, 18, th->dim);
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextColor(th->label);
+    c.drawString("TIME", 48, 94);
+    char time[16];
+    fmtTime(time, sizeof(time), race.elapsed);
+    c.setFont(&fonts::FreeSansBold24pt7b);
+    c.setTextColor(th->accent);
+    c.setTextDatum(middle_left);
+    c.drawString(time, 48, 156);
+
+    auto card = [&](int x, int y, const char* label, const char* value, const char* unit) {
+        constexpr int cw = 400, ch = 140;
+        c.fillRoundRect(x, y, cw, ch, 18, th->btn);
+        c.drawRoundRect(x, y, cw, ch, 18, th->dim);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(top_left);
+        c.setTextColor(th->label);
+        c.drawString(label, x + 20, y + 16);
+        if (unit && unit[0]) {
+            c.setTextDatum(top_right);
+            int uw = c.textWidth(unit);
+            int maxW = cw - 48 - c.textWidth(label);
+            if (uw > maxW && maxW > 8) c.setClipRect(x + cw - 20 - maxW, y, maxW + 20, 40);
+            c.drawString(unit, x + cw - 20, y + 16);
+            c.clearClipRect();
+        }
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->fg);
+        c.drawString(value, x + 20, y + 88);
+    };
+
+    char dist[16], split[16], rate[16], strokes[16], hr[16];
+    char distUnit[24] = "m", hrUnit[24] = "bpm";
+    snprintf(dist, sizeof(dist), "%d", (int)lroundf(race.distance));
+    if (race.course >= 0) snprintf(distUnit, sizeof(distUnit), "course %d m", (int)lroundf(race.course));
+    fmtSplit(split, sizeof(split), race.avgSplit);
+    if (race.avgRate > 0) snprintf(rate, sizeof(rate), "%.1f", race.avgRate);
+    else snprintf(rate, sizeof(rate), "--");
+    snprintf(strokes, sizeof(strokes), "%d", race.strokes);
+    if (race.avgHr > 0) snprintf(hr, sizeof(hr), "%.0f", race.avgHr);
+    else snprintf(hr, sizeof(hr), "--");
+    if (race.maxHr > 0) snprintf(hrUnit, sizeof(hrUnit), "max %d", race.maxHr);
+
+    constexpr int x0 = 24, x1 = 440, x2 = 856, y0 = 226, y1 = 382;
+    card(x0, y0, "DISTANCE", dist, distUnit);
+    card(x1, y0, "AVG SPLIT", split, "/500m");
+    card(x2, y0, "AVG RATE", rate, "spm");
+    card(x0, y1, "STROKES", strokes, "");
+    card(x1, y1, "AVG HR", hr, hrUnit);
+    card(x2, y1, "SAVED", race.saved, "session");
+    fb::push(c, 0, BAR_H);
+}
+
 void nextScreen() {
+    if (race.open) {
+        dismissRace();
+        return;
+    }
     if (screen == Screen::Gps) {
         closeGps();
         return;
@@ -2337,12 +3508,31 @@ void onMapsTap(int x, int y) {
     forceRedraw = true;
 }
 
+void cycleLang() {
+    Settings& st = settings::get();
+    st.lang = (uint8_t)((st.lang + 1) % (uint8_t)Lang::Count);
+    i18n::set((Lang)st.lang);
+    settings::save();
+    showHint(i18n::tr(i18n::LangName));
+    forceRedraw = true;
+}
+
 void onTap(int x, int y) {
     using metrics::State;
+    if (race.open) {
+        if (y >= BTN_Y && x / BTN_W == 4) dismissRace();
+        return;
+    }
     // Centre of the top bar is the GPS status. Tap it for diagnostics.
     if (y < BAR_H && x >= 220 && x < 1000) {
         if (screen == Screen::Gps) closeGps();
         else openGps();
+        return;
+    }
+    // The language code in the top right of the coaching panel.
+    if ((screen == Screen::Efficiency || screen == Screen::Stroke) && y >= BAR_H && y < BAR_H + 56 &&
+        x >= EFF_CHART_W + EFF_PANEL_W - 100) {
+        cycleLang();
         return;
     }
     if (screen == Screen::Maps) {
@@ -2375,7 +3565,33 @@ void onTap(int x, int y) {
         return;
     }
     if (segmentsButtonHit(x, y)) {
+        if (segPlacing) cancelPlaceSegment();
         openSegments();
+        return;
+    }
+    if (editButtonHit(x, y)) {
+        segMapEdit = !segMapEdit;
+        showHint(segMapEdit ? "Drag a point to move it" : "Looking at the course");
+        mapRedrawPending = true;
+        forceRedraw = true;
+        return;
+    }
+    if (nearStartHit(x, y)) {
+        segMapEdit = false;
+        segments::select(nearIdx);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Segment %s", segments::selectedName());
+        showHint(msg);
+        mapRedrawPending = true;
+        forceRedraw = true;
+        return;
+    }
+    if (placeButtonHit(x, y, false)) {
+        undoSegmentPoint();
+        return;
+    }
+    if (placeButtonHit(x, y, true)) {
+        savePlacedSegment();
         return;
     }
     if (y >= BTN_Y) {
@@ -2391,8 +3607,16 @@ void onTap(int x, int y) {
             case 3:
                 if (screen == Screen::Main) cyclePip();
                 else if (screen == Screen::Map) cycleOrientation();
-                else if (screen == Screen::Efficiency) showHint("Hold to clear the chart and your best line");
-                else if (screen == Screen::Sessions) {
+                else if (screen == Screen::Efficiency) showHint(i18n::tr(i18n::HoldClearEff));
+                else if (screen == Screen::Stroke) {
+                    Settings& st = settings::get();
+                    st.crew = st.crew == 1 ? 2 : st.crew == 2 ? 4 : st.crew == 4 ? 8 : 1;
+                    settings::save();
+                    char msg[24];
+                    snprintf(msg, sizeof(msg), i18n::tr(i18n::CrewOf), st.crew);
+                    showHint(msg);
+                    forceRedraw = true;
+                } else if (screen == Screen::Sessions) {
                     sessionsui::back();
                     forceRedraw = true;
                 }
@@ -2402,6 +3626,10 @@ void onTap(int x, int y) {
         return;
     }
     if (handleMapControlTap(x, y)) return;
+    if (segPlacing && screen == Screen::Map && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
+        addSegmentPoint(x, y);
+        return;
+    }
     int tileLeft = 0, tileW = 0;
     int slot = tileSlotAt(x, y, &tileLeft, &tileW);
     if (slot >= 0) {
@@ -2414,8 +3642,10 @@ void onTap(int x, int y) {
 }
 
 void onHold(int x, int y) {
+    if (race.open) return;
     if (mapFullShown() && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
-        addTargetAt(x, y - FULL_CAM_Y);
+        if (segPlacing && screen == Screen::Map) addSegmentPoint(x, y);
+        else addTargetAt(x, y - FULL_CAM_Y);
         return;
     }
     if (y < BTN_Y) return;
@@ -2432,6 +3662,11 @@ void onHold(int x, int y) {
     if (idx == 2) metrics::reset();
     if (idx == 3 && screen == Screen::Efficiency) {
         efficiency::reset();
+        forceRedraw = true;
+    }
+    if (idx == 3 && screen == Screen::Stroke) {
+        anatomy::reset();
+        showHint(i18n::tr(i18n::StrokeRefCleared));
         forceRedraw = true;
     }
 }
@@ -2478,6 +3713,20 @@ void dragStart(int x, int y) {
         segDragY = y;
         segScroll0 = segScroll;
     } else if (mapFullShown() && y >= FULL_CAM_Y && y < BTN_Y && !mapControlHit(x, y)) {
+        int wp = waypointUnder(x, y);
+        if (wp >= 0) {
+            dragKind = DragKind::Waypoint;
+            wpDrag = wp;
+            wpHoldReady = false;
+            wpCaptureThis = false;
+            wpSightMoved = false;
+            wpBasePending = wpHold != nullptr;
+            if (wpBasePending) {
+                mapRedrawPending = true;
+                lastMap = 0;
+            }
+            return;
+        }
         dragKind = DragKind::Map;
         mapPanX0 = x;
         mapPanY0 = y;
@@ -2521,6 +3770,19 @@ void dragMove(int x, int y) {
         else sessionsui::dragMove(x, y);
         return;
     }
+    if (dragKind == DragKind::Waypoint) {
+        double lat, lon;
+        float mpp;
+        if (fingerOnMap(x, y - WP_LIFT_PX, lat, lon, mpp)) {
+            targets::move(wpDrag, lat, lon, false);
+            if (wpHoldReady) wpSightMoved = true;
+            else if (!wpBasePending) {
+                mapRedrawPending = true;
+                lastMap = 0;
+            }
+        }
+        return;
+    }
     if (dragKind != DragKind::Map) return;
     mapFollow = false;
     mapCenterLat = mapPanLat0;
@@ -2536,11 +3798,23 @@ void dragEnd(int x, int y) {
         else sessionsui::dragEnd(x, y);
     } else if (dragKind == DragKind::Map) {
         dragMove(x, y);
+    } else if (dragKind == DragKind::Waypoint) {
+        dragMove(x, y);
+        const targets::Target* t = targets::get(wpDrag);
+        if (t) targets::move(wpDrag, t->lat, t->lon, true);
+        wpDrag = -1;
+        wpHoldReady = false;
+        wpBasePending = false;
+        wpCaptureThis = false;
+        wpSightMoved = false;
+        mapRedrawPending = true;
+        lastMap = 0;
     }
     dragKind = DragKind::None;
 }
 
 void handleDrag(const m5::touch_detail_t& t) {
+    if (race.open) return;
     bool wifiList = screen == Screen::Settings && settingsTab == TAB_WIFI && !wifiEditing;
     bool tgtList = screen == Screen::Targets;
     bool segList = screen == Screen::Segments;
@@ -2581,6 +3855,9 @@ void begin() {
     setTabC.createSprite(W, SET_TAB_H);
     wifiC.createSprite(W, BTN_Y - BAR_H);
     mapC.createSprite(W, FULL_CAM_H);
+    wpHoldBytes = (size_t)mapC.width() * mapC.height() * 2;
+    wpHold = (uint8_t*)heap_caps_malloc(wpHoldBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!wpHold) wpHold = (uint8_t*)malloc(wpHoldBytes);
     mapPipC.createSprite(PIP_W, PIP_H);
     effC.createSprite(EFF_CHART_W, EFF_H);
     effP.createSprite(EFF_PANEL_W, EFF_H);
@@ -2609,6 +3886,10 @@ void drag(int x0, int y0, int x1, int y1) {
 }
 
 void command(char c) {
+    if (race.open) {
+        if (c == 'N') dismissRace();
+        return;
+    }
     switch (c) {
         case 'N': nextScreen(); break;
         case 'M':
@@ -2666,22 +3947,42 @@ void loop() {
 
     if (millis() - lastBattery > 5000 || lastBattery == 0) {
         lastBattery = millis();
-        int level;
+        // Tab5 is a 2S pack, so this is the pack voltage in millivolts. With no
+        // pack on USB the node collapses near 0 V and also sits on the charger
+        // rail, and the percentage clamps to 0 and 100 in turn.
+        int packMv;
         {
             board::I2CLock lock;
-            level = M5.Power.getBatteryLevel();
+            packMv = M5.Power.getBatteryVoltage();
         }
-        metrics::setBattery(level);
-    }
-
-    // A selected segment starts the piece when the boat crosses its start line.
-    {
-        gps::Snapshot g = gps::get();
-        if (segments::selected() >= 0 && (g.lat != 0 || g.lon != 0) &&
-            segments::pollStart(g.lat, g.lon, g.speed, g.course, g.distance, g.fix) &&
-            metrics::view().state != metrics::State::Running) {
-            metrics::start();
-            showHint("Started");
+        static int presentRun = 0;
+        static bool usbOnly = false;
+        if (packMv < 5500) {
+            presentRun = 0;
+            usbOnly = true;
+        } else if (packMv >= 6000 && packMv <= 8800) {
+            presentRun++;
+            // A missing pack also rests on the 8.4 V rail between collapses.
+            // A mid-range voltage is a pack; the rail has to hold.
+            int need = (usbOnly && packMv >= 8100) ? 6 : 2;
+            if (presentRun >= need) usbOnly = false;
+        } else {
+            presentRun = 0;
+        }
+        if (usbOnly) {
+            metrics::setBattery(-2);
+        } else if (presentRun >= 2) {
+            int cell = packMv / 2;
+            int level = (int)lroundf((cell - 3300) * 100.0f / (4150 - 3350));
+            if (level < 0) level = 0;
+            if (level > 100) level = 100;
+            metrics::setBattery(level);
+        }
+        static int batMode = 0;
+        int mode = usbOnly ? 1 : (presentRun >= 2 ? 2 : 0);
+        if (mode && mode != batMode) {
+            Serial.printf("[bat] %s (%d mV)\n", mode == 1 ? "USB" : "pack", packMv);
+            batMode = mode;
         }
     }
 
@@ -2694,28 +3995,47 @@ void loop() {
     }
     track::update();
 
-    drawCamera();
+    if (!race.open) drawCamera();
     drawMapContent();
-    if (screen == Screen::Maps) mapsui::draw(forceRedraw);
-    if (screen == Screen::Sessions) sessionsui::draw(forceRedraw);
+    if (!race.open && screen == Screen::Maps) mapsui::draw(forceRedraw);
+    if (!race.open && screen == Screen::Sessions) sessionsui::draw(forceRedraw);
+
+    // A selected segment starts the piece on its start line and stops it on the finish line.
+    {
+        gps::Snapshot g = gps::get();
+        bool pos = g.lat != 0 || g.lon != 0;
+        bool crossed = segments::selected() >= 0 && pos &&
+                       segments::pollStart(g.lat, g.lon, g.speed, g.course, g.distance, g.fix);
+        if (crossed && !race.open && metrics::view().state != metrics::State::Running) beginRace();
+        if (race.live && segments::selected() == race.segment && pos &&
+            metrics::view().state == metrics::State::Running &&
+            segments::pollFinish(g.lat, g.lon, g.speed, g.course, g.distance, g.fix))
+            finishRace();
+        if (race.live && metrics::view().state != metrics::State::Running) race.live = false;
+    }
+
     if (millis() - lastFrame < cfg::UI_FRAME_MS && !forceRedraw) return;
     lastFrame = millis();
 
     metrics::View v = metrics::view();
     drawTopBar(v);
-    switch (screen) {
-        case Screen::Main: drawMain(v); break;
-        case Screen::Map: drawTopTiles(v); break;
-        case Screen::Efficiency: drawEfficiency(v); break;
-        case Screen::Plot: drawPlot(v); break;
-        case Screen::Settings: drawSettings(); break;
-        case Screen::Sessions:
-        case Screen::Maps: break;
-        case Screen::Gps: drawGps(); break;
-        case Screen::Targets: drawTargets(); break;
-        case Screen::Segments: drawSegments(); break;
+    if (!race.open) {
+        switch (screen) {
+            case Screen::Main: drawMain(v); break;
+            case Screen::Map: drawTopTiles(v); break;
+            case Screen::Efficiency: drawEfficiency(v); break;
+            case Screen::Stroke: drawStroke(v); break;
+            case Screen::Plot: drawPlot(v); break;
+            case Screen::Settings: drawSettings(); break;
+            case Screen::Sessions:
+            case Screen::Maps: break;
+            case Screen::Gps: drawGps(); break;
+            case Screen::Targets: drawTargets(); break;
+            case Screen::Segments: drawSegments(); break;
+        }
     }
     drawButtons(v);
+    if (race.open) drawRaceModal();
     forceRedraw = false;
 }
 

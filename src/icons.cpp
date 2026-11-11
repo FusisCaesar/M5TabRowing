@@ -93,6 +93,29 @@ void compass(M5Canvas& c, float cx, float cy, float u, uint16_t col) {
     c.fillTriangle(cx, cy + 0.55f * u, cx - 0.14f * u, cy + 0.12f * u, cx + 0.14f * u, cy + 0.12f * u, col);
 }
 
+void copySheets(M5Canvas& c, float cx, float cy, float u, uint16_t col, uint16_t bg) {
+    float w = 1.2f * u, h = 1.45f * u, rad = 0.16f * u;
+    float bx = cx - 0.78f * u, by = cy - 0.88f * u;
+    c.drawRoundRect(bx, by, w, h, rad, col);
+    c.drawRoundRect(bx + 1, by + 1, w - 2, h - 2, rad, col);
+    float fx = cx - 0.42f * u, fy = cy - 0.52f * u;
+    c.fillSmoothRoundRect(fx, fy, w, h, rad, bg);
+    c.drawRoundRect(fx, fy, w, h, rad, col);
+    c.drawRoundRect(fx + 1, fy + 1, w - 2, h - 2, rad, col);
+}
+
+void routeMark(M5Canvas& c, float cx, float cy, float u, uint16_t col) {
+    float x0 = cx - 0.7f * u, x1 = cx, x2 = cx + 0.7f * u;
+    float y0 = cy + 0.32f * u, y1 = cy - 0.22f * u, y2 = cy + 0.18f * u;
+    float t = 0.1f * u + 0.5f;
+    c.drawWideLine(x0, y0, x1, y1, t, col);
+    c.drawWideLine(x1, y1, x2, y2, t, col);
+    float r = 0.34f * u;
+    c.fillSmoothCircle(x0, y0, r, col);
+    c.fillSmoothCircle(x1, y1, r, col);
+    c.fillSmoothCircle(x2, y2, r, col);
+}
+
 // Boat hull pointing `up` (bow at the top) or down (bow at the bottom, a head at the stern).
 void boat(M5Canvas& c, float cx, float cy, float u, uint16_t col, bool bowUp) {
     float dir = bowUp ? -1.0f : 1.0f;
@@ -132,6 +155,8 @@ void draw(M5Canvas& c, Icon icon, int cx, int cy, int size, uint16_t color, uint
             c.drawWideLine(cx - 0.92f * u, cy, cx - 0.58f * u, cy, 0.08f * u + 0.5f, color);
             c.drawWideLine(cx + 0.58f * u, cy, cx + 0.92f * u, cy, 0.08f * u + 0.5f, color);
             break;
+        case Icon::Copy: copySheets(c, cx, cy, u, color, bg); break;
+        case Icon::Route: routeMark(c, cx, cy, u, color); break;
     }
 }
 

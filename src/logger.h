@@ -12,6 +12,11 @@ enum class Stream : uint8_t { Strokes = 0, Seconds, Laps, Info, Raw, Count };
 bool begin();
 bool sdReady();
 
+// The next session's files are named from this, then it is cleared.
+// Spaces become underscores, and " race" is added, so a segment "Tromp - S2"
+// is stored as Tromp_-_S2_race. Empty leaves the session unnamed.
+void setSessionLabel(const char* name);
+
 // Returns the session number, or -1 when no SD card is available.
 int startSession();
 void endSession();

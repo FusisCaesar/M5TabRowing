@@ -7,6 +7,7 @@
 
 #include <algorithm>
 
+#include "i18n.h"
 #include "settings.h"
 
 namespace efficiency {
@@ -93,9 +94,9 @@ RatioCheck checkRatio(float ratio, float rateSpm) {
 
 const char* adviceWord(Advice a) {
     switch (a) {
-        case Advice::Slower: return "SLOWER";
-        case Advice::Good: return "GOOD";
-        case Advice::Quicker: return "QUICKER";
+        case Advice::Slower: return i18n::tr(i18n::AdviceSlower);
+        case Advice::Good: return i18n::tr(i18n::AdviceGood);
+        case Advice::Quicker: return i18n::tr(i18n::AdviceQuicker);
         default: return "";
     }
 }
@@ -128,7 +129,7 @@ void addStroke(const Stroke& s) {
 Summary summary(float liveRate) {
     Summary s;
     if (liveRate <= 0 || count == 0) {
-        snprintf(s.hint, sizeof(s.hint), "Start rowing: the chart fills in stroke by stroke");
+        snprintf(s.hint, sizeof(s.hint), "%s", i18n::tr(i18n::HintStart));
         return s;
     }
     s.rate = liveRate;
@@ -151,27 +152,24 @@ Summary summary(float liveRate) {
     const RatioCheck& rc = s.ratioCheck;
     s.hintWarn = true;
     if (rc.advice == Advice::Slower) {
-        snprintf(s.hint, sizeof(s.hint), "Slower slide: ratio %.1f, aim for %.1f at %d spm", s.ratio, rc.target, spm);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintSlower), s.ratio, rc.target, spm);
     } else if (rc.advice == Advice::Quicker) {
-        snprintf(s.hint, sizeof(s.hint), "Quicker hands away: ratio %.1f, aim for %.1f at %d spm", s.ratio, rc.target,
-                 spm);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintQuickerHands), s.ratio, rc.target, spm);
     } else if (s.checkUsualMg > 0 && s.checkMg > 1.25f * s.checkUsualMg) {
-        snprintf(s.hint, sizeof(s.hint), "Smoother slide: check %.0f mg, your usual is %.0f mg", s.checkMg,
-                 s.checkUsualMg);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintSmoother), s.checkMg, s.checkUsualMg);
     } else if (!haveDps) {
-        snprintf(s.hint, sizeof(s.hint), "No GPS: distance per stroke needs a GPS fix");
+        snprintf(s.hint, sizeof(s.hint), "%s", i18n::tr(i18n::HintNoGps));
     } else if (s.score == 0) {
         s.hintWarn = false;
-        snprintf(s.hint, sizeof(s.hint), "Learning your best at %d spm: keep rowing, try other rates too", spm);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintLearningBest), spm);
     } else if (s.score < 93) {
-        snprintf(s.hint, sizeof(s.hint), "Lengthen and push: %d%% of your best at %d spm (%.1f m)", s.score, spm,
-                 s.best);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintLengthen), s.score, spm, s.best);
     } else {
         s.hintWarn = false;
         if (s.score >= 97)
-            snprintf(s.hint, sizeof(s.hint), "On your best line at %d spm - hold this stroke", spm);
+            snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintOnBest), spm);
         else
-            snprintf(s.hint, sizeof(s.hint), "Close to your best at %d spm: %d%%", spm, s.score);
+            snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintClose), spm, s.score);
     }
     return s;
 }

@@ -5,8 +5,10 @@
 #include "board.h"
 #include "config.h"
 #include "efficiency.h"
+#include "stroke_anatomy.h"
 #include "gps_nav.h"
 #include "imu_stroke.h"
+#include "i18n.h"
 #include "logger.h"
 #include "rtclock.h"
 #include "settings.h"
@@ -88,6 +90,10 @@ float avgOf(const float* a) {
 }
 
 void onStroke(const StrokeEvent& ev) {
+    // The IMU task queues the cycle ahead of the stroke, so this matches it.
+    static anatomy::Cycle cycle;
+    bool haveCycle = imu::popCycle(cycle);
+
     int64_t catchUs = (int64_t)(ev.catchTime * 1e6);
     float meanV = -1;
     float dps = 0;
@@ -120,6 +126,7 @@ void onStroke(const StrokeEvent& ev) {
     v.checkMg = avgOf(checks);
     v.bounceMg = avgOf(bounces);
     if (ev.interval > 0) efficiency::addStroke({ev.rateSpm, dps, ratio, ev.checkMg, ev.bounceMg});
+    if (haveCycle && ev.interval > 0 && ev.driveTime > 0) anatomy::addStroke(cycle, ev.rateSpm, dps);
 
     Serial.printf("[stroke] #%lu rate %.1f int %.2fs drive %.2f rec %.2f split %.1f dps %.2f%s\n",
                   (unsigned long)ev.seq, ev.rateSpm, ev.interval, ev.driveTime, ev.recoveryTime,
@@ -163,10 +170,12 @@ void logSecond(int second) {
     }
     char hrText[8] = "";
     if (v.hr > 0) snprintf(hrText, sizeof(hrText), "%d", v.hr);
+    char batText[8] = "";
+    if (v.battery >= 0) snprintf(batText, sizeof(batText), "%d", v.battery);
     char line[200];
-    snprintf(line, sizeof(line), "%d,%s,%.7f,%.7f,%.2f,%.1f,%.1f,%.1f,%.1f,%d,%d,%s\n", second, utc,
+    snprintf(line, sizeof(line), "%d,%s,%.7f,%.7f,%.2f,%.1f,%.1f,%.1f,%.1f,%d,%s,%s\n", second, utc,
              gpsNow.lat, gpsNow.lon, gpsNow.speed, v.split, v.distance, v.rate, gpsNow.hdop,
-             gpsNow.sats, v.battery, hrText);
+             gpsNow.sats, batText, hrText);
     logger::write(logger::Stream::Seconds, line);
 }
 
@@ -220,6 +229,7 @@ void clearSession() {
     hrCount = 0;
     lastLoggedSecond = -1;
     efficiency::reset();
+    anatomy::reset();
 }
 
 void logInfo(const char* key, const char* fmt, ...) {
@@ -260,6 +270,8 @@ void logSessionInfo(int session) {
     logInfo("fusion", "%d", s.fusion ? 1 : 0);
     logInfo("raw_log", "%d", s.rawLog ? 1 : 0);
     logInfo("ratio_shift", "%.1f", s.ratioShift);
+    logInfo("crew", "%d", s.crew);
+    logInfo("lang", "%s", i18n::code());
     logInfo("screen_flipped", "%d", s.flip ? 1 : 0);
     logInfo("bandpass_hz", "%.2f-%.2f", cfg::BANDPASS_LOW_HZ, cfg::BANDPASS_HIGH_HZ);
     logInfo("min_stroke_interval_s", "%.2f", cfg::MIN_STROKE_INTERVAL_S);
@@ -324,6 +336,15 @@ void update() {
             logSecond(sec);
         }
     }
+}
+
+void note(const char* key, const char* value) {
+    if (!key || !value || !logger::sessionOpen()) return;
+    char clean[96];
+    size_t i = 0;
+    for (const char* p = value; *p && i + 1 < sizeof(clean); p++) clean[i++] = (*p == ',' || *p == '\n') ? ' ' : *p;
+    clean[i] = '\0';
+    logInfo(key, "%s", clean);
 }
 
 void start() {

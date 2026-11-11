@@ -57,17 +57,18 @@ Windows notes:
 
 ## Using it
 
-The right-most bottom button cycles six screens. **Maps** is opened with **MAPS**
+The right-most bottom button cycles seven screens. **Maps** is opened with **MAPS**
 on the Map screen between sessions (Wi-Fi is only used there). **GPS diagnostics** opens from the GPS status in the centre of the top bar, or
 from **OPEN** on Settings → Sensors. **TARGETS** and **SEGMENTS** on the map
 open those lists. **BACK** returns to the screen you came from. Maps, GPS
-diagnostics, the target list and the segment list are not part of the six-screen cycle.
+diagnostics, the target list and the segment list are not part of the seven-screen cycle.
 
 | Screen | Content |
 | --- | --- |
 | Main | eight metric tiles you can rearrange; optional camera or map picture-in-picture |
 | Map | offline waterway map with your position, heading, track, targets and segments |
 | Efficiency | metres per stroke against rate, efficiency score, rec:drive / check / bounce, coaching hint |
+| Stroke | one stroke split into catch, drive, finish, run and approach, against acceleration and GPS speed, with one coaching hint |
 | Plot | last 6 s of surge acceleration with catch, finish and threshold; IMU diagnostics |
 | Settings | **STROKE**, **DISPLAY**, **SENSORS** and **WIFI** tabs |
 | Sessions | recordings on the card: review, rename, delete |
@@ -96,7 +97,8 @@ Laps are stored in `_laps.csv` and become laps in the TCX export.
   banner, or a short hint (for example after pairing). Tap this status to open
   GPS diagnostics. Settings → Sensors has the same **OPEN** button.
 - **Right:** heart-rate state (`HR`, `HR...`, `NO HR`), `WIFI` / `WIFI...` on the
-  Maps screen, `SIM` on a simulation build, local clock, battery.
+  Maps screen, `SIM` on a simulation build, local clock, battery (`BAT n%`,
+  or `USB` when the Tab5 is on USB power with no pack attached).
 
 Dates and times on screen are local (`cfg::TIMEZONE`, Amsterdam by default). Log
 files are UTC. The battery-backed clock is set from internet time whenever Wi-Fi
@@ -212,18 +214,33 @@ is already up.
   saved as `Map name - T1`; otherwise just `T1`. It is selected immediately and
   drawn with a line from the boat. **TARGETS** opens the list: tap a row to
   select it (tap again to clear), **RENAME** changes the name, **DELETE**
-  removes it. The **DTT**, **TTT** and **FINISH** tiles follow the selected target.
-- **SEGMENTS** joins targets into a course. **NEW**, then tap the targets in
-  the order you will row them: the first is the start, the last is the finish,
-  and any in between are via points. Tap one again to take it out. On a named
-  map the segment is saved as `Map name - S1`. The distance is the path along
-  those points, not the straight line from start to finish. Selecting a segment
-  draws that path, and a start line through the start pin, square to the first
-  leg and 40 m to each side. Before the boat crosses that line the distance
-  tiles count down to it (**DTS**). Afterwards they follow what is left along
-  the points (**DTF**). Crossing the line in the direction of the course, with
-  the boat actually moving, starts the session. **EDIT** changes the points,
-  **RENAME** the name, **DELETE** removes it. Deleting a target drops it from
+  asks for a second tap before it removes it. The **DTT**, **TTT** and **FINISH** tiles follow the selected target.
+- **SEGMENTS** joins points into a course. **NEW** opens the map: tap to drop
+  each point and it is connected to the one before. The first is the start,
+  the last is the finish, and any in between are via points. Tap an existing
+  target to use that one. Drag a point to move it. **UNDO** removes the last
+  point, **SAVE** keeps the course; leaving the map discards the new points.
+  On a named map the segment is saved as `Map name - S1`. The distance is the
+  path along those points, not the straight line from start to finish.
+  Within 100 m of a start, that segment's name appears on the map. Tap it to
+  select the segment: the course is drawn and the distance tiles count down to
+  the start line (**DTS**). Selecting a segment draws that path and its name on the map, and a start line
+  through the start pin, square to the first leg and 40 m to each side. The
+  points stay put while you look. **EDIT** on the map arms them: drag a point
+  to reposition it (a point shared with another segment moves there too). Before
+  the boat crosses the start line the distance tiles count down to it (**DTS**).
+  Afterwards they follow what is left along the points (**DTF**). A finish line
+  crosses the last pin, square to the last leg, the same 40 m to each side, drawn
+  in red. Crossing the start line in the direction of the course, with the boat
+  actually moving, starts the piece. Crossing the finish line the same way stops
+  it and shows the time, distance, split, rate, strokes and heart rate. **DONE**
+  closes that. The piece is saved as a race session named after the segment.
+  In the list those actions are large icons, the same size as on Settings: a
+  course to **EDIT** which targets are included and their order, two pages to
+  **COPY** the same course or the points in opposite order, a pencil to
+  **RENAME**, and a trash can for **DELETE**, which asks for a second tap
+  before it removes the segment.
+  Deleting a target drops it from
   every segment.
 
 The map follows your GPS fix and automatically switches to whichever uploaded
@@ -261,9 +278,36 @@ session at the same rate:
 
 Wind and current change distance per stroke, so the best line is per session:
 it clears when you start a new session, and **hold CLEAR** clears it after you
-turn into the wind.
+turn into the wind. **EN** or **NL** at the top right of the panel switches the
+coaching text on this screen and on Stroke. It stays until you tap it again.
 
 ![Efficiency screen](shots/efficiency.png)
+![Efficiency screen in Dutch](shots/efficiency_nl.png)
+
+### Stroke screen
+
+The **Stroke** screen splits the stroke you are rowing into five phases and compares the last few strokes with your own best at the same rate.
+
+The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. A green line marks the catch and a cyan line the finish, as on the Plot screen.
+
+The shaded bands are the phases:
+
+- **Catch.** The dip as the blade goes in: how long it lasts, how deep it is, and how much speed it costs.
+- **Drive.** The push: the speed it adds, and whether the peak comes early or late.
+- **Finish.** The release: how fast the push dies away, and any dip as the blade comes out.
+- **Run.** The glide: how hard the boat is slowing, and when the speed peaks.
+- **Approach.** The run-in to the next catch: how long before the catch the boat starts to slow.
+
+The line above the buttons gives the one most useful hint. In order: catch together, dip later, a quicker catch, push harder, build the drive earlier or hold it through, then a cleaner release. With nothing to correct it says the stroke matches your reference.
+
+**CREW** sets the boat to 1, 2, 4 or 8. With one rower a wide catch is worded as your own entry, because a single sensor on the hull cannot tell a slow blade from rowers out of time. With more than one it is worded as catching and finishing together: it can say the crew is not together, not which seat. **Hold** the button to clear the reference, as on Efficiency.
+
+The reference is this session only. A stroke counts as one of your best when its distance per stroke is within 5% of your best at that rate on the Efficiency screen; until then the comparison is your usual stroke at that rate. It clears when a new session starts.
+
+**EN** or **NL** at the top right of the panel is the same switch as on Efficiency. Dutch uses the words a crew hears on the water: inpik, haal, uitpik, oprijden. The screen font has no accents. Another language is a column in `src/i18n.cpp`.
+
+![Stroke screen](shots/stroke.png)
+![Stroke screen in Dutch](shots/stroke_nl.png)
 
 ### Plot screen
 
@@ -328,7 +372,8 @@ dropped, and `build: hardware` or `build: SIMULATION`.
 ### Sessions screen
 
 Lists every session on the card with its number, start date and time, duration
-and size. The header reminds you of `python tools\fetch.py COM10` to copy them
+and size. A race finished on a segment is named after it, for example
+`Tromp - S2 race`. The header reminds you of `python tools\fetch.py COM10` to copy them
 off.
 
 - The pencil gives a session a name such as `Bosbaan intervals` (on-screen
