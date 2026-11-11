@@ -8,6 +8,7 @@
 #include "stroke_anatomy.h"
 #include "gps_nav.h"
 #include "imu_stroke.h"
+#include "i18n.h"
 #include "logger.h"
 #include "rtclock.h"
 #include "settings.h"
@@ -270,6 +271,7 @@ void logSessionInfo(int session) {
     logInfo("raw_log", "%d", s.rawLog ? 1 : 0);
     logInfo("ratio_shift", "%.1f", s.ratioShift);
     logInfo("crew", "%d", s.crew);
+    logInfo("lang", "%s", i18n::code());
     logInfo("screen_flipped", "%d", s.flip ? 1 : 0);
     logInfo("bandpass_hz", "%.2f-%.2f", cfg::BANDPASS_LOW_HZ, cfg::BANDPASS_HIGH_HZ);
     logInfo("min_stroke_interval_s", "%.2f", cfg::MIN_STROKE_INTERVAL_S);

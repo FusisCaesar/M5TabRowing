@@ -41,6 +41,7 @@ struct Settings {
     uint8_t mapOrientation;  // mapview::HeadUp / BowUp / NorthUp
     float ratioShift;   // added to the rate-based recovery:drive target
     uint8_t crew;       // 1, 2, 4 or 8; the Stroke screen's togetherness wording
+    uint8_t lang;       // i18n::Lang; coaching text on Efficiency and Stroke
     uint8_t tiles[TILE_SLOTS];  // metric shown in each Main-screen slot
 
     StrokeParams strokeParams() const {

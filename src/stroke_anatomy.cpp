@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "efficiency.h"
+#include "i18n.h"
 #include "settings.h"
 
 namespace anatomy {
@@ -369,8 +370,8 @@ int averageRecent(float rate, Cycle& out, float& meanSpeed) {
     return n;
 }
 
-const char* whoWord(bool vsBest) { return vsBest ? "best" : "usual"; }
-const char* sharpWord(bool vsBest) { return vsBest ? "sharpest" : "usual"; }
+const char* whoWord(bool vsBest) { return i18n::tr(vsBest ? i18n::WhoBest : i18n::WhoUsual); }
+const char* sharpWord(bool vsBest) { return i18n::tr(vsBest ? i18n::WhoSharp : i18n::WhoUsual); }
 
 bool widerThan(const Features& now, const Features& ref) {
     return ref.catchWidthS > 0.02f && now.catchWidthS > ref.catchWidthS * HINT_WIDTH_RATIO &&
@@ -396,65 +397,59 @@ void writeHint(Summary& s) {
 
     if (!s.haveRef) {
         s.hintWarn = false;
-        snprintf(s.hint, sizeof(s.hint), "Learning your stroke at %d spm", spm);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintLearnStroke), spm);
         return;
     }
     int nowMs = (int)lroundf(now.catchWidthS * 1000);
     int refMs = (int)lroundf(ref.catchWidthS * 1000);
     if (s.crew > 1 && (widerThan(now, ref) || moreNotches(now, ref))) {
         if (widerThan(now, ref))
-            snprintf(s.hint, sizeof(s.hint), "Catch together: catch %d ms wide, your %s %d ms", nowMs, sharp, refMs);
+            snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintCatchTogether), nowMs, sharp, refMs);
         else
-            snprintf(s.hint, sizeof(s.hint), "Catch together: %.0f notches, your %s has %.0f", now.notches, sharp,
-                     ref.notches);
+            snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintCatchNotches), now.notches, sharp, ref.notches);
         return;
     }
     if (s.crew == 1 && widerThan(now, ref)) {
-        snprintf(s.hint, sizeof(s.hint), "Quicker into the water: catch %d ms wide, your %s %d ms", nowMs, who, refMs);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintQuickerWater), nowMs, who, refMs);
         return;
     }
     int fallNow = (int)lroundf(now.fallTimeS * 1000);
     int fallRef = (int)lroundf(ref.fallTimeS * 1000);
     if (s.crew > 1 && slowerFall(now, ref)) {
-        snprintf(s.hint, sizeof(s.hint), "Finish together: release takes %d ms, your %s %d ms", fallNow, sharp, fallRef);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintFinishTogether), fallNow, sharp, fallRef);
         return;
     }
     if (s.crew == 1 && slowerFall(now, ref)) {
-        snprintf(s.hint, sizeof(s.hint), "Sharper finish: release takes %d ms, your %s %d ms", fallNow, who, fallRef);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintSharperFinish), fallNow, who, fallRef);
         return;
     }
     if (now.approachLeadS > ref.approachLeadS + HINT_APPROACH_ABS_S) {
-        snprintf(s.hint, sizeof(s.hint), "Dip later: slows %.2f s before the catch, your %s %.2f s", now.approachLeadS,
-                 who, ref.approachLeadS);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintDipLater), now.approachLeadS, who, ref.approachLeadS);
         return;
     }
     if (ref.catchLoss > 0.02f && now.catchLoss > ref.catchLoss * HINT_LOSS_RATIO &&
         now.catchLoss > ref.catchLoss + HINT_LOSS_ABS) {
-        snprintf(s.hint, sizeof(s.hint), "Quicker catch: losing %.2f m/s, your %s %.2f", now.catchLoss, who, ref.catchLoss);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintQuickerCatch), now.catchLoss, who, ref.catchLoss);
         return;
     }
     if (ref.driveGain > 0.05f && now.driveGain < ref.driveGain * HINT_GAIN_RATIO) {
-        snprintf(s.hint, sizeof(s.hint), "Push harder: drive adds %.2f m/s, your %s %.2f at %d spm", now.driveGain, who,
-                 ref.driveGain, spm);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintPush), now.driveGain, who, ref.driveGain, spm);
         return;
     }
     if (now.drivePeakPct > ref.drivePeakPct + HINT_PEAK_DIFF) {
-        snprintf(s.hint, sizeof(s.hint), "Build the drive earlier: peak at %d%% of the drive",
-                 (int)lroundf(now.drivePeakPct * 100));
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintBuild), (int)lroundf(now.drivePeakPct * 100));
         return;
     }
     if (now.drivePeakPct + HINT_PEAK_DIFF < ref.drivePeakPct) {
-        snprintf(s.hint, sizeof(s.hint), "Hold it through the finish: peak at %d%% of the drive",
-                 (int)lroundf(now.drivePeakPct * 100));
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintHold), (int)lroundf(now.drivePeakPct * 100));
         return;
     }
     if (now.releaseDipG > ref.releaseDipG + HINT_RELEASE_ABS_G) {
-        snprintf(s.hint, sizeof(s.hint), "Cleaner release: dip %.2f g, your %s %.2f g", now.releaseDipG, who,
-                 ref.releaseDipG);
+        snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintCleaner), now.releaseDipG, who, ref.releaseDipG);
         return;
     }
     s.hintWarn = false;
-    snprintf(s.hint, sizeof(s.hint), "Matches your %s stroke at %d spm", who, spm);
+    snprintf(s.hint, sizeof(s.hint), i18n::tr(i18n::HintMatches), who, spm);
 }
 
 }  // namespace
@@ -598,7 +593,7 @@ const Summary& summary(float liveRate) {
     s.crew = (crew == 2 || crew == 4 || crew == 8) ? crew : 1;
 
     if (recentCount == 0) {
-        snprintf(s.hint, sizeof(s.hint), "Start rowing: the stroke builds up catch by catch");
+        snprintf(s.hint, sizeof(s.hint), "%s", i18n::tr(i18n::HintStartStroke));
         return s;
     }
     float rate = liveRate;
@@ -612,7 +607,7 @@ const Summary& summary(float liveRate) {
         n = averageRecent(rate, avg, meanSpeed);
     }
     if (n == 0) {
-        snprintf(s.hint, sizeof(s.hint), "Start rowing: the stroke builds up catch by catch");
+        snprintf(s.hint, sizeof(s.hint), "%s", i18n::tr(i18n::HintStartStroke));
         return s;
     }
 
@@ -639,7 +634,7 @@ const Summary& summary(float liveRate) {
     if (!analyse(avg.preroll, avg.accel, avg.driveS, avg.recS, s.now, s.bounds)) {
         fillSpeed(avg.driveS, avg.recS, meanSpeed, s.speed);
         s.hintWarn = false;
-        snprintf(s.hint, sizeof(s.hint), "Reading the stroke shape");
+        snprintf(s.hint, sizeof(s.hint), "%s", i18n::tr(i18n::HintReading));
         return s;
     }
     fillSpeed(avg.driveS, avg.recS, meanSpeed, s.speed);

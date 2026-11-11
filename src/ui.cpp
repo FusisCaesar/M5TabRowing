@@ -16,6 +16,7 @@
 #include "icons.h"
 #include "keyboard.h"
 #include "imu_stroke.h"
+#include "i18n.h"
 #include "logger.h"
 #include "map_data.h"
 #include "map_job.h"
@@ -570,7 +571,7 @@ void drawButtons(const metrics::View& v) {
         drawButton(3, "HOLD: CLEAR", efficiency::strokeCount() > 0);
     } else if (screen == Screen::Stroke) {
         char crew[12];
-        snprintf(crew, sizeof(crew), "CREW %d", settings::get().crew);
+        snprintf(crew, sizeof(crew), i18n::tr(i18n::CrewButton), settings::get().crew);
         drawButton(3, crew, true);
     } else if (screen == Screen::Sessions) {
         bool inner = sessionsui::reviewing() || sessionsui::editing();
@@ -728,15 +729,15 @@ void drawEffChart(const efficiency::Summary& s) {
     c.setFont(&fonts::FreeSansBold12pt7b);
     c.setTextDatum(top_left);
     c.setTextColor(th->label);
-    c.drawString("METRES PER STROKE", 16, 10);
+    c.drawString(i18n::tr(i18n::EffMetres), 16, 10);
     c.setTextDatum(top_right);
     c.setTextColor(th->accent);
-    c.drawString("your best", R - 150, 10);
+    c.drawString(i18n::tr(i18n::EffYourBest), R - 180, 10);
     c.setTextColor(th->label);
-    c.drawString("equal split", R, 10);
+    c.drawString(i18n::tr(i18n::EffEqualSplit), R, 10);
     c.setFont(&fonts::FreeSans9pt7b);
     c.setTextDatum(bottom_right);
-    c.drawString("stroke rate (spm)", R, EFF_H - 4);
+    c.drawString(i18n::tr(i18n::EffRateAxis), R, EFF_H - 4);
     fb::push(c, 0, BAR_H);
 }
 
@@ -764,7 +765,11 @@ void drawEffPanel(const efficiency::Summary& s) {
     c.drawFastVLine(0, 0, EFF_H, th->dim);
     char a[48], b[64];
 
-    effSection(c, 12, "EFFICIENCY", "", th->fg);
+    effSection(c, 12, i18n::tr(i18n::EffTitle), "", th->fg);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->accent);
+    c.drawString(i18n::code(), EFF_PANEL_W - 16, 8);
     uint16_t sc = scoreColor(s.score);
     if (s.score > 0) snprintf(a, sizeof(a), "%d", s.score);
     else snprintf(a, sizeof(a), "--");
@@ -780,9 +785,9 @@ void drawEffPanel(const efficiency::Summary& s) {
     c.setFont(&fonts::FreeSansBold18pt7b);
     c.setTextDatum(top_center);
     c.setTextColor(th->label);
-    if (s.score > 0) snprintf(b, sizeof(b), "of your best %.1f m at %d spm", s.best, (int)lroundf(s.rate));
-    else if (s.rate > 0) snprintf(b, sizeof(b), "learning your best at %d spm", (int)lroundf(s.rate));
-    else snprintf(b, sizeof(b), "distance per stroke vs your best");
+    if (s.score > 0) snprintf(b, sizeof(b), i18n::tr(i18n::EffOfBest), s.best, (int)lroundf(s.rate));
+    else if (s.rate > 0) snprintf(b, sizeof(b), i18n::tr(i18n::EffLearningRate), (int)lroundf(s.rate));
+    else snprintf(b, sizeof(b), "%s", i18n::tr(i18n::EffVsBest));
     if (c.textWidth(b) > EFF_PANEL_W - 32) c.setFont(&fonts::FreeSansBold12pt7b);
     c.drawString(b, EFF_PANEL_W / 2, 148);
     c.drawFastHLine(16, 194, EFF_PANEL_W - 32, th->dim);
@@ -790,9 +795,9 @@ void drawEffPanel(const efficiency::Summary& s) {
     // Recovery:drive against the target band.
     const efficiency::RatioCheck& rc = s.ratioCheck;
     uint16_t rcol = adviceColor(rc);
-    if (rc.target > 0) snprintf(a, sizeof(a), "%.1f  aim %.1f", s.ratio, rc.target);
+    if (rc.target > 0) snprintf(a, sizeof(a), i18n::tr(i18n::EffAim), s.ratio, rc.target);
     else snprintf(a, sizeof(a), "--");
-    effSection(c, 200, "REC:DRIVE", a, rcol);
+    effSection(c, 200, i18n::tr(i18n::EffRecDrive), a, rcol);
     const float RLO = 0.5f, RHI = 3.5f;
     const int bx = 24, bw = EFF_PANEL_W - 48, by = 236;
     auto rx = [&](float r) { return bx + (int)((fmaxf(RLO, fminf(RHI, r)) - RLO) / (RHI - RLO) * bw); };
@@ -813,15 +818,15 @@ void drawEffPanel(const efficiency::Summary& s) {
     // Check and bounce relative to this session's usual values (lower is better).
     auto usualSection = [&](int y, const char* label, float v, float usual) {
         if (v <= 0) snprintf(a, sizeof(a), "--");
-        else if (usual > 0) snprintf(a, sizeof(a), "%.0f mg  usual %.0f", v, usual);
+        else if (usual > 0) snprintf(a, sizeof(a), i18n::tr(i18n::EffUsualMg), v, usual);
         else snprintf(a, sizeof(a), "%.0f mg", v);
         uint16_t col = usualColor(v, usual);
         effSection(c, y, label, a, col);
         float scale = usual > 0 ? 2 * usual : fmaxf(v, 1) * 1.5f;
         effBar(c, y + 36, v / scale, col);
     };
-    usualSection(332, "CHECK", s.checkMg, s.checkUsualMg);
-    usualSection(414, "BOUNCE", s.bounceMg, s.bounceUsualMg);
+    usualSection(332, i18n::tr(i18n::EffCheck), s.checkMg, s.checkUsualMg);
+    usualSection(414, i18n::tr(i18n::EffBounce), s.bounceMg, s.bounceUsualMg);
     fb::push(c, EFF_CHART_W, BAR_H);
 }
 
@@ -834,7 +839,8 @@ void drawEfficiency(const metrics::View& v) {
     drawEffChart(s);
     drawEffPanel(s);
     char right[32];
-    snprintf(right, sizeof(right), "%d strokes", efficiency::strokeCount());
+    int nStrokes = efficiency::strokeCount();
+    snprintf(right, sizeof(right), i18n::tr(nStrokes == 1 ? i18n::StrokeOne : i18n::StrokeMany), nStrokes);
     drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg, true);
 }
 
@@ -871,9 +877,9 @@ void drawStrokeChart(const anatomy::Summary& s) {
         c.setFont(&fonts::FreeSansBold18pt7b);
         c.setTextDatum(middle_center);
         c.setTextColor(th->label);
-        c.drawString("STROKE", EFF_CHART_W / 2, EFF_H / 2 - 24);
+        c.drawString(i18n::tr(i18n::StrokeTitle), EFF_CHART_W / 2, EFF_H / 2 - 24);
         c.setFont(&fonts::FreeSans12pt7b);
-        c.drawString("The phases appear after a few strokes", EFF_CHART_W / 2, EFF_H / 2 + 16);
+        c.drawString(i18n::tr(i18n::StrokeWaitPhases), EFF_CHART_W / 2, EFF_H / 2 + 16);
         fb::push(c, 0, BAR_H);
         return;
     }
@@ -911,7 +917,9 @@ void drawStrokeChart(const anatomy::Summary& s) {
     if (s.now.valid) {
         const float edge[6] = {s.bounds.catch0, s.bounds.catch1, s.bounds.finish, s.bounds.finishEnd, s.bounds.approach,
                                 s.bounds.interval};
-        const char* name[5] = {"CATCH", "DRIVE", "FINISH", "RUN", "APPROACH"};
+        const char* name[5] = {i18n::tr(i18n::PhaseCatch), i18n::tr(i18n::PhaseDrive),
+                                i18n::tr(i18n::PhaseFinish), i18n::tr(i18n::PhaseRun),
+                                i18n::tr(i18n::PhaseApproach)};
         c.setFont(&fonts::FreeSans9pt7b);
         c.setTextDatum(top_center);
         for (int p = 0; p < 5; p++) {
@@ -991,11 +999,12 @@ void drawStrokeChart(const anatomy::Summary& s) {
     c.setFont(&fonts::FreeSansBold12pt7b);
     c.setTextDatum(top_left);
     c.setTextColor(th->fg);
-    c.drawString("STROKE", 12, 6);
+    c.drawString(i18n::tr(i18n::StrokeTitle), 12, 6);
     c.setFont(&fonts::FreeSans9pt7b);
     c.setTextDatum(top_right);
     int lx = R;
-    const char* legend[] = {"gps", "reference", "now", "finish", "catch"};
+    const char* legend[] = {i18n::tr(i18n::LegGps), i18n::tr(i18n::LegRef), i18n::tr(i18n::LegNow),
+                            i18n::tr(i18n::LegFinish), i18n::tr(i18n::LegCatch)};
     const uint16_t legendColor[] = {th->fg, th->label, th->accent, TFT_CYAN, th->ok};
     for (int i = 0; i < 5; i++) {
         if (i == 0 && s.gpsN == 0) continue;
@@ -1020,16 +1029,23 @@ void drawStrokePanel(const anatomy::Summary& s) {
     if (s.have && s.rate > 0) snprintf(value, sizeof(value), "%d spm", (int)lroundf(s.rate));
     else snprintf(value, sizeof(value), "--");
     c.drawString(value, 24, 8);
-    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(top_right);
+    c.setTextColor(th->accent);
+    c.drawString(i18n::code(), EFF_PANEL_W - 16, 8);
+    c.setFont(&fonts::FreeSans12pt7b);
     c.setTextDatum(top_right);
     c.setTextColor(th->label);
-    const char* vs = !s.have ? "waiting" : !s.haveRef ? "learning" : s.vsBest ? "vs your best" : "vs your usual";
-    c.drawString(vs, EFF_PANEL_W - 20, 14);
-    c.setFont(&fonts::FreeSans12pt7b);
+    const char* vs = !s.have ? i18n::tr(i18n::StrokeWaiting)
+                     : !s.haveRef ? i18n::tr(i18n::StrokeLearning)
+                     : s.vsBest   ? i18n::tr(i18n::StrokeVsBest)
+                                  : i18n::tr(i18n::StrokeVsUsual);
     c.setTextDatum(top_left);
-    if (s.samples > 0) snprintf(caption, sizeof(caption), "%d-stroke average", s.samples);
-    else snprintf(caption, sizeof(caption), "no stroke yet");
+    if (s.samples > 0) snprintf(caption, sizeof(caption), i18n::tr(i18n::StrokeAverage), s.samples);
+    else snprintf(caption, sizeof(caption), "%s", i18n::tr(i18n::StrokeNone));
     c.drawString(caption, 24, 44);
+    c.setTextDatum(top_right);
+    c.drawString(vs, EFF_PANEL_W - 20, 44);
     c.drawFastHLine(16, 70, EFF_PANEL_W - 32, th->dim);
 
     const int rows = s.crew > 1 ? 6 : 5;
@@ -1070,9 +1086,9 @@ void drawStrokePanel(const anatomy::Summary& s) {
 
     if (!ok) snprintf(value, sizeof(value), "--"), snprintf(caption, sizeof(caption), "");
     else snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.catchWidthS * 1000));
-    if (ok) snprintf(caption, sizeof(caption), "%.2f g deep, loses %.2f m/s", now.catchDepthG, now.catchLoss);
+    if (ok) snprintf(caption, sizeof(caption), i18n::tr(i18n::CapCatch), now.catchDepthG, now.catchLoss);
     float catchScale = scaleOf(ref.catchWidthS, 0.30f);
-    gauge("CATCH", 0, value, caption, strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef && ok),
+    gauge(i18n::tr(i18n::PhaseCatch), 0, value, caption, strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef && ok),
           ok ? now.catchWidthS / catchScale : 0, s.haveRef ? ref.catchWidthS / catchScale : 0);
 
     uint16_t driveColor = th->fg;
@@ -1085,13 +1101,13 @@ void drawStrokePanel(const anatomy::Summary& s) {
         }
         driveColor = strokeWorse(gain, peak);
         snprintf(value, sizeof(value), "+%.2f m/s", now.driveGain);
-        snprintf(caption, sizeof(caption), "peak %d%%, sag %.2f g", (int)lroundf(now.drivePeakPct * 100), now.driveSagG);
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapDrive), (int)lroundf(now.drivePeakPct * 100), now.driveSagG);
     } else {
         snprintf(value, sizeof(value), "--");
         caption[0] = 0;
     }
     float driveScale = scaleOf(ref.driveGain, 1.2f);
-    gauge("DRIVE", 1, value, caption, driveColor, ok ? now.driveGain / driveScale : 0,
+    gauge(i18n::tr(i18n::PhaseDrive), 1, value, caption, driveColor, ok ? now.driveGain / driveScale : 0,
           s.haveRef ? ref.driveGain / driveScale : 0);
 
     uint16_t finishColor = th->fg;
@@ -1099,35 +1115,35 @@ void drawStrokePanel(const anatomy::Summary& s) {
         finishColor = strokeWorse(strokeVs(now.fallTimeS, ref.fallTimeS, true, s.haveRef),
                                    strokeVs(now.releaseDipG, ref.releaseDipG, true, s.haveRef));
         snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.fallTimeS * 1000));
-        snprintf(caption, sizeof(caption), "release dip %.2f g", now.releaseDipG);
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapFinish), now.releaseDipG);
     } else {
         snprintf(value, sizeof(value), "--");
         caption[0] = 0;
     }
     float fallScale = scaleOf(ref.fallTimeS, 0.30f);
-    gauge("FINISH", 2, value, caption, finishColor, ok ? now.fallTimeS / fallScale : 0,
+    gauge(i18n::tr(i18n::PhaseFinish), 2, value, caption, finishColor, ok ? now.fallTimeS / fallScale : 0,
           s.haveRef ? ref.fallTimeS / fallScale : 0);
 
     if (ok) {
         snprintf(value, sizeof(value), "%d mg", (int)lroundf(now.runDecelMg));
-        snprintf(caption, sizeof(caption), "speed peaks at %.1f s", now.speedPeakS);
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapRun), now.speedPeakS);
     } else {
         snprintf(value, sizeof(value), "--");
         caption[0] = 0;
     }
     float runScale = scaleOf(ref.runDecelMg, 80.0f);
-    gauge("RUN", 3, value, caption, strokeVs(now.runDecelMg, ref.runDecelMg, true, s.haveRef && ok),
+    gauge(i18n::tr(i18n::PhaseRun), 3, value, caption, strokeVs(now.runDecelMg, ref.runDecelMg, true, s.haveRef && ok),
           ok ? now.runDecelMg / runScale : 0, s.haveRef ? ref.runDecelMg / runScale : 0);
 
     if (ok) {
         snprintf(value, sizeof(value), "%.2f s", now.approachLeadS);
-        snprintf(caption, sizeof(caption), "loses %.2f m/s before the blade is in", now.approachLoss);
+        snprintf(caption, sizeof(caption), i18n::tr(i18n::CapApproach), now.approachLoss);
     } else {
         snprintf(value, sizeof(value), "--");
         caption[0] = 0;
     }
     float leadScale = scaleOf(ref.approachLeadS, 0.50f);
-    gauge("APPROACH", 4, value, caption, strokeVs(now.approachLeadS, ref.approachLeadS, true, s.haveRef && ok),
+    gauge(i18n::tr(i18n::PhaseApproach), 4, value, caption, strokeVs(now.approachLeadS, ref.approachLeadS, true, s.haveRef && ok),
           ok ? now.approachLeadS / leadScale : 0, s.haveRef ? ref.approachLeadS / leadScale : 0);
 
     if (s.crew > 1) {
@@ -1138,13 +1154,13 @@ void drawStrokePanel(const anatomy::Summary& s) {
             else if (s.haveRef) notches = th->ok;
             col = strokeWorse(strokeVs(now.catchWidthS, ref.catchWidthS, true, s.haveRef), notches);
             snprintf(value, sizeof(value), "%d ms", (int)lroundf(now.catchWidthS * 1000));
-            if (now.notches < 1.5f) snprintf(caption, sizeof(caption), "1 notch in the catch");
-            else snprintf(caption, sizeof(caption), "%.0f notches in the catch", now.notches);
+            if (now.notches < 1.5f) snprintf(caption, sizeof(caption), "%s", i18n::tr(i18n::CapNotch));
+            else snprintf(caption, sizeof(caption), i18n::tr(i18n::CapNotches), now.notches);
         } else {
             snprintf(value, sizeof(value), "--");
             caption[0] = 0;
         }
-        gauge("TOGETHER", -1, value, caption, col, ok ? now.catchWidthS / catchScale : 0,
+        gauge(i18n::tr(i18n::PhaseTogether), -1, value, caption, col, ok ? now.catchWidthS / catchScale : 0,
               s.haveRef ? ref.catchWidthS / catchScale : 0);
     }
     fb::push(c, EFF_CHART_W, BAR_H);
@@ -1158,8 +1174,8 @@ void drawStroke(const metrics::View& v) {
     const anatomy::Summary& s = anatomy::summary(v.rate);
     drawStrokeChart(s);
     drawStrokePanel(s);
-    char right[24];
-    snprintf(right, sizeof(right), "%d stroke%s", s.samples, s.samples == 1 ? "" : "s");
+    char right[32];
+    snprintf(right, sizeof(right), i18n::tr(s.samples == 1 ? i18n::StrokeOne : i18n::StrokeMany), s.samples);
     drawRow(0, BTN_Y - ROW_H, s.hint, right, s.hintWarn ? th->caution : th->fg, true);
 }
 
@@ -3492,6 +3508,15 @@ void onMapsTap(int x, int y) {
     forceRedraw = true;
 }
 
+void cycleLang() {
+    Settings& st = settings::get();
+    st.lang = (uint8_t)((st.lang + 1) % (uint8_t)Lang::Count);
+    i18n::set((Lang)st.lang);
+    settings::save();
+    showHint(i18n::tr(i18n::LangName));
+    forceRedraw = true;
+}
+
 void onTap(int x, int y) {
     using metrics::State;
     if (race.open) {
@@ -3502,6 +3527,12 @@ void onTap(int x, int y) {
     if (y < BAR_H && x >= 220 && x < 1000) {
         if (screen == Screen::Gps) closeGps();
         else openGps();
+        return;
+    }
+    // The language code in the top right of the coaching panel.
+    if ((screen == Screen::Efficiency || screen == Screen::Stroke) && y >= BAR_H && y < BAR_H + 56 &&
+        x >= EFF_CHART_W + EFF_PANEL_W - 100) {
+        cycleLang();
         return;
     }
     if (screen == Screen::Maps) {
@@ -3576,13 +3607,13 @@ void onTap(int x, int y) {
             case 3:
                 if (screen == Screen::Main) cyclePip();
                 else if (screen == Screen::Map) cycleOrientation();
-                else if (screen == Screen::Efficiency) showHint("Hold to clear the chart and your best line");
+                else if (screen == Screen::Efficiency) showHint(i18n::tr(i18n::HoldClearEff));
                 else if (screen == Screen::Stroke) {
                     Settings& st = settings::get();
                     st.crew = st.crew == 1 ? 2 : st.crew == 2 ? 4 : st.crew == 4 ? 8 : 1;
                     settings::save();
                     char msg[24];
-                    snprintf(msg, sizeof(msg), "Crew of %d", st.crew);
+                    snprintf(msg, sizeof(msg), i18n::tr(i18n::CrewOf), st.crew);
                     showHint(msg);
                     forceRedraw = true;
                 } else if (screen == Screen::Sessions) {
@@ -3635,7 +3666,7 @@ void onHold(int x, int y) {
     }
     if (idx == 3 && screen == Screen::Stroke) {
         anatomy::reset();
-        showHint("Stroke reference cleared");
+        showHint(i18n::tr(i18n::StrokeRefCleared));
         forceRedraw = true;
     }
 }

@@ -278,9 +278,11 @@ session at the same rate:
 
 Wind and current change distance per stroke, so the best line is per session:
 it clears when you start a new session, and **hold CLEAR** clears it after you
-turn into the wind.
+turn into the wind. **EN** or **NL** at the top right of the panel switches the
+coaching text on this screen and on Stroke. It stays until you tap it again.
 
 ![Efficiency screen](shots/efficiency.png)
+![Efficiency screen in Dutch](shots/efficiency_nl.png)
 
 ### Stroke screen
 
@@ -302,7 +304,10 @@ The line above the buttons gives the one most useful hint. In order: catch toget
 
 The reference is this session only. A stroke counts as one of your best when its distance per stroke is within 5% of your best at that rate on the Efficiency screen; until then the comparison is your usual stroke at that rate. It clears when a new session starts.
 
+**EN** or **NL** at the top right of the panel is the same switch as on Efficiency. Dutch uses the words a crew hears on the water: inpik, haal, uitpik, oprijden. The screen font has no accents. Another language is a column in `src/i18n.cpp`.
+
 ![Stroke screen](shots/stroke.png)
+![Stroke screen in Dutch](shots/stroke_nl.png)
 
 ### Plot screen
 
