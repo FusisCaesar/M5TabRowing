@@ -23,6 +23,7 @@ struct StrokeEvent {
     float checkMg = 0;        // recovery deceleration residual, milli-g, 0 if unknown
     float bounceMg = 0;       // RMS vertical acceleration over the cycle, milli-g
     float rateSpm = 0;        // mean of the last few intervals
+    bool rescued = false;     // true when only the relaxed, expected-window threshold saw it
     double fusedDistanceM = 0;  // filled in by the IMU task
 };
 
@@ -69,6 +70,12 @@ private:
     void resetCycle();
     void updateAxis(const dsp::Vec3& h, const dsp::Vec3& gu);
     float thresholdMagnitude() const;
+    // Recent rhythm: average of the intervals kept for the rate. False until two exist.
+    bool rescuePeriod(float& period) const;
+    bool inRescueWindow(double t, float loFactor) const;
+    // Shared tail of a normal and a rescued catch. False when the interval is too short.
+    bool acceptCatch(double t, double catchT, float dipMin, bool rescued, DetectorSample& out,
+                     StrokeEvent& ev);
 
     StrokeParams params_;
 
@@ -99,6 +106,13 @@ private:
     double tDown_ = 0;
     float dipMin_ = 0;
     float dipThr_ = 0;
+
+    // Second dip tracker, armed only inside the expected window, at a lower threshold.
+    DipState rescueDip_ = DipState::Seek;
+    double rescueTDown_ = 0;
+    float rescueMin_ = 0;
+    float rescueThr_ = 0;
+    int rescueChain_ = 0;
 
     double lastCatchT_ = -1;
     float intervals_[cfg::RATE_AVG_STROKES] = {};

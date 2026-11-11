@@ -137,7 +137,7 @@ heart rate, rec:drive below.
 
 | Tile | Unit | Notes |
 | --- | --- | --- |
-| SPLIT | /500m | GPS speed of the last stroke; live before START |
+| SPLIT | /500m | GPS speed over the last 3 strokes; live before START |
 | RATE | spm | IMU, average of the last 3 strokes; live before START |
 | DISTANCE | m | this session |
 | TIME | | this session |
@@ -313,6 +313,8 @@ The reference is this session only. A stroke counts as one of your best when its
 
 The last 6 seconds of forward acceleration (surge), with the adaptive catch
 threshold in red, a green line at each catch and a cyan tick at each finish.
+Between strokes the red line drops for the short window in which a missed catch
+can still be filled in.
 Use it to see whether the detector is catching real strokes or bouncing on
 chop.
 
@@ -401,8 +403,8 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 
 | File | One row per | Contents |
 | --- | --- | --- |
-| `_strokes.csv` | stroke | rate, drive/recovery time, split, speed, distance per stroke, distance, catch depth, check, bounce, position, catch time (`t_s`) |
-| `_seconds.csv` | second | UTC, position, speed, split, distance, rate, HDOP, satellites, battery, heart rate (empty without a sensor) |
+| `_strokes.csv` | stroke | rate, drive/recovery time, one-stroke split (`split_s`), the 3-stroke split shown on screen (`split3_s`), speed, distance per stroke, distance, catch depth, check, bounce, position, catch time (`t_s`), and `rescued` when the normal threshold missed it |
+| `_seconds.csv` | second | UTC, position, speed, the 3-stroke split, distance, rate, HDOP, satellites, battery, heart rate (empty without a sensor) |
 | `_laps.csv` | lap | lap time, distance, average split and rate, strokes, average and maximum heart rate |
 | `_info.csv` | setting | build, start time, and the detector settings in use, so a session can be replayed exactly |
 | `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed (only with raw logging on) |
@@ -459,10 +461,12 @@ Seconds without a GPS fix are left out of the GPX track.
 
    This writes `recordings\S0007_analysis\` with a `summary.txt`, an overview
    (rate, stroke interval and GPS speed over the session), all strokes overlaid at
-   the catch with the average stroke shape per rate band, the detector's view of
+   the catch with the average stroke shape per rate band,    the detector's view of
    the whole session one minute per page, and a close-up around every suspicious
    stroke (an interval far from its neighbours: probably a missed catch or a
-   double count). `--replay` also runs the offline
+   double count). The summary also compares the stroke count with how many
+   strokes the surge signal's own rhythm implies, and reports how far the split
+   jumps from stroke to stroke. `--replay` also runs the offline
    detector from `replay.py`, with the session's settings or the ones you give,
    and shows its catches as orange triangles, so you can see whether other
    settings fix a problem.
@@ -621,7 +625,9 @@ session is recording. Map data is
 
 Tuning hints:
 
-- **Missed strokes** (smooth or shallow catches, fixed-seat rowing): lower the
+- **Missed strokes** (smooth or shallow catches, fixed-seat rowing): a run of
+  them is filled in from the recent rhythm once two real intervals exist. If the
+  first strokes are missed too, so there is no rhythm to follow, lower the
   floor to 0.08 g and K to about 1.2.
 - **Double counts** (rough water, a big bounce at the finish): raise K, or turn on
   the minima threshold, which follows the depth of your recent catches.
@@ -635,17 +641,29 @@ Tuning hints:
   remaining acceleration is band-passed (0.1–3 Hz) and projected onto the
   horizontal axis with the most motion. The catch is the sharp deceleration dip:
   a catch is the midpoint of where the signal crosses an adaptive threshold
-  (K × RMS, or 0.6 × recent catch depth) on the way down and up again. Rate is
+  (K × RMS, or 0.6 × recent catch depth) on the way down and up again. When that
+  misses, a shallower dip still counts if it lands where the last intervals say
+  the next stroke should be: the catch itself between 90% and 135% of that
+  interval, at half the threshold but never below 0.06 g. The dip is allowed to
+  start a little earlier, so the crossing is not cut off. That stroke becomes
+  the new anchor, so a run of light strokes stays tracked, and its depth is
+  remembered: with the minima threshold on, the bar follows back down after a
+  hard piece instead of staying stuck on the deep catches. The chain stops after
+  120 such strokes in a row; a normal catch or a pause starts it again. Rate is
   the average of the last 3 stroke intervals. Strokes more than 6 s apart are a
   pause, not a slow stroke.
 - **Forward direction**: the catch dip is short and deep, the drive is long and
   shallow, so the forward acceleration has negative skew. When GPS is moving, the
   integrated acceleration is correlated with the GPS speed fluctuations, which
   settles the direction even for smooth rowers.
-- **Split and distance per stroke**: GPS speed averaged over each stroke cycle;
-  distance accumulates GPS positions with a 3 m minimum step so it does not drift
-  while stationary. Optionally a complementary filter blends GPS speed with the
-  integrated accelerometer for distance per stroke (the `m*` tile).
+- **Split and distance per stroke**: the split on screen is the GPS speed over
+  the last 3 strokes, taken as distance over time, so it does not jump with the
+  speed swing inside a single stroke. Right after a start or a pause it uses
+  however many strokes there are. Distance per stroke stays the GPS speed of
+  that one stroke. Distance accumulates GPS positions with a 3 m minimum step so
+  it does not drift while stationary. Optionally a complementary filter blends
+  GPS speed with the integrated accelerometer for distance per stroke (the `m*`
+  tile).
 - **Check / bounce**: check is how unevenly the boat decelerates during the
   recovery (scatter around a straight line, in mg); bounce is the vertical
   acceleration RMS.

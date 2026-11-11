@@ -31,6 +31,8 @@ void StrokeDetector::reset() {
     dirVg_ = dirVv_ = dirGg_ = 0;
     gpsDirN_ = 0;
     dip_ = DipState::Seek;
+    rescueDip_ = DipState::Seek;
+    rescueChain_ = 0;
     lastCatchT_ = -1;
     intervalCount_ = intervalHead_ = 0;
     minimaCount_ = minimaHead_ = 0;
@@ -77,6 +79,74 @@ float StrokeDetector::thresholdMagnitude() const {
         mag = fmaxf(params_.thresholdFloorG, cfg::MINIMA_FACTOR * -deepest);
     }
     return mag;
+}
+
+bool StrokeDetector::rescuePeriod(float& period) const {
+    if (lastCatchT_ < 0 || intervalCount_ < cfg::RESCUE_MIN_INTERVALS) return false;
+    float sum = 0;
+    for (int i = 0; i < intervalCount_; i++) sum += intervals_[i];
+    period = sum / (float)intervalCount_;
+    return period > 0;
+}
+
+bool StrokeDetector::inRescueWindow(double t, float loFactor) const {
+    float period;
+    if (rescueChain_ >= cfg::RESCUE_CHAIN_MAX || !rescuePeriod(period)) return false;
+    if (t - lastCatchT_ > cfg::STROKE_TIMEOUT_S) return false;
+    double lo = lastCatchT_ + (double)loFactor * period;
+    double hi = lastCatchT_ + (double)cfg::RESCUE_WINDOW_HI * period;
+    double cap = lastCatchT_ + cfg::STROKE_TIMEOUT_S;
+    if (hi > cap) hi = cap;
+    return t >= lo && t <= hi;
+}
+
+bool StrokeDetector::acceptCatch(double t, double catchT, float dipMin, bool rescued, DetectorSample& out,
+                                 StrokeEvent& ev) {
+    if (lastCatchT_ >= 0 && catchT - lastCatchT_ < cfg::MIN_STROKE_INTERVAL_S) return false;
+
+    float interval = lastCatchT_ < 0 ? 0.0f : (float)(catchT - lastCatchT_);
+    if (interval > cfg::STROKE_TIMEOUT_S) interval = 0;
+
+    ev = StrokeEvent{};
+    ev.seq = ++seq_;
+    ev.catchTime = catchT;
+    ev.interval = interval;
+    ev.peakDecelG = dipMin;
+    ev.rescued = rescued;
+    if (interval > 0) {
+        if (finishT_ > lastCatchT_ && driveTime_ > 0) {
+            ev.driveTime = driveTime_;
+            ev.recoveryTime = (float)(catchT - finishT_);
+        }
+        if (rn_ >= MIN_RECOVERY_SAMPLES) {
+            double stt = rtt_ - rt_ * rt_ / rn_;
+            double stx = rtx_ - rt_ * rx_ / rn_;
+            double sxx = rxx_ - rx_ * rx_ / rn_;
+            double resid = stt > 1e-9 ? sxx - stx * stx / stt : sxx;
+            ev.checkMg = (float)(sqrt(fmax(resid, 0.0) / rn_) * 1000.0);
+        }
+        if (vN_ > 0) ev.bounceMg = (float)(sqrt(vSum2_ / vN_) * 1000.0);
+
+        intervals_[intervalHead_] = interval;
+        intervalHead_ = (intervalHead_ + 1) % cfg::RATE_AVG_STROKES;
+        if (intervalCount_ < cfg::RATE_AVG_STROKES) intervalCount_++;
+    } else {
+        intervalCount_ = intervalHead_ = 0;
+    }
+
+    // Rescued dips go in too, so the minima threshold can follow the rhythm down
+    // after a hard piece instead of staying stuck on the deep catches.
+    minima_[minimaHead_] = dipMin;
+    minimaHead_ = (minimaHead_ + 1) % cfg::MINIMA_COUNT;
+    if (minimaCount_ < cfg::MINIMA_COUNT) minimaCount_++;
+
+    lastCatchT_ = catchT;
+    ev.rateSpm = rate(t);
+    resetCycle();
+    phase_ = Phase::Drive;
+    out.catchDetected = true;
+    rescueChain_ = rescued && interval > 0 ? rescueChain_ + 1 : 0;
+    return true;
 }
 
 void StrokeDetector::updateAxis(const Vec3& h, const Vec3& gu) {
@@ -191,13 +261,21 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
 
     if (flipped) {
         dip_ = DipState::Seek;
+        rescueDip_ = DipState::Seek;
         phase_ = Phase::None;
         resetCycle();
     }
 
-    float thrMag = dip_ == DipState::InDip ? dipThr_ : thresholdMagnitude();
-    float thr = -thrMag;
-    out.threshold = thr;
+    float normalMag = thresholdMagnitude();
+    float normalThrMag = dip_ == DipState::InDip ? dipThr_ : normalMag;
+    float relaxMag = fmaxf(cfg::RESCUE_THRESHOLD_FACTOR * normalMag, cfg::RESCUE_THRESHOLD_FLOOR_G);
+    bool relaxUseful = relaxMag + 1e-4f < normalMag;
+    float shown = normalThrMag;
+    if (warm && dip_ != DipState::InDip) {
+        if (rescueDip_ == DipState::InDip) shown = rescueThr_;
+        else if (relaxUseful && inRescueWindow(t, cfg::RESCUE_WINDOW_LO)) shown = relaxMag;
+    }
+    out.threshold = -shown;
 
     vSum2_ += (double)vert * vert;
     vN_++;
@@ -214,7 +292,7 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
         } else if (t - lastCatchT_ > MAX_DRIVE_S) {
             phase_ = Phase::None;
         }
-    } else if (phase_ == Phase::Recovery && dip_ == DipState::Seek) {
+    } else if (phase_ == Phase::Recovery && dip_ == DipState::Seek && rescueDip_ == DipState::Seek) {
         double rt = t - finishT_;
         rn_ += 1;
         rt_ += rt;
@@ -225,63 +303,43 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
     }
 
     bool produced = false;
+    float normalThr = -normalThrMag;
     if (!warm) {
         dip_ = DipState::Seek;
-    } else if (dip_ == DipState::Seek) {
-        if (prevX_ >= thr && x < thr) {
-            tDown_ = prevT_ + (thr - prevX_) / (x - prevX_) * (t - prevT_);
-            dipMin_ = x;
-            dipThr_ = thrMag;
-            dip_ = DipState::InDip;
+        rescueDip_ = DipState::Seek;
+    } else if (dip_ == DipState::Seek && prevX_ >= normalThr && x < normalThr) {
+        // Deep enough for the normal threshold: this dip belongs to it, not the gap-fill.
+        tDown_ = prevT_ + (normalThr - prevX_) / (x - prevX_) * (t - prevT_);
+        dipMin_ = x;
+        dipThr_ = normalThrMag;
+        dip_ = DipState::InDip;
+        rescueDip_ = DipState::Seek;
+    } else if (dip_ == DipState::Seek && rescueDip_ == DipState::Seek && relaxUseful &&
+               inRescueWindow(t, cfg::RESCUE_WINDOW_LO) && prevX_ >= -relaxMag && x < -relaxMag) {
+        rescueTDown_ = prevT_ + (-relaxMag - prevX_) / (x - prevX_) * (t - prevT_);
+        rescueMin_ = x;
+        rescueThr_ = relaxMag;
+        rescueDip_ = DipState::InDip;
+    } else if (dip_ == DipState::Seek && rescueDip_ == DipState::InDip) {
+        float rescueThr = -rescueThr_;
+        if (x < rescueMin_) rescueMin_ = x;
+        if (x >= rescueThr) {
+            double tUp = prevT_ + (rescueThr - prevX_) / (x - prevX_) * (t - prevT_);
+            double catchT = 0.5 * (rescueTDown_ + tUp);
+            rescueDip_ = DipState::Seek;
+            if (inRescueWindow(catchT, cfg::RESCUE_ACCEPT_LO))
+                produced = acceptCatch(t, catchT, rescueMin_, true, out, ev);
+        } else if (t - rescueTDown_ > cfg::MAX_DIP_DURATION_S) {
+            rescueDip_ = DipState::Seek;
         }
-    } else {
+    } else if (dip_ == DipState::InDip) {
         if (x < dipMin_) dipMin_ = x;
-        if (x >= thr) {
-            double tUp = prevT_ + (thr - prevX_) / (x - prevX_) * (t - prevT_);
+        if (x >= normalThr) {
+            double tUp = prevT_ + (normalThr - prevX_) / (x - prevX_) * (t - prevT_);
             double catchT = 0.5 * (tDown_ + tUp);
             dip_ = DipState::Seek;
-
-            if (lastCatchT_ < 0 || catchT - lastCatchT_ >= cfg::MIN_STROKE_INTERVAL_S) {
-                float interval = lastCatchT_ < 0 ? 0.0f : (float)(catchT - lastCatchT_);
-                if (interval > cfg::STROKE_TIMEOUT_S) interval = 0;
-
-                ev = StrokeEvent{};
-                ev.seq = ++seq_;
-                ev.catchTime = catchT;
-                ev.interval = interval;
-                ev.peakDecelG = dipMin_;
-                if (interval > 0) {
-                    if (finishT_ > lastCatchT_ && driveTime_ > 0) {
-                        ev.driveTime = driveTime_;
-                        ev.recoveryTime = (float)(catchT - finishT_);
-                    }
-                    if (rn_ >= MIN_RECOVERY_SAMPLES) {
-                        double stt = rtt_ - rt_ * rt_ / rn_;
-                        double stx = rtx_ - rt_ * rx_ / rn_;
-                        double sxx = rxx_ - rx_ * rx_ / rn_;
-                        double resid = stt > 1e-9 ? sxx - stx * stx / stt : sxx;
-                        ev.checkMg = (float)(sqrt(fmax(resid, 0.0) / rn_) * 1000.0);
-                    }
-                    if (vN_ > 0) ev.bounceMg = (float)(sqrt(vSum2_ / vN_) * 1000.0);
-
-                    intervals_[intervalHead_] = interval;
-                    intervalHead_ = (intervalHead_ + 1) % cfg::RATE_AVG_STROKES;
-                    if (intervalCount_ < cfg::RATE_AVG_STROKES) intervalCount_++;
-                } else {
-                    intervalCount_ = intervalHead_ = 0;
-                }
-
-                minima_[minimaHead_] = dipMin_;
-                minimaHead_ = (minimaHead_ + 1) % cfg::MINIMA_COUNT;
-                if (minimaCount_ < cfg::MINIMA_COUNT) minimaCount_++;
-
-                lastCatchT_ = catchT;
-                ev.rateSpm = rate(t);
-                resetCycle();
-                phase_ = Phase::Drive;
-                out.catchDetected = true;
-                produced = true;
-            }
+            rescueDip_ = DipState::Seek;
+            produced = acceptCatch(t, catchT, dipMin_, false, out, ev);
         } else if (t - tDown_ > cfg::MAX_DIP_DURATION_S) {
             dip_ = DipState::Seek;
         }
