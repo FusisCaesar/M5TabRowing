@@ -5,3 +5,4 @@ __pycache__/
 *.log
 screen.png
 recordings/
+web/firmware/*.bin

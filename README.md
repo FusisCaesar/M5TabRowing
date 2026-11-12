@@ -32,9 +32,24 @@ in Settings if the case is mounted the other way up.
 
 ## Building and flashing
 
+### Flash from your browser
+
+Chrome or Edge on a computer, and a USB-C cable that carries data.
+
+1. Open the [install page](https://fusiscaesar.github.io/M5TabRowing/).
+2. Plug the Tab5 into the computer.
+3. Press **Tab5 (original, tested)** for the earlier hardware (chip revision below 300), or **Tab5 newer revision (experimental)** for chip revision 300 or above. Choose the port when the browser asks.
+4. If no port appears, hold the boot button while resetting the Tab5, then try again.
+5. If the screen stays black, flash the other button. A wrong pick can be flashed over.
+
+The page asks whether to erase the tablet. Erase on a first install. Leave the data in place when you are updating and want to keep the saved Wi-Fi network, the paired heart-rate sensor, and the stroke and display settings. Maps and session logs sit on the microSD card and are left alone either way.
+
+### Build it yourself
+
 PlatformIO with the [pioarduino](https://github.com/pioarduino/platform-espressif32)
 platform `55.03.312-1` (Arduino core 3.3.12, ESP-IDF 5.5) and the `m5stack-tab5-p4`
-board, which targets the pre-rev3 ESP32-P4 silicon in current Tab5 units. The
+board. `tab5` targets the pre-rev3 ESP32-P4 silicon. `tab5x` keeps that board
+and links the rev3 libraries for chip revision 300 and above. The
 camera library (`ESP_Video`) needs Arduino core 3.3.11 or later.
 
 ```powershell
@@ -44,10 +59,11 @@ python -m platformio run -e tab5 -t upload --upload-port COM10
 
 Environments:
 
-- `tab5` is the real firmware.
+- `tab5` is the real firmware for the original Tab5 (chip revision below 300). This is the build on the install page that has been used.
+- `tab5x` is the same firmware for chip revision 300 and above. It has not been run on hardware. The install page offers it as the experimental button.
 - `tab5_sim` generates synthetic rowing (20 → 32 → 20 spm over 2 minutes, device
   tilted 35 degrees) and a synthetic GPS track, so the whole pipeline can be tested
-  at a desk. The top bar shows a `SIM` badge.
+  at a desk. The top bar shows a `SIM` badge. It is not on the install page.
 
 Windows notes:
 
