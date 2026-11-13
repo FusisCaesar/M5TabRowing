@@ -497,7 +497,9 @@ Seconds without a GPS fix are left out of the GPX track.
    ```
 
    Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). Sessions in `recordings\`
-   are listed, or type the path of an `_imu.csv`. The strokes are found again with the
+   are listed. **Open** uploads an `_imu.csv`, and the `_info.csv` from the same
+   session when you have it. The upload is kept under `recordings\uploads\`, so
+   it does not replace a recording already there. The strokes are found again with the
    current detector, so a catch the device missed is filled in from the rhythm
    and marked as such. Forward is settled from GPS over the whole recording, so
    the first strokes are drawn the right way up even where the device had not
@@ -521,6 +523,12 @@ Seconds without a GPS fix are left out of the GPX track.
    reference is your best at that rate in the finished session when at least
    three strokes earned it, otherwise your usual. Crew 1, 2, 4 or 8 changes the
    catch and finish wording the same way the device does.
+
+   `render.yaml` runs this same server as a free web service. Render sets `PORT`
+   and the process listens on `0.0.0.0`. An upload there lasts until the service
+   restarts or spins down, which a free service does after 15 minutes without a
+   visitor. The free instance has 512 MB of memory, and an upload has to stay
+   under 80 MB, so a very long raw log needs a larger instance.
 
 ## Serial tools
 
