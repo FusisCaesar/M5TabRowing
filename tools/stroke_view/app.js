@@ -215,13 +215,13 @@ const CHROME = {
     thisStroke: "This stroke",
     lastFive: "Last 5 at this rate",
     openFiles: "Open files",
-    openFilesTip: "Choose the _imu.csv, and the _info.csv from the same session when you have it",
+    openFilesTip: "Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate",
     fromTab5: "Read from Tab5",
     fromTab5Tip: "Read a recording from the tablet over USB. Chrome or Edge.",
     welcomeTitle: "Read your rowing, stroke by stroke",
     welcomeLead: "Load a recording from an M5Tab Rowing monitor. Every stroke is found again and shown as drive, finish, run and approach, with the same hint the device gives on the water.",
     stepStop: "Stop the session on the tablet.",
-    stepRead: "Plug it into this computer with USB-C and press <b>Read from Tab5</b>, or open the recording files you copied off the card (the <code>_imu.csv</code> and the <code>_info.csv</code>).",
+    stepRead: "Plug it into this computer with USB-C and press <b>Read from Tab5</b>, or open the recording files you copied off the card (select the <code>_imu.csv</code> together with the <code>_seconds.csv</code>, <code>_laps.csv</code> and <code>_info.csv</code> of that session).",
     stepRead2: "Pick the session, step through the strokes, and switch the chart to the whole session or by rate.",
     privacy: "Recordings are analysed on this server and are not kept: they are gone when it restarts. Reading from the tablet needs Chrome or Edge.",
     buildTitle: "Do not have the device yet?",
@@ -252,13 +252,13 @@ const CHROME = {
     thisStroke: "Deze slag",
     lastFive: "Laatste 5 op dit tempo",
     openFiles: "Bestanden openen",
-    openFilesTip: "Kies de _imu.csv, en de _info.csv van dezelfde sessie als je die hebt",
+    openFilesTip: "Kies de _imu.csv van een sessie, met de _seconds.csv, _laps.csv en _info.csv voor de kaart en hartslag",
     fromTab5: "Lees van Tab5",
     fromTab5Tip: "Lees een opname via USB van de tablet. Chrome of Edge.",
     welcomeTitle: "Bekijk je roeien, slag voor slag",
     welcomeLead: "Laad een opname van een M5Tab Rowing-monitor. Elke slag wordt opnieuw gevonden en getoond als haal, finish, doorglijden en aanloop, met dezelfde tip als het apparaat op het water geeft.",
     stepStop: "Stop de sessie op de tablet.",
-    stepRead: "Sluit hem met USB-C aan op deze computer en kies <b>Lees van Tab5</b>, of open de opnamebestanden die je van de kaart hebt gekopieerd (de <code>_imu.csv</code> en de <code>_info.csv</code>).",
+    stepRead: "Sluit hem met USB-C aan op deze computer en kies <b>Lees van Tab5</b>, of open de opnamebestanden die je van de kaart hebt gekopieerd (selecteer de <code>_imu.csv</code> samen met de <code>_seconds.csv</code>, <code>_laps.csv</code> en <code>_info.csv</code> van die sessie).",
     stepRead2: "Kies de sessie, loop door de slagen, en zet de grafiek op de hele sessie of per slagfrequentie.",
     privacy: "Opnames worden op deze server geanalyseerd en niet bewaard: ze zijn weg als de server herstart. Lezen van de tablet kan alleen in Chrome of Edge.",
     buildTitle: "Nog geen apparaat?",
@@ -382,6 +382,7 @@ async function loadSession(id) {
   const mine = ++state.token;
   setStatus("Reading " + id + "…");
   $("app").hidden = true;
+  $("overview").hidden = true;
   const data = await getJSON("/api/session?id=" + encodeURIComponent(id) + "&crew=" + crew() + "&lang=" + lang() + "&view=" + viewMode());
   if (mine !== state.token) return;
   state.id = data.id;
@@ -397,6 +398,8 @@ async function loadSession(id) {
   renderList();
   state.blurb = sessionBlurb(data, state.rows.length);
   setStatus(state.blurb);
+  if (window.overviewLoad) await overviewLoad(data.id);
+  if (mine !== state.token) return;
   $("app").hidden = false;
   if (sessionMode()) await enterSession();
   if (rateMode()) await loadRates();

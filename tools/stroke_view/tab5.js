@@ -288,7 +288,7 @@ async function getFromTab5() {
     const sessions = await tab5.list();
     const session = sessions.find((item) => item.id === id);
     if (!session) throw new Error(copy.empty);
-    const wanted = session.files.filter((file) => file.name.endsWith("_imu.csv") || file.name.endsWith("_info.csv"));
+    const wanted = session.files.filter((file) => /_(imu|info|seconds|laps|strokes)\.csv$/.test(file.name));
     const imu = wanted.find((file) => file.name.endsWith("_imu.csv"));
     if (!imu) throw new Error(copy.empty);
     if (imu.size > TAB5_MAX) throw new Error(copy.tooBig(imu.name, megabytes(imu.size)));
