@@ -9,6 +9,26 @@ logged there for on-device review or GPX/TCX export. Runs standalone.
 
 ![Main screen](shots/main.png)
 
+## Analyse your rowing online
+
+**[m5tab-stroke.onrender.com](https://m5tab-stroke.onrender.com/)** is a web app
+for looking at a session after you have rowed it. You do not need to install
+anything or know how to code, and you can try it without a device: a demo race
+is already loaded.
+
+- **Overview**: your track on a map, coloured from slow to fast, with distance,
+  time, split, best 500 m, rate, heart rate and graphs of the whole session.
+- **Strokes**: every stroke on its own, with the same coaching hint the device
+  gives, and your strokes compared by rate.
+- **Strava and Garmin**: download your session as a GPX or TCX file with one
+  click, then upload it to Strava or Garmin Connect.
+
+To load your own session, stop it on the tablet, plug the Tab5 into your
+computer with USB-C and press **Read from Tab5** (Chrome or Edge). Or press
+**Open files** and pick the files you copied off the SD card. Your sessions are
+not kept: they are gone when the server restarts. Not built a device yet? Start with the
+[install page](https://fusiscaesar.github.io/M5TabRowing/).
+
 ## Hardware
 
 | Part | Notes |
@@ -432,6 +452,9 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 or RTC).
 
 ## Exporting to Strava or Garmin Connect
+
+The easy way: open the session on the [analysis site](https://m5tab-stroke.onrender.com/)
+and press **Download GPX**. The command line below does the same for many sessions at once.
 
 Fetch the session (or copy it with a card reader), then write GPX and TCX files
 next to it:
