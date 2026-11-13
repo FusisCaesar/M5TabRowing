@@ -44,6 +44,11 @@ constexpr float GPS_DIR_HP_TAU_S = 1.0f;
 constexpr float GPS_DIR_CORR_TAU_S = 15.0f;
 constexpr float GPS_DIR_MIN_CORR = 0.3f;
 constexpr float GPS_DIR_MIN_TIME_S = 10.0f;
+// The receiver reports speed about half a second late (measured on the water), so the
+// surge is held back this long before the two are compared. Compared without the delay
+// they are a fifth of a stroke apart: the match sits near zero and can tip either way.
+constexpr float GPS_SPEED_DELAY_S = 0.5f;
+constexpr int GPS_DIR_DELAY_SAMPLES = (int)(GPS_SPEED_DELAY_S * IMU_RATE_HZ + 0.5f);
 
 constexpr float BANDPASS_LOW_HZ = 0.1f;
 constexpr float BANDPASS_HIGH_HZ = 3.0f;

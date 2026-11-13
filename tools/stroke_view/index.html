@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stroke</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">Stroke</div>
+    <label>Session
+      <select id="session"></select>
+    </label>
+    <label class="path">File
+      <input id="path" type="text" placeholder="recordings\S0019_imu.csv" spellcheck="false">
+    </label>
+    <button id="open" type="button">Open</button>
+    <label>Crew
+      <select id="crew">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+        <option value="8">8</option>
+      </select>
+    </label>
+    <label>Chart
+      <select id="chartmode">
+        <option value="stroke">One stroke</option>
+        <option value="session">Whole session</option>
+        <option value="rate">By rate</option>
+      </select>
+    </label>
+    <label>View
+      <select id="view">
+        <option value="stroke">This stroke</option>
+        <option value="average">Last 5 at this rate</option>
+      </select>
+    </label>
+    <label>Language
+      <select id="lang">
+        <option value="en">English</option>
+        <option value="nl">Nederlands</option>
+      </select>
+    </label>
+  </header>
+  <div id="status" role="status"></div>
+  <div id="app" hidden>
+    <aside id="list" aria-label="Strokes"></aside>
+    <main>
+      <div id="hint"></div>
+      <div id="chips"></div>
+      <div id="stage">
+        <canvas id="chart"></canvas>
+      </div>
+      <div id="foot">
+        <div id="legend"></div>
+        <div id="help"></div>
+      </div>
+    </main>
+    <aside id="gauges"></aside>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

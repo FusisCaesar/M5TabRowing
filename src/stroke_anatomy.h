@@ -11,8 +11,9 @@
 // (which starts before the catch the detector reports) stays visible.
 namespace anatomy {
 
-constexpr float PREROLL_S = 0.25f;
-constexpr int PREROLL_N = 25;  // 10 ms each
+// Long enough to hold the whole run-in to the catch: a heavy boat starts slowing 0.3 s or more before it.
+constexpr float PREROLL_S = 0.40f;
+constexpr int PREROLL_N = 40;  // 10 ms each
 constexpr int DRIVE_BINS = 32;
 constexpr int REC_BINS = 64;
 constexpr int BINS = DRIVE_BINS + REC_BINS;
@@ -34,7 +35,7 @@ struct Cycle {
     float meanSpeed = 0;  // m/s over the stroke, 0 without GPS
     float preroll[PREROLL_N] = {};
     float accel[BINS] = {};
-    float gpsT[GPS_MAX] = {};  // seconds from the catch, negative in the pre-roll
+    float gpsT[GPS_MAX] = {};  // seconds from the catch, negative in the pre-roll, less the GPS delay
     float gpsV[GPS_MAX] = {};
     uint8_t gpsN = 0;
     bool ok = false;
@@ -44,22 +45,24 @@ struct Cycle {
 struct Features {
     float catchDepthG = 0;    // positive
     float catchWidthS = 0;    // width at half depth
-    float catchLoss = 0;      // m/s lost through the dip
-    float notches = 0;        // minima in the dip
+    float catchLoss = 0;      // m/s lost from the catch until the boat picks up again
+    float notches = 0;        // separate dips in the catch, 1 when it is clean
     float drivePeakG = 0;
     float driveGain = 0;      // m/s added by the drive
     float drivePeakPct = 0;   // 0..1, where the peak sits in the drive
     float driveSagG = 0;      // dip between the two drive humps
     float releaseDipG = 0;    // positive, below the glide
     float fallTimeS = 0;      // 80% to 20% of the drive peak
-    float runDecelMg = 0;
+    float runUnevenMg = 0;    // scatter of the glide around a straight line, milli-g
     float speedPeakS = 0;     // seconds after the catch
     float approachLeadS = 0;  // how long before the next catch the boat starts slowing
     float approachLoss = 0;   // m/s lost before the blade is in
     bool valid = false;
 };
 
-// Phase boundaries in seconds from the catch. catch0 is usually negative.
+// Phase boundaries in seconds from the catch. The catch phase runs from 0 to catch1.
+// catch0 is where the boat starts slowing into it, usually negative: that stretch is
+// the approach of the stroke before, so its loss is counted there and not twice.
 struct Bounds {
     float catch0 = 0, catch1 = 0;
     float finish = 0, finishEnd = 0;

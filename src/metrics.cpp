@@ -310,6 +310,7 @@ void logSessionInfo(int session) {
     logInfo("min_stroke_interval_s", "%.2f", cfg::MIN_STROKE_INTERVAL_S);
     logInfo("max_dip_duration_s", "%.2f", cfg::MAX_DIP_DURATION_S);
     logInfo("finish_fraction", "%.2f", cfg::FINISH_FRACTION);
+    logInfo("gps_speed_delay_s", "%.2f", cfg::GPS_SPEED_DELAY_S);
     hr::Snapshot h = hr::get();
     if (h.name[0]) logInfo("hr_sensor", "%s", h.name);
 }

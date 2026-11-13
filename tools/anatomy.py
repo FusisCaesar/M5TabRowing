@@ -17,8 +17,8 @@ import sys
 import numpy as np
 
 # Keep in step with src/stroke_anatomy.cpp.
-PREROLL_S = 0.25
-PREROLL_N = 25
+PREROLL_S = 0.40
+PREROLL_N = 40
 DRIVE_BINS = 32
 REC_BINS = 64
 BINS = DRIVE_BINS + REC_BINS
@@ -31,10 +31,13 @@ MIN_CATCH_DEPTH_G = 0.05
 HALF_DEPTH = 0.50
 DIP_START_FRAC = 0.25
 NOTCH_FRAC = 0.40
-NOTCH_GAP_S = 0.030
+NOTCH_RISE_FRAC = 0.15
+NOTCH_RISE_MIN_G = 0.02
 FINISH_WINDOW_S = 0.35
 SETTLE_G = 0.03
 APPROACH_MARGIN_G = 0.025
+RUN_SMOOTH_S = 0.15
+RUN_MIN_S = 0.20
 
 
 class Biquad:
@@ -199,14 +202,27 @@ def analyse(preroll, accel, drive_s, rec_s):
     if dip_end > 0.30:
         dip_end = width_r
 
-    notches = 0
-    last = -1e9
+    # A notch is a dip of its own: the curve has to come back up by `rise` before the
+    # next one counts, so ripple on the way down or up is not a second catch.
+    rise = max(NOTCH_RISE_FRAC * depth, NOTCH_RISE_MIN_G)
+    notch_t = []
     i_start = int(np.searchsorted(gt, dip_start))
     i_end = int(np.searchsorted(gt, dip_end))
-    for i in range(i_start + 1, min(i_end, n - 1)):
-        if ga[i] <= ga[i - 1] and ga[i] < ga[i + 1] and ga[i] < -NOTCH_FRAC * depth and gt[i] - last >= NOTCH_GAP_S:
-            notches += 1
-            last = gt[i]
+    falling, low, low_i, high = True, ga[i_start], i_start, 0.0
+    for i in range(i_start, min(i_end, n - 1) + 1):
+        a = ga[i]
+        if falling:
+            if a < low:
+                low, low_i = a, i
+            elif a >= low + rise:
+                if low < -NOTCH_FRAC * depth:
+                    notch_t.append(float(gt[low_i]))
+                falling, high = False, a
+        elif a > high:
+            high = a
+        elif a <= high - rise:
+            falling, low, low_i = True, a, i
+    notches = len(notch_t)
 
     i_drive = int(np.searchsorted(gt, max(dip_end, 0)))
     i_finish = int(np.searchsorted(gt, drive_s))
@@ -219,11 +235,14 @@ def analyse(preroll, accel, drive_s, rec_s):
     i_mid = int(np.searchsorted(gt, mid))
     i_p1 = i_drive + int(np.argmax(ga[i_drive:i_mid])) if i_mid > i_drive else i_drive
     i_p2 = i_mid + int(np.argmax(ga[i_mid : i_finish + 1])) if i_finish >= i_mid else i_mid
-    sag = 0
+    sag = 0.0
+    sag_t = sag_g = None
     if ga[i_p1] > 0.45 * peak and ga[i_p2] > 0.45 * peak and i_p2 > i_p1:
-        valley = np.min(ga[i_p1 : i_p2 + 1])
+        valley_i = i_p1 + int(np.argmin(ga[i_p1 : i_p2 + 1]))
+        valley = ga[valley_i]
         if min(ga[i_p1], ga[i_p2]) - valley > 0.03:
-            sag = min(ga[i_p1], ga[i_p2]) - valley
+            sag = float(min(ga[i_p1], ga[i_p2]) - valley)
+            sag_t, sag_g = float(gt[valley_i]), float(valley)
 
     t80 = cross_down(i_peak, 0.8 * peak) if peak > 0 else -1
     t20 = cross_down(int(np.searchsorted(gt, t80)), 0.2 * peak) if t80 > 0 else -1
@@ -259,10 +278,18 @@ def analyse(preroll, accel, drive_s, rec_s):
     lead = max(0, interval - approach)
     approach_loss = max(0, vel(approach) - vel(interval))
 
+    # Run: how unevenly the boat glides between the finish and the approach, as the
+    # scatter around a straight line. Smoothed first, so it reads the shape of the
+    # glide and not the ripple that one stroke has and an average does not.
     i_run0 = int(np.searchsorted(gt, finish_end))
-    i_run1 = int(np.searchsorted(gt, approach))
-    run_mean = float(np.mean(ga[i_run0 : i_run1 + 1])) if i_run1 >= i_run0 else run_base
-    run_mg = max(0, -run_mean * 1000)
+    i_run1 = min(n - 1, int(np.searchsorted(gt, approach)))
+    run_mg = 0.0
+    if (i_run1 - i_run0) * DT >= RUN_MIN_S:
+        half_w = int(round(RUN_SMOOTH_S / DT)) // 2
+        smooth = np.array([ga[max(i_run0, i - half_w) : min(i_run1, i + half_w) + 1].mean() for i in range(i_run0, i_run1 + 1)])
+        x = np.arange(len(smooth), dtype=float)
+        slope, offset = np.polyfit(x, smooth, 1)
+        run_mg = float(np.sqrt(np.mean((smooth - (slope * x + offset)) ** 2)) * 1000)
     i_fast = int(np.searchsorted(gt, 0))
     i_fast = i_fast + int(np.argmax(gv[i_fast:]))
     speed_peak = max(0, gt[i_fast])
@@ -285,7 +312,8 @@ def analyse(preroll, accel, drive_s, rec_s):
         "interval": interval,
         "depth": depth,
         "width": max(0, width_r - width_l),
-        "loss": max(0, vel(dip_start) - vel(dip_end)),
+        # From the catch on: what goes before it is the approach's, so the two do not overlap.
+        "loss": max(0, vel(0.0) - vel(dip_end)),
         "notches": notches if notches else 1,
         "peak": peak,
         "gain": gain,
@@ -299,7 +327,131 @@ def analyse(preroll, accel, drive_s, rec_s):
         "approach_loss": approach_loss,
         "curve_t": gt,
         "curve_a": ga,
+        "curve_v": gv,
+        "width_l": float(width_l),
+        "width_r": float(width_r),
+        "half_level": float(half),
+        "depth_t": float(gt[imin]),
+        "depth_g": float(ga[imin]),
+        "notch_t": notch_t,
+        "peak_t": float(gt[i_peak]),
+        "t80": None if t80 <= 0 else float(t80),
+        "t20": None if not (t20 > t80 > 0) else float(t20),
+        "level80": float(0.8 * peak),
+        "level20": float(0.2 * peak),
+        "release_t": float(gt[i_rel]),
+        "release_g": float(ga[i_rel]),
+        "run_base": float(run_base),
+        "sag_t": sag_t,
+        "sag_g": sag_g,
     }
+
+
+# Same gates as writeHint() in src/stroke_anatomy.cpp.
+HINT_WIDTH_RATIO = 1.25
+HINT_WIDTH_ABS_S = 0.020
+HINT_NOTCH_EXTRA = 0.8
+HINT_FALL_RATIO = 1.30
+HINT_FALL_ABS_S = 0.025
+HINT_APPROACH_ABS_S = 0.08
+HINT_LOSS_ABS = 0.04
+HINT_LOSS_RATIO = 1.25
+HINT_GAIN_RATIO = 0.90
+HINT_PEAK_DIFF = 0.15
+HINT_RELEASE_ABS_G = 0.025
+
+_HINTS = {
+    "en": {
+        "learn": "Learning your stroke at {spm} spm",
+        "catch_together": "Catch together: catch {now_ms} ms wide, your {sharp} {ref_ms} ms",
+        "notches": "Catch together: {now_n:.0f} notches, your {sharp} has {ref_n:.0f}",
+        "wide": "Quicker into the water: catch {now_ms} ms wide, your {who} {ref_ms} ms",
+        "finish_together": "Finish together: release takes {now_ms} ms, your {sharp} {ref_ms} ms",
+        "fall": "Sharper finish: release takes {now_ms} ms, your {who} {ref_ms} ms",
+        "approach": "Dip later: slows {now:.2f} s before the catch, your {who} {ref:.2f} s",
+        "loss": "Quicker catch: losing {now:.2f} m/s, your {who} {ref:.2f}",
+        "gain": "Push harder: drive adds {now:.2f} m/s, your {who} {ref:.2f} at {spm} spm",
+        "peak_late": "Build the drive earlier: peak at {pct}% of the drive",
+        "peak_early": "Hold it through the finish: peak at {pct}% of the drive",
+        "release": "Cleaner release: dip {now:.2f} g, your {who} {ref:.2f} g",
+        "match": "Matches your {who} stroke at {spm} spm",
+        "unread": "The phases could not be read on this stroke",
+    },
+    "nl": {
+        "learn": "Je slag bij {spm} spm leren",
+        "catch_together": "Samen inpikken: {now_ms} ms breed, je {sharp} {ref_ms} ms",
+        "notches": "Samen inpikken: {now_n:.0f} knikken, je {sharp} {ref_n:.0f}",
+        "wide": "Sneller inpikken: {now_ms} ms breed, je {who} {ref_ms} ms",
+        "finish_together": "Samen uitpikken: {now_ms} ms, je {sharp} {ref_ms} ms",
+        "fall": "Scherpere uitpik: {now_ms} ms, je {who} {ref_ms} ms",
+        "approach": "Later inpikken: {now:.2f} s voor de inpik, je {who} {ref:.2f} s",
+        "loss": "Snellere inpik: verliest {now:.2f} m/s, je {who} {ref:.2f}",
+        "gain": "Harder drukken: haal {now:.2f} m/s, je {who} {ref:.2f} bij {spm} spm",
+        "peak_late": "Eerder opbouwen: piek op {pct}% van de haal",
+        "peak_early": "Vasthouden tot de uitpik: piek op {pct}%",
+        "release": "Schoner uitpikken: dip {now:.2f} g, je {who} {ref:.2f} g",
+        "match": "Gelijk aan je {who} slag bij {spm} spm",
+        "unread": "De fasen zijn op deze slag niet te lezen",
+    },
+}
+
+
+def _wider(now, ref):
+    return ref["width"] > 0.02 and now["width"] > ref["width"] * HINT_WIDTH_RATIO and now["width"] > ref["width"] + HINT_WIDTH_ABS_S
+
+
+def _more_notches(now, ref):
+    return now["notches"] >= ref["notches"] + HINT_NOTCH_EXTRA
+
+
+def _slower_fall(now, ref):
+    return ref["fall"] > 0.02 and now["fall"] > ref["fall"] * HINT_FALL_RATIO and now["fall"] > ref["fall"] + HINT_FALL_ABS_S
+
+
+def coaching(now, ref, have_ref, vs_best, crew, rate, lang="en"):
+    """The one hint the Stroke screen would give, and which mark on the curve it comes from.
+
+    `focus` is the indicator to draw boldly. Priority matches writeHint().
+    """
+    text = _HINTS.get(lang, _HINTS["en"])
+    spm = int(round(rate))
+    if lang == "nl":
+        who = "beste" if vs_best else "normale"
+        sharp = "scherpste" if vs_best else "normale"
+    else:
+        who = "best" if vs_best else "usual"
+        sharp = "sharpest" if vs_best else "usual"
+
+    def pack(key, warn, focus, **fmt):
+        return {"key": key, "warn": warn, "focus": focus, "text": text[key].format(spm=spm, who=who, sharp=sharp, **fmt)}
+
+    if now is None:
+        return pack("unread", False, None)
+    if not have_ref or ref is None:
+        return pack("learn", False, None)
+    if crew > 1 and (_wider(now, ref) or _more_notches(now, ref)):
+        if _wider(now, ref):
+            return pack("catch_together", True, "width", now_ms=int(round(now["width"] * 1000)), ref_ms=int(round(ref["width"] * 1000)))
+        return pack("notches", True, "notches", now_n=now["notches"], ref_n=ref["notches"])
+    if crew == 1 and _wider(now, ref):
+        return pack("wide", True, "width", now_ms=int(round(now["width"] * 1000)), ref_ms=int(round(ref["width"] * 1000)))
+    if crew > 1 and _slower_fall(now, ref):
+        return pack("finish_together", True, "fall", now_ms=int(round(now["fall"] * 1000)), ref_ms=int(round(ref["fall"] * 1000)))
+    if crew == 1 and _slower_fall(now, ref):
+        return pack("fall", True, "fall", now_ms=int(round(now["fall"] * 1000)), ref_ms=int(round(ref["fall"] * 1000)))
+    if now["lead"] > ref["lead"] + HINT_APPROACH_ABS_S:
+        return pack("approach", True, "approach", now=now["lead"], ref=ref["lead"])
+    if ref["loss"] > 0.02 and now["loss"] > ref["loss"] * HINT_LOSS_RATIO and now["loss"] > ref["loss"] + HINT_LOSS_ABS:
+        return pack("loss", True, "loss", now=now["loss"], ref=ref["loss"])
+    if ref["gain"] > 0.05 and now["gain"] < ref["gain"] * HINT_GAIN_RATIO:
+        return pack("gain", True, "gain", now=now["gain"], ref=ref["gain"])
+    if now["peak_pct"] > ref["peak_pct"] + HINT_PEAK_DIFF:
+        return pack("peak_late", True, "peak", pct=int(round(now["peak_pct"] * 100)))
+    if now["peak_pct"] + HINT_PEAK_DIFF < ref["peak_pct"]:
+        return pack("peak_early", True, "peak", pct=int(round(now["peak_pct"] * 100)))
+    if now["release"] > ref["release"] + HINT_RELEASE_ABS_G:
+        return pack("release", True, "release", now=now["release"], ref=ref["release"])
+    return pack("match", False, None)
 
 
 def _rate(t):

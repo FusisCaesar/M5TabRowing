@@ -11,10 +11,14 @@ Usage:
   python tools/replay.py S0007_imu.csv --plot 60 90    # plot 60-90 s (needs matplotlib)
 """
 import argparse
+import bisect
 import csv
 import math
+import os
 import random
+import shutil
 import statistics
+import time
 
 FS = 100.0
 DT = 1.0 / FS
@@ -48,6 +52,11 @@ GPS_DIR_HP_TAU_S = 1.0
 GPS_DIR_CORR_TAU_S = 15.0
 GPS_DIR_MIN_CORR = 0.3
 GPS_DIR_MIN_TIME_S = 10.0
+GPS_SPEED_DELAY_S = 0.5
+# Recordings only, not in the firmware: with the whole outing to look at, forward is
+# settled once and used from the first stroke.
+HINDSIGHT_MIN_S = 30.0
+HINDSIGHT_HYSTERESIS = 0.2
 
 
 def ema_alpha(tau):
@@ -94,8 +103,21 @@ def norm(a):
 
 
 class StrokeDetector:
-    def __init__(self, k=1.8, floor=0.12, minima=False):
+    def __init__(self, k=1.8, floor=0.12, minima=False, forward=None, gps_delay=GPS_SPEED_DELAY_S):
         self.k, self.floor, self.use_minima = k, floor, minima
+        # The firmware has one fixed delay. A recording can say otherwise: see gps_delay_of().
+        self.delay_n = max(1, int(gps_delay * FS + 0.5) + 1)
+        # Forward as a unit vector in the device's frame. Given: it decides the sign and
+        # the skew and GPS checks are left out. None: the firmware's own behaviour.
+        self.forward = forward
+        self.h_v = (0.0, 0.0, 0.0)
+        self.h_ring = [(0.0, 0.0, 0.0)] * self.delay_n
+        self.h_head = 0
+        self.h_c = [0.0, 0.0, 0.0]
+        self.h_m = [0.0] * 6  # xx xy xz yy yz zz
+        self.h_gg = 0.0
+        self.h_n = 0
+        self.p_lin = 0.0
         self.aG, self.aC = ema_alpha(GRAVITY_TAU_S), ema_alpha(AXIS_COV_TAU_S)
         self.aS, self.aR = ema_alpha(SKEW_TAU_S), ema_alpha(RMS_TAU_S)
         self.bp = [(Biquad("hp", BANDPASS[0]), Biquad("lp", BANDPASS[1])) for _ in range(3)]
@@ -107,6 +129,8 @@ class StrokeDetector:
         self.skew_n = 0
         self.gps_locked = False
         self.v_int = self.gps_mean = 0.0
+        self.v_delay = [0.0] * self.delay_n  # one longer than the delay: written first, then read
+        self.v_delay_head = 0
         self.cxy = self.cxx2 = self.cyy2 = 0.0
         self.gps_dir_n = 0
         self.in_dip = False
@@ -136,6 +160,38 @@ class StrokeDetector:
     def gps_corr(self):
         d = math.sqrt(self.cxx2 * self.cyy2)
         return self.cxy / d if d > 1e-12 else 0.0
+
+    def learn_forward(self, lin_h, vg):
+        """Recordings only: which way in the device's frame speeds the boat up.
+
+        The same comparison as the GPS direction check, but on the whole horizontal
+        acceleration instead of its projection on the surge axis. That axis can come
+        back the other way round after a pause; this does not depend on it.
+        """
+        v = tuple(vi + (a * STANDARD_GRAVITY - vi / GPS_DIR_INTEGRATOR_TAU_S) * DT for vi, a in zip(self.h_v, lin_h))
+        self.h_v = v
+        self.h_ring[self.h_head] = v
+        self.h_head = (self.h_head + 1) % self.delay_n
+        old = self.h_ring[self.h_head]
+        for i in range(3):
+            self.h_c[i] += old[i] * vg
+        prods = (old[0] * old[0], old[0] * old[1], old[0] * old[2], old[1] * old[1], old[1] * old[2], old[2] * old[2])
+        for i in range(6):
+            self.h_m[i] += prods[i]
+        self.h_gg += vg * vg
+        self.h_n += 1
+
+    def learned_forward(self):
+        """(unit vector, correlation with GPS speed, seconds of GPS it rests on), or None."""
+        size = norm(self.h_c)
+        if not self.h_n or size < 1e-12:
+            return None
+        f = scale(self.h_c, 1 / size)
+        m = self.h_m
+        var = (m[0] * f[0] * f[0] + m[3] * f[1] * f[1] + m[5] * f[2] * f[2]
+               + 2 * (m[1] * f[0] * f[1] + m[2] * f[0] * f[2] + m[4] * f[1] * f[2]))
+        d = math.sqrt(max(var, 0.0) * self.h_gg)
+        return f, (size / d if d > 1e-12 else 0.0), self.h_n * DT
 
     def rate(self, now):
         if self.last_catch < 0 or not self.intervals or now - self.last_catch > STROKE_TIMEOUT_S:
@@ -248,6 +304,7 @@ class StrokeDetector:
         p = dot(h, self.axis)
         lin_h = sub(lin, scale(gu, dot(lin, gu)))
         p_lin = dot(lin_h, self.axis)
+        self.p_lin = p_lin
         pw = self.skew_lp(p_lin)
         warm = t - self.t0 >= WARMUP_S
         if warm:
@@ -257,20 +314,27 @@ class StrokeDetector:
             self.m2 += (pw * pw - self.m2) * a_s
             self.m3 += (pw * pw * pw - self.m3) * a_s
         flipped = False
-        if warm and not self.gps_locked and self.sign * self.skew() > SKEW_FLIP_THRESHOLD:
+        if self.forward is not None:
+            if self.sign * dot(self.axis, self.forward) < -HINDSIGHT_HYSTERESIS:
+                self.sign, flipped = -self.sign, True
+        elif warm and not self.gps_locked and self.sign * self.skew() > SKEW_FLIP_THRESHOLD:
             self.sign, flipped = -self.sign, True
 
         if warm and gps >= GPS_DIR_MIN_SPEED_MPS:
             self.v_int += (p_lin * STANDARD_GRAVITY - self.v_int / GPS_DIR_INTEGRATOR_TAU_S) * DT
+            self.v_delay[self.v_delay_head] = self.v_int
+            self.v_delay_head = (self.v_delay_head + 1) % self.delay_n
+            v_old = self.v_delay[self.v_delay_head]
             self.gps_mean += (gps - self.gps_mean) * ema_alpha(GPS_DIR_HP_TAU_S)
             vg = gps - self.gps_mean
             a_c = ema_alpha(GPS_DIR_CORR_TAU_S)
-            self.cxy += (self.v_int * vg - self.cxy) * a_c
-            self.cxx2 += (self.v_int ** 2 - self.cxx2) * a_c
+            self.cxy += (v_old * vg - self.cxy) * a_c
+            self.cxx2 += (v_old ** 2 - self.cxx2) * a_c
             self.cyy2 += (vg * vg - self.cyy2) * a_c
             self.gps_dir_n += 1
+            self.learn_forward(lin_h, vg)
             corr = self.gps_corr()
-            if self.gps_dir_n >= GPS_DIR_MIN_TIME_S * FS and abs(corr) >= GPS_DIR_MIN_CORR:
+            if self.forward is None and self.gps_dir_n >= GPS_DIR_MIN_TIME_S * FS and abs(corr) >= GPS_DIR_MIN_CORR:
                 want = 1 if corr > 0 else -1
                 self.gps_locked = True
                 if want != self.sign:
@@ -366,13 +430,15 @@ def synthetic(seconds, seed=1, facing=1.0, catch_depth=0.45, gps=True):
     """Port of src/sim.cpp: rate sweeps 20 -> 32 -> 20 spm over two minutes.
 
     facing=-1 mounts the device the other way round; catch_depth (g) models smoother rowing.
-    GPS speed is held between 10 Hz fixes like the real receiver.
+    GPS speed is held between 10 Hz fixes and arrives late, like the real receiver.
     """
     rnd = random.Random(seed)
     w = 2 * math.pi / 120.0
     tilt = math.radians(35)
     rows = []
     gps_v = -1.0
+    fixes = []
+    late = int(round(GPS_SPEED_DELAY_S * 10))
     for i in range(int(seconds * FS)):
         t = i * DT
         rate = 26.0 - 6.0 * math.cos(w * t)
@@ -390,24 +456,343 @@ def synthetic(seconds, seed=1, facing=1.0, catch_depth=0.45, gps=True):
         ay = math.sin(tilt) * g - math.cos(tilt) * surge + noise() + vib
         az = math.cos(tilt) * g + math.sin(tilt) * surge + noise()
         if gps and i % 10 == 0:
-            gps_v = (3.2 + 0.08 * (rate - 20.0) + 0.35 * math.sin(2 * math.pi * (tau / period - 0.15))
-                     + rnd.uniform(-0.05, 0.05))
+            fixes.append(3.2 + 0.08 * (rate - 20.0) + 0.35 * math.sin(2 * math.pi * (tau / period - 0.15))
+                         + rnd.uniform(-0.05, 0.05))
+            gps_v = fixes[max(0, len(fixes) - 1 - late)]
         rows.append((t, ax, ay, az, 0, gps_v))
     return rows
 
 
 # ---- analysis -------------------------------------------------------------
 
-def run(rows, k, floor, minima, keep_trace=False):
-    det = StrokeDetector(k, floor, minima)
+def _run_once(rows, det, keep_trace):
     events, trace = [], []
     for t, ax, ay, az, _, gps in rows:
         x, thr, ev, fin = det.process(t, ax, ay, az, gps)
         if ev:
             events.append(ev)
         if keep_trace:
-            trace.append((t, x, thr, ev is not None, fin))
+            trace.append((t, x, thr, ev is not None, fin, det.sign * det.p_lin))
+    return events, trace
+
+
+def gps_delay_of(info):
+    """How late GPS speed is in a recording, from its info file.
+
+    Sessions written before the delay was logged: the receiver on the water is
+    half a second late, the simulator of that time was not late at all.
+    """
+    try:
+        return float(info["gps_speed_delay_s"])
+    except (KeyError, TypeError, ValueError):
+        return 0.0 if info.get("build") == "simulation" else GPS_SPEED_DELAY_S
+
+
+def direction_note(det):
+    h = getattr(det, "hindsight", None)
+    if h:
+        return "forward from GPS over the whole recording, r %.2f" % h["corr"]
+    return "forward from %s as it went, r %+.2f" % ("GPS" if det.gps_locked else "the stroke shape", det.gps_corr())
+
+
+def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS_SPEED_DELAY_S):
+    """Replays a log. Trace rows: t, surge, threshold, catch, finish, unfiltered surge.
+
+    Without hindsight this is what the device does. With it, forward is first
+    learned from GPS over the whole recording and the log is replayed with that
+    direction from the first sample, so the strokes before the device was sure
+    come out the right way up too. det.hindsight says whether that happened.
+    """
+    if hindsight:
+        rows = rows if isinstance(rows, list) else list(rows)
+    det = StrokeDetector(k, floor, minima, gps_delay=gps_delay)
+    events, trace = _run_once(rows, det, keep_trace)
+    det.hindsight = None
+    if hindsight:
+        learned = det.learned_forward()
+        if learned and learned[1] >= GPS_DIR_MIN_CORR and learned[2] >= HINDSIGHT_MIN_S:
+            live = [e["t"] for e in events]
+            det = StrokeDetector(k, floor, minima, forward=learned[0], gps_delay=gps_delay)
+            events, trace = _run_once(rows, det, keep_trace)
+            moved = 0
+            for e in events:
+                i = bisect.bisect_left(live, e["t"])
+                near = [abs(e["t"] - m) for m in live[max(0, i - 1):i + 1]]
+                if not near or min(near) >= 0.3:
+                    moved += 1
+            det.hindsight = {"corr": learned[1], "seconds": learned[2], "moved": moved}
     return events, trace, det
+
+
+MIN_SPLIT_SPEED_MPS = 0.5
+SPLIT_AVG_STROKES = 3
+STROKE_HEADER = (
+    "elapsed_s,stroke,rate_spm,interval_s,drive_s,recovery_s,ratio,split_s,speed_mps,dps_m,"
+    "distance_m,peak_decel_g,check_mg,bounce_mg,lat,lon,t_s,rescued,split3_s\n"
+)
+
+
+def _sibling(imu_path, stream):
+    if imu_path.endswith("_imu.csv"):
+        return imu_path[: -len("_imu.csv")] + "_" + stream + ".csv"
+    return os.path.splitext(imu_path)[0] + "_" + stream + ".csv"
+
+
+def _read_info(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        return {r["key"]: r["value"] for r in csv.DictReader(f) if r.get("key")}
+
+
+def _newline(path):
+    with open(path, "rb") as f:
+        chunk = f.read(4096)
+    return "\r\n" if b"\r\n" in chunk else "\n"
+
+
+def _split_from_speed(speed):
+    return 500.0 / speed if speed >= MIN_SPLIT_SPEED_MPS else 0.0
+
+
+def _mean_speed(times, speeds, t0, t1):
+    i = bisect.bisect_left(times, t0)
+    j = bisect.bisect_right(times, t1)
+    total = 0.0
+    n = 0
+    for v in speeds[i:j]:
+        if v >= 0:
+            total += v
+            n += 1
+    return total / n if n >= 3 else -1.0
+
+
+def _seconds_track(path):
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        for r in csv.DictReader(f):
+            try:
+                out.append((float(r["elapsed_s"]), float(r.get("distance_m") or 0),
+                            float(r.get("lat") or 0), float(r.get("lon") or 0)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _place(track, elapsed):
+    if not track:
+        return 0.0, 0.0, 0.0
+    if elapsed <= track[0][0]:
+        return track[0][1], track[0][2], track[0][3]
+    if elapsed >= track[-1][0]:
+        return track[-1][1], track[-1][2], track[-1][3]
+    for i in range(1, len(track)):
+        a, b = track[i - 1], track[i]
+        if elapsed <= b[0]:
+            span = b[0] - a[0] or 1.0
+            u = (elapsed - a[0]) / span
+            dist = a[1] + (b[1] - a[1]) * u
+            src = b if u >= 0.5 else a
+            return dist, src[2], src[3]
+    return track[-1][1], track[-1][2], track[-1][3]
+
+
+def _write_lines(path, lines):
+    nl = _newline(path) if os.path.exists(path) else "\n"
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
+        f.write(nl.join(line.rstrip("\r\n") for line in lines) + nl)
+    os.replace(tmp, path)
+
+
+REBUILT_KEY = "strokes_rebuilt"
+ORIGINAL_DIR = "original"
+
+
+def _keep_originals(imu_path, info):
+    """Before the first rebuild, copies the device's own files to original/ next to them."""
+    if info.get(REBUILT_KEY):
+        return []  # what is here was already rebuilt, so it is not the device's to keep
+    folder = os.path.join(os.path.dirname(os.path.abspath(imu_path)), ORIGINAL_DIR)
+    kept = []
+    for stream in ("strokes", "seconds", "laps"):
+        src = _sibling(imu_path, stream)
+        dst = os.path.join(folder, os.path.basename(src))
+        if os.path.exists(src) and not os.path.exists(dst):
+            os.makedirs(folder, exist_ok=True)
+            shutil.copy2(src, dst)
+            kept.append(dst)
+    return kept
+
+
+def _mark_rebuilt(info_path, when):
+    """Notes in the session's info file that its strokes no longer come from the device."""
+    lines = ["key,value"]
+    if os.path.exists(info_path):
+        with open(info_path, newline="", encoding="utf-8", errors="replace") as f:
+            lines = [line for line in f.read().splitlines() if line.strip()]
+    lines = [line for line in lines if not line.startswith(REBUILT_KEY + ",")]
+    lines.append("%s,%s" % (REBUILT_KEY, when))
+    _write_lines(info_path, lines)
+
+
+def rebuild_session(imu_path):
+    """Replace a session's stroke file with what the current detector finds.
+
+    Keeps the session's own K, floor and minima. Speed, split and position come
+    from the recording. The per-second rate and each lap's stroke count follow
+    the new catches, so the rest of the session agrees with the stroke file.
+    The device's own files are copied to original/ first.
+    """
+    info_path = _sibling(imu_path, "info")
+    info = _read_info(info_path)
+    k = float(info.get("threshold_k", 1.8))
+    floor = float(info.get("threshold_floor_g", 0.12))
+    minima = info.get("minima_threshold") == "1"
+    rows = load_log(imu_path)
+    if not rows:
+        raise SystemExit("no samples in %s" % imu_path)
+    origin = float(info["start_t_s"]) if info.get("start_t_s") else rows[0][0]
+    events, _, det = run(rows, k, floor, minima, hindsight=True, gps_delay=gps_delay_of(info))
+    kept = _keep_originals(imu_path, info)
+    times = [r[0] for r in rows]
+    speeds = [r[5] for r in rows]
+    track = _seconds_track(_sibling(imu_path, "seconds"))
+
+    paces = []
+    split3 = 0.0
+    lines = [STROKE_HEADER.rstrip("\n")]
+    rescued = 0
+    for n, ev in enumerate(events, start=1):
+        elapsed = ev["t"] - origin
+        interval, drive, rec = ev["interval"], ev["drive"], ev["recovery"]
+        ratio = rec / drive if drive > 0 else 0.0
+        if interval > 0:
+            mean_v = _mean_speed(times, speeds, ev["t"] - interval, ev["t"])
+            speed = mean_v if mean_v > 0 else 0.0
+            raw = _split_from_speed(speed)
+            dps = speed * interval if mean_v > 0 else 0.0
+            if mean_v > 0:
+                paces.append((interval, mean_v))
+                paces = paces[-SPLIT_AVG_STROKES:]
+                dist = sum(i * s for i, s in paces)
+                span = sum(i for i, _ in paces)
+                split3 = _split_from_speed(dist / span) if span else 0.0
+            elif not paces:
+                split3 = 0.0
+        else:
+            speed = raw = dps = split3 = 0.0
+            paces = []
+        if ev["rescued"]:
+            rescued += 1
+        dist_m, lat, lon = _place(track, elapsed)
+        lines.append(
+            "%.2f,%d,%.1f,%.3f,%.3f,%.3f,%.2f,%.1f,%.2f,%.2f,%.1f,%.3f,%.1f,%.1f,%.7f,%.7f,%.3f,%d,%.1f"
+            % (elapsed, n, ev["rate"], interval, drive, rec, ratio, raw, speed, dps, dist_m,
+               ev["peak"], ev["check"], ev["bounce"], lat, lon, ev["t"], 1 if ev["rescued"] else 0, split3)
+        )
+    strokes_path = _sibling(imu_path, "strokes")
+    _write_lines(strokes_path, lines)
+    _rewrite_rates(_sibling(imu_path, "seconds"), events, origin)
+    laps = _rewrite_laps(_sibling(imu_path, "laps"), events, origin)
+    _mark_rebuilt(info_path, time.strftime("%Y-%m-%d"))
+    print("%s  strokes %d  rescued %d  laps %d  (K %.2f, floor %.2f g%s, %s)"
+          % (os.path.basename(strokes_path), len(events), rescued, laps, k, floor,
+             ", minima" if minima else "", direction_note(det)))
+    if kept:
+        print("  device files kept in %s" % os.path.dirname(kept[0]))
+    return len(events), rescued
+
+
+def _rate_at(events, origin, elapsed):
+    chosen = None
+    for ev in events:
+        if ev["t"] - origin <= elapsed:
+            chosen = ev
+        else:
+            break
+    if chosen is None or elapsed - (chosen["t"] - origin) > STROKE_TIMEOUT_S:
+        return 0.0
+    return chosen["rate"]
+
+
+def _rewrite_rates(path, events, origin):
+    if not os.path.exists(path):
+        return
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines()
+    if not lines:
+        return
+    header = lines[0].split(",")
+    try:
+        ri = header.index("rate_spm")
+        ei = header.index("elapsed_s")
+    except ValueError:
+        return
+    out = [lines[0]]
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = line.split(",")
+        try:
+            elapsed = float(parts[ei])
+        except (ValueError, IndexError):
+            out.append(line)
+            continue
+        parts[ri] = "%.1f" % _rate_at(events, origin, elapsed)
+        out.append(",".join(parts))
+    _write_lines(path, out)
+
+
+def _rewrite_laps(path, events, origin):
+    if not os.path.exists(path):
+        return 0
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines()
+    if len(lines) < 2:
+        return 0
+    header = lines[0].split(",")
+    try:
+        ei = header.index("elapsed_s")
+        ri = header.index("avg_rate_spm")
+        si = header.index("strokes")
+    except ValueError:
+        return 0
+    ends = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        try:
+            ends.append(float(line.split(",")[ei]))
+        except (ValueError, IndexError):
+            ends.append(None)
+    out = [lines[0]]
+    prev = -1.0
+    written = 0
+    data_i = 0
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = line.split(",")
+        end = ends[data_i]
+        data_i += 1
+        if end is None:
+            out.append(line)
+            continue
+        if data_i == len(ends):
+            mine = [ev for ev in events if ev["t"] - origin > prev]
+        else:
+            mine = [ev for ev in events if prev < ev["t"] - origin <= end]
+        prev = end
+        rates = [ev["rate"] for ev in mine if ev["rate"] > 0]
+        parts[si] = str(len(mine))
+        parts[ri] = "%.1f" % (sum(rates) / len(rates) if rates else 0.0)
+        out.append(",".join(parts))
+        written += 1
+    _write_lines(path, out)
+    return written
 
 
 def summarize(events, rows, label=""):
@@ -458,29 +843,42 @@ def main():
     ap.add_argument("--minima", action="store_true", help="threshold from last 5 catch depths")
     ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--strokes", metavar="CSV", help="write detected strokes to CSV")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="rewrite this session's strokes, per-second rate and lap counts")
+    ap.add_argument("--hindsight", action="store_true",
+                    help="settle forward from GPS over the whole recording first (--rebuild always does)")
     ap.add_argument("--plot", nargs=2, type=float, metavar=("FROM", "TO"))
     args = ap.parse_args()
 
+    delay = GPS_SPEED_DELAY_S
     if args.synthetic:
         rows = synthetic(args.synthetic)
     elif args.log:
         rows = load_log(args.log)
+        delay = gps_delay_of(_read_info(_sibling(args.log, "info")))
     else:
         ap.error("give a log file or --synthetic")
     print(f"{len(rows)} samples, {(rows[-1][0] - rows[0][0]):.0f} s")
+
+    if args.rebuild:
+        if not args.log:
+            ap.error("--rebuild needs a session log")
+        rebuild_session(args.log)
+        return
 
     if args.sweep:
         for minima in (False, True):
             for k in (1.4, 1.6, 1.8, 2.0, 2.2, 2.5):
                 for floor in (0.06, 0.09, 0.12, 0.15):
-                    events, _, _ = run(rows, k, floor, minima)
+                    events, _, _ = run(rows, k, floor, minima, gps_delay=delay)
                     summarize(events, rows, f"K {k:.1f} floor {floor:.2f} minima {int(minima)}  ")
         return
 
-    events, trace, det = run(rows, args.k, args.floor, args.minima, keep_trace=bool(args.plot))
+    events, trace, det = run(rows, args.k, args.floor, args.minima, keep_trace=bool(args.plot),
+                             hindsight=args.hindsight, gps_delay=delay)
     summarize(events, rows)
     print(f"surge axis {tuple(round(a * det.sign, 2) for a in det.axis)}  skew {det.skew():+.2f}  "
-          f"direction from {'GPS' if det.gps_locked else 'skew'} (corr {det.gps_corr():+.2f})")
+          f"{direction_note(det)}")
     if args.strokes:
         with open(args.strokes, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(events[0].keys()))

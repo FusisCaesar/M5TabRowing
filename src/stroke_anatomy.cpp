@@ -22,10 +22,13 @@ constexpr float MIN_CATCH_DEPTH_G = 0.05f;
 constexpr float HALF_DEPTH = 0.50f;
 constexpr float DIP_START_FRAC = 0.25f;
 constexpr float NOTCH_FRAC = 0.40f;
-constexpr float NOTCH_GAP_S = 0.030f;
+constexpr float NOTCH_RISE_FRAC = 0.15f;
+constexpr float NOTCH_RISE_MIN_G = 0.02f;
 constexpr float FINISH_WINDOW_S = 0.35f;
 constexpr float SETTLE_G = 0.03f;
 constexpr float APPROACH_MARGIN_G = 0.025f;
+constexpr float RUN_SMOOTH_S = 0.15f;
+constexpr float RUN_MIN_S = 0.20f;
 constexpr float SERIES_DT = 0.01f;
 constexpr int MAX_N = 700;
 
@@ -185,22 +188,35 @@ bool analyse(const float* preroll, const float* accel, float driveS, float recS,
     float dipEnd = crossRight(n, imin, 0);
     if (dipEnd > 0.30f) dipEnd = widthR;
 
+    // A notch is a dip of its own: the curve has to come back up by `rise` before the
+    // next one counts, so ripple on the way down or up is not a second catch.
     int notches = 0;
-    float lastNotch = -1e9f;
+    float rise = fmaxf(NOTCH_RISE_FRAC * depth, NOTCH_RISE_MIN_G);
     int iStart = indexAt(gT, n, dipStart);
     int iEnd = indexAt(gT, n, dipEnd);
-    for (int i = iStart + 1; i < iEnd && i < n - 1; i++) {
-        if (gA[i] <= gA[i - 1] && gA[i] < gA[i + 1] && gA[i] < -NOTCH_FRAC * depth &&
-            gT[i] - lastNotch >= NOTCH_GAP_S) {
-            notches++;
-            lastNotch = gT[i];
+    bool falling = true;
+    float low = gA[iStart], high = 0;
+    for (int i = iStart; i <= iEnd && i < n; i++) {
+        float a = gA[i];
+        if (falling) {
+            if (a < low) {
+                low = a;
+            } else if (a >= low + rise) {
+                if (low < -NOTCH_FRAC * depth) notches++;
+                falling = false;
+                high = a;
+            }
+        } else if (a > high) {
+            high = a;
+        } else if (a <= high - rise) {
+            falling = true;
+            low = a;
         }
     }
 
     auto vel = [&](float time) { return atTime(gT, gV, n, time); };
     f.catchDepthG = depth;
     f.catchWidthS = fmaxf(0, widthR - widthL);
-    f.catchLoss = fmaxf(0, vel(dipStart) - vel(dipEnd));
     f.notches = (float)(notches > 0 ? notches : 1);
 
     int iDrive = indexAt(gT, n, fmaxf(dipEnd, 0));
@@ -276,16 +292,34 @@ bool analyse(const float* preroll, const float* accel, float driveS, float recS,
     f.approachLeadS = fmaxf(0, interval - approachT);
     f.approachLoss = fmaxf(0, vel(approachT) - vel(interval));
 
-    float runSum = 0;
-    int runCount = 0;
+    // Run: how unevenly the boat glides between the finish and the approach, as the
+    // scatter around a straight line. Smoothed first, so it reads the shape of the
+    // glide and not the ripple that one stroke has and an average does not.
     int iRun0 = indexAt(gT, n, finishEnd);
     int iRun1 = indexAt(gT, n, approachT);
-    for (int i = iRun0; i <= iRun1 && i < n; i++) {
-        runSum += gA[i];
-        runCount++;
+    int runLen = iRun1 - iRun0 + 1;
+    if (runLen - 1 >= (int)lroundf(RUN_MIN_S / SERIES_DT)) {
+        const int halfW = (int)lroundf(RUN_SMOOTH_S / SERIES_DT) / 2;
+        double sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+        for (int k = 0; k < runLen; k++) {
+            int i = iRun0 + k;
+            int a = i - halfW < iRun0 ? iRun0 : i - halfW;
+            int c = i + halfW > iRun1 ? iRun1 : i + halfW;
+            float sum = 0;
+            for (int j = a; j <= c; j++) sum += gA[j];
+            double y = sum / (float)(c - a + 1);
+            sx += k;
+            sy += y;
+            sxx += (double)k * k;
+            sxy += k * y;
+            syy += y * y;
+        }
+        double cxx = sxx - sx * sx / runLen;
+        double cxy = sxy - sx * sy / runLen;
+        double cyy = syy - sy * sy / runLen;
+        double resid = cxx > 1e-9 ? cyy - cxy * cxy / cxx : cyy;
+        f.runUnevenMg = (float)(sqrt(fmax(resid, 0.0) / runLen) * 1000.0);
     }
-    float runMean = runCount > 0 ? runSum / runCount : runBase;
-    f.runDecelMg = fmaxf(0, -runMean * 1000.0f);
 
     int iFast = indexAt(gT, n, 0);
     for (int i = iFast; i < n; i++)
@@ -297,6 +331,9 @@ bool analyse(const float* preroll, const float* accel, float driveS, float recS,
     if (finishEnd < driveS) finishEnd = driveS;
     if (approachT < finishEnd) approachT = finishEnd;
     if (approachT > interval) approachT = interval;
+
+    // From the catch on: what goes before it is the approach's, so the two do not overlap.
+    f.catchLoss = fmaxf(0, vel(0) - vel(dipEnd));
 
     b.catch0 = dipStart;
     b.catch1 = dipEnd;
@@ -510,14 +547,19 @@ bool Recorder::cut(double catchT, double prevCatchT, double finishT, Cycle& out)
                 nA[b]++;
             }
         }
-        if (s.gps >= 0 && out.gpsN < GPS_MAX && (s.gps != prevGps || s.t - prevGpsT >= 0.08)) {
-            out.gpsT[out.gpsN] = (float)(s.t - prevCatchT);
-            out.gpsV[out.gpsN] = s.gps;
+        if (s.gps >= 0 && (s.gps != prevGps || s.t - prevGpsT >= 0.08)) {
             if (s.t >= prevCatchT) {
                 speedSum += s.gps;
                 speedN++;
             }
-            out.gpsN++;
+            // The receiver reports speed late, so a fix is drawn where the boat was doing
+            // that speed. The last half second of the stroke has no fix yet when it is cut.
+            double shown = s.t - (double)cfg::GPS_SPEED_DELAY_S;
+            if (out.gpsN < GPS_MAX && shown >= prevCatchT - (double)PREROLL_S) {
+                out.gpsT[out.gpsN] = (float)(shown - prevCatchT);
+                out.gpsV[out.gpsN] = s.gps;
+                out.gpsN++;
+            }
             prevGps = s.gps;
             prevGpsT = s.t;
         }
