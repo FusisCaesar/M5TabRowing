@@ -1713,21 +1713,20 @@ $("view").addEventListener("change", () => {
   if (state.id && !rateMode()) reloadHints().catch((err) => setStatus(err.message));
 });
 $("open").addEventListener("click", async () => {
-  const path = $("path").value.trim();
-  if (!path) return;
-  setStatus("Reading " + path + "…");
+  const input = $("file");
+  const files = input.files ? [...input.files] : [];
+  if (!files.length) return;
+  setStatus("Reading " + files.map((file) => file.name).join(", ") + "…");
+  const body = new FormData();
+  for (const file of files) body.append("file", file, file.name);
   try {
-    const opened = await getJSON("/api/open", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    });
+    const opened = await getJSON("/api/upload", { method: "POST", body });
+    input.value = "";
     await loadSessions(opened.id);
   } catch (err) {
     setStatus(err.message);
   }
 });
-$("path").addEventListener("keydown", (e) => { if (e.key === "Enter") $("open").click(); });
 
 renderLegend();
 loadSessions().catch((err) => setStatus(err.message));

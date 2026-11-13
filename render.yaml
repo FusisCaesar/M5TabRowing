@@ -1,0 +1,19 @@
+# The stroke viewer. Analysis stays in Python, so this is a web service rather
+# than a static site. Uploads live on the instance disk and disappear when a
+# free instance spins down or the service restarts.
+services:
+  - type: web
+    name: m5tab-stroke
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python tools/stroke_view.py
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - tools/**
+        - requirements.txt
+        - render.yaml
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"

@@ -7,16 +7,22 @@ Zoom with the wheel, drag to pan, and click a mark to look at just that part.
 Usage:
   python tools/stroke_view.py
   python tools/stroke_view.py --port 8765 --recordings recordings
+
+On Render the process is started with no arguments. It then listens on 0.0.0.0
+and the PORT Render sets. Locally, with no PORT, it stays on 127.0.0.1.
 """
 import argparse
 import csv
 import json
 import math
 import os
+import re
 import sys
 import threading
 import traceback
 import webbrowser
+from email import message_from_bytes
+from email.policy import default as email_default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -36,6 +42,10 @@ RATE_MIN = 3
 
 _sessions = {}
 _root = "recordings"
+# A raw log of a long outing is far bigger than this. The free Render instance has
+# 512 MB, and the whole recording is held in memory while it is read.
+MAX_UPLOAD = 80 * 1024 * 1024
+_UPLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,120}\.csv\Z")
 
 
 def band_of(rate):
@@ -325,22 +335,57 @@ def load_session(imu_path):
     return session
 
 
+def _uploads_dir():
+    return os.path.join(_root, "uploads")
+
+
+def _imu_file(sid):
+    """The recording to open for this id. An upload wins over a file already on disk."""
+    if not sid or os.path.basename(sid.replace("\\", "/")) != sid or ".." in sid:
+        return None
+    name = sid if sid.endswith("_imu.csv") else sid + "_imu.csv"
+    if not _UPLOAD_NAME.match(name) or not name.endswith("_imu.csv"):
+        return None
+    for folder in (_uploads_dir(), _root):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _inside_root(path):
+    root = os.path.realpath(_root)
+    target = os.path.realpath(path)
+    return os.path.commonpath([root, target]) == root
+
+
 def list_sessions(root):
     found = []
     seen = set()
+    folders = []
+    uploads = os.path.join(root, "uploads")
+    if os.path.isdir(uploads):
+        folders.append(uploads)
     if os.path.isdir(root):
-        for name in sorted(os.listdir(root)):
+        folders.append(root)
+    for folder in folders:
+        for name in sorted(os.listdir(folder)):
             if not name.endswith("_imu.csv"):
                 continue
-            base = os.path.join(root, name[: -len("_imu.csv")])
+            base = os.path.join(folder, name[: -len("_imu.csv")])
             strokes = base + "_strokes.csv"
             sid = os.path.basename(base)
+            if sid in seen:
+                continue
             label = sid.replace("_", " ")
-            n = 0
-            if os.path.exists(strokes):
+            if sid in _sessions:
+                n = len(_sessions[sid].strokes)
+            elif os.path.exists(strokes):
                 with open(strokes, "r", encoding="utf-8", errors="replace") as f:
                     next(f, None)
                     n = sum(1 for line in f if line.strip())
+            else:
+                n = 0
             found.append({"id": sid, "name": label, "strokes": n})
             seen.add(sid)
     for session in _sessions.values():
@@ -856,22 +901,28 @@ def session_trace(session, t0, t1, n):
 def get_session(sid):
     if sid in _sessions:
         return _sessions[sid]
-    imu = None
-    for name in os.listdir(_root):
-        if name.endswith("_imu.csv") and name[: -len("_imu.csv")] == sid:
-            imu = os.path.join(_root, name)
-            break
-    if imu is None:
-        direct = sid if sid.endswith("_imu.csv") else sid + "_imu.csv"
-        if os.path.exists(direct):
-            imu = direct
-        elif os.path.exists(os.path.join(_root, direct)):
-            imu = os.path.join(_root, direct)
+    imu = _imu_file(sid)
     if imu is None:
         raise FileNotFoundError(sid)
     session = load_session(imu)
     _sessions[session.id] = session
     return session
+
+
+def _store_upload(name, data):
+    base = os.path.basename(str(name).replace("\\", "/"))
+    if not _UPLOAD_NAME.match(base) or not (base.endswith("_imu.csv") or base.endswith("_info.csv")):
+        raise ValueError("upload the _imu.csv, and the _info.csv beside it when you have one")
+    folder = _uploads_dir()
+    os.makedirs(folder, exist_ok=True)
+    dest = os.path.join(folder, base)
+    if not _inside_root(dest):
+        raise ValueError("upload the _imu.csv, and the _info.csv beside it when you have one")
+    with open(dest, "wb") as f:
+        f.write(data)
+    if base.endswith("_imu.csv"):
+        _sessions.pop(base[: -len("_imu.csv")], None)
+    return dest
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -900,6 +951,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, open(os.path.join(PAGE, "app.js"), "rb").read(), "text/javascript; charset=utf-8")
             elif url.path == "/style.css":
                 self._send(200, open(os.path.join(PAGE, "style.css"), "rb").read(), "text/css; charset=utf-8")
+            elif url.path == "/health":
+                self._send(200, "ok", "text/plain; charset=utf-8")
             elif url.path == "/api/sessions":
                 self._json(200, list_sessions(_root))
             elif url.path == "/api/session":
@@ -940,21 +993,54 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._json(500, {"error": str(exc)})
 
+    def _upload(self):
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0 or length > MAX_UPLOAD:
+            self._json(400, {"error": "the upload has to be one recording under 80 MB"})
+            return
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype:
+            self._json(400, {"error": "upload the _imu.csv, and the _info.csv beside it when you have one"})
+            return
+        raw = self.rfile.read(length)
+        head = ("Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % ctype).encode("utf-8")
+        msg = message_from_bytes(head + raw, policy=email_default)
+        saved = []
+        if msg.is_multipart():
+            for part in msg.iter_parts():
+                filename = part.get_filename()
+                if not filename:
+                    continue
+                payload = part.get_payload(decode=True) or b""
+                saved.append(_store_upload(filename, payload))
+        if not any(path.endswith("_imu.csv") for path in saved):
+            self._json(400, {"error": "upload the _imu.csv, and the _info.csv beside it when you have one"})
+            return
+        imu = next(path for path in saved if path.endswith("_imu.csv"))
+        session = load_session(imu)
+        _sessions[session.id] = session
+        self._json(200, {"id": session.id, "name": session.name, "strokes": len(session.strokes)})
+
     def do_POST(self):
         url = urlparse(self.path)
         try:
-            n = int(self.headers.get("Content-Length", "0"))
+            if url.path == "/api/upload":
+                self._upload()
+                return
+            n = int(self.headers.get("Content-Length", "0") or "0")
             body = json.loads(self.rfile.read(n) or b"{}")
             if url.path != "/api/open":
                 self._json(404, {"error": "not found"})
                 return
             path = str(body.get("path", "")).strip().strip('"')
-            if not path or not os.path.exists(path):
-                self._json(400, {"error": "path not found"})
+            if not path or not os.path.isfile(path) or not _inside_root(path):
+                self._json(400, {"error": "that file is not in the recordings folder"})
                 return
             session = load_session(path)
             _sessions[session.id] = session
             self._json(200, {"id": session.id, "name": session.name, "strokes": len(session.strokes)})
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
         except Exception as exc:
             traceback.print_exc()
             self._json(500, {"error": str(exc)})
@@ -963,13 +1049,19 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global _root
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--recordings", default="recordings")
+    ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--recordings", default=None)
     ap.add_argument("--open", action="store_true", help="open the browser")
     args = ap.parse_args()
-    _root = args.recordings
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    url = "http://127.0.0.1:%d/" % args.port
+    # Render sets PORT and reaches the process on every interface. Locally neither
+    # is set, so the viewer stays on this machine only.
+    hosted = "PORT" in os.environ
+    port = args.port if args.port is not None else int(os.environ.get("PORT", "8765"))
+    host = "0.0.0.0" if hosted else "127.0.0.1"
+    _root = args.recordings or os.environ.get("RECORDINGS_DIR", "recordings")
+    os.makedirs(_root, exist_ok=True)
+    server = ThreadingHTTPServer((host, port), Handler)
+    url = "http://127.0.0.1:%d/" % port
     print("stroke viewer at", url)
     print("sessions from", os.path.abspath(_root))
     if args.open:
