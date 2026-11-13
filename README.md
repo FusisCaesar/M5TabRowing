@@ -522,6 +522,9 @@ Seconds without a GPS fix are left out of the GPX track.
    the outing was rowed in spells of hard and light strokes, no rate is marked:
    the rates then differ because the effort did, and the spells are listed
    instead, with how many there were, how long, and at what rate and split.
+   The viewer always lists one demo recording, the BBR race (S0018), from
+   `tools\demo\`, so there is something to look at before you load your own.
+   A session you upload under the same name replaces it in the list.
    The **Overview** tab (shown when the session has its `_seconds.csv`) is the
    device's Session review on the web: the track on a map, coloured from slow
    (red) to fast (green) with a start dot and a finish square, the distance, time,

@@ -1,0 +1,28 @@
+key,value
+build,hardware
+compiled,Nov 11 2026 08:50:58
+session,18
+start_t_s,2612.533
+start_utc,2026-11-11T10:20:49Z
+time_source,GPS
+imu_rate_hz,100
+threshold_k,1.80
+threshold_floor_g,0.120
+minima_threshold,0
+fusion,1
+raw_log,1
+ratio_shift,0.1
+crew,4
+lang,NL
+screen_flipped,0
+bandpass_hz,0.10-3.00
+min_stroke_interval_s,1.00
+max_dip_duration_s,0.80
+finish_fraction,0.35
+hr_sensor,Venu 3
+kind,race
+segment,BBR
+course_m,2678
+race_time_s,967.6
+race_distance_m,2661.6
+strokes_rebuilt,2026-11-13
