@@ -34,6 +34,8 @@ import overview
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "stroke_view")
+# A recording that ships with the viewer, so there is always something to look at.
+DEMO = os.path.join(HERE, "demo")
 BEST_FRAC = 0.95
 REF_MIN = 3
 AVG_N = 5
@@ -356,7 +358,7 @@ def _imu_file(sid):
     name = sid if sid.endswith("_imu.csv") else sid + "_imu.csv"
     if not _UPLOAD_NAME.match(name) or not name.endswith("_imu.csv"):
         return None
-    for folder in (_uploads_dir(), _root):
+    for folder in (_uploads_dir(), _root, DEMO):
         path = os.path.join(folder, name)
         if os.path.isfile(path):
             return path
@@ -378,6 +380,8 @@ def list_sessions(root):
         folders.append(uploads)
     if os.path.isdir(root):
         folders.append(root)
+    if os.path.isdir(DEMO):
+        folders.append(DEMO)
     for folder in folders:
         for name in sorted(os.listdir(folder)):
             if not name.endswith("_imu.csv"):
@@ -396,7 +400,8 @@ def list_sessions(root):
                     n = sum(1 for line in f if line.strip())
             else:
                 n = 0
-            found.append({"id": sid, "name": label, "strokes": n})
+            demo = os.path.realpath(folder) == os.path.realpath(DEMO)
+            found.append({"id": sid, "name": label + (" (demo)" if demo else ""), "strokes": n, "demo": demo})
             seen.add(sid)
     for session in _sessions.values():
         if session.id not in seen:

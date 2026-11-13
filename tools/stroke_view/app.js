@@ -304,6 +304,12 @@ function sessionBlurb(data, n) {
   if (data.logged && data.detected && data.logged !== data.detected) {
     text += " (file has " + data.logged + ")";
   }
+  const listed = state.sessions.find((s) => s.id === data.id);
+  if (listed && listed.demo) {
+    text += lang() === "nl"
+      ? " · Voorbeeldopname. Lees van Tab5 of open bestanden voor je eigen sessie."
+      : " · Demo recording. Read from Tab5 or open files for your own session.";
+  }
   return text;
 }
 
