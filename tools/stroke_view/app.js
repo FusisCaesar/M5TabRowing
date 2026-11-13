@@ -136,6 +136,14 @@ const COPY = {
 };
 
 const PHASE = ["#f6d5cc", "#d7e4f5", "#d4efef", "#ece7dc", "#f8e7c4"];
+// Chart surfaces: the card, the plot panels inside it, their grid and edge.
+const CARD = "#ffffff";
+const PANEL = "#fcfbf8";
+const EDGE = "#e7e1d5";
+const GRID = "#eee9de";
+const ZERO = "#c9c1b4";
+const MUTED = "#766f64";
+const FONT = "Segoe UI, system-ui, sans-serif";
 const DRIVE_BINS = 32;
 const REC_BINS = 64;
 
@@ -161,6 +169,8 @@ const state = {
   rates: null,
   ri: 0,
   rateOff: new Set(),
+  filter: { kind: "all", rate: null },
+  blurb: "",
 };
 
 function lang() { return $("lang").value === "nl" ? "nl" : "en"; }
@@ -188,6 +198,105 @@ function splitText(s) {
 }
 
 function setStatus(text) { $("status").textContent = text || ""; }
+
+// The page around the chart: labels, buttons and the welcome text.
+const CHROME = {
+  en: {
+    tagline: "Stroke analysis",
+    build: "Build your own",
+    language: "Language",
+    session: "Session",
+    crew: "Crew",
+    chart: "Chart",
+    view: "View",
+    oneStroke: "One stroke",
+    wholeSession: "Whole session",
+    byRate: "By rate",
+    thisStroke: "This stroke",
+    lastFive: "Last 5 at this rate",
+    openFiles: "Open files",
+    openFilesTip: "Choose the _imu.csv, and the _info.csv from the same session when you have it",
+    fromTab5: "Read from Tab5",
+    fromTab5Tip: "Read a recording from the tablet over USB. Chrome or Edge.",
+    welcomeTitle: "Read your rowing, stroke by stroke",
+    welcomeLead: "Load a recording from an M5Tab Rowing monitor. Every stroke is found again and shown as drive, finish, run and approach, with the same hint the device gives on the water.",
+    stepStop: "Stop the session on the tablet.",
+    stepRead: "Plug it into this computer with USB-C and press <b>Read from Tab5</b>, or open the recording files you copied off the card (the <code>_imu.csv</code> and the <code>_info.csv</code>).",
+    stepRead2: "Pick the session, step through the strokes, and switch the chart to the whole session or by rate.",
+    privacy: "Recordings are analysed on this server and are not kept: they are gone when it restarts. Reading from the tablet needs Chrome or Edge.",
+    buildTitle: "Do not have the device yet?",
+    buildLead: "It is an open project. You need an M5Stack Tab5, a GNSS unit and a microSD card. The firmware installs from your browser, no tools needed.",
+    buildStep1: "Get the parts: <b>M5Stack Tab5</b>, <b>M5Stack Unit GNSS</b> on Port A, and a FAT32 <b>microSD card</b>.",
+    buildStep2: "Open the install page in Chrome or Edge, plug in the Tab5 and press install.",
+    buildStep3: "Mount it rigidly in the boat, row, and come back here with the recording.",
+    installPage: "Open the install page",
+    sourceDocs: "Source and full guide on GitHub",
+    filterAll: "All",
+    filterTips: "Tips",
+    filterBest: "Best",
+    filterFilled: "Filled in",
+    filterRate: "Rate",
+    filterNone: "No strokes match this filter.",
+  },
+  nl: {
+    tagline: "Slaganalyse",
+    build: "Zelf bouwen",
+    language: "Taal",
+    session: "Sessie",
+    crew: "Bemanning",
+    chart: "Grafiek",
+    view: "Weergave",
+    oneStroke: "Eén slag",
+    wholeSession: "Hele sessie",
+    byRate: "Per slagfrequentie",
+    thisStroke: "Deze slag",
+    lastFive: "Laatste 5 op dit tempo",
+    openFiles: "Bestanden openen",
+    openFilesTip: "Kies de _imu.csv, en de _info.csv van dezelfde sessie als je die hebt",
+    fromTab5: "Lees van Tab5",
+    fromTab5Tip: "Lees een opname via USB van de tablet. Chrome of Edge.",
+    welcomeTitle: "Bekijk je roeien, slag voor slag",
+    welcomeLead: "Laad een opname van een M5Tab Rowing-monitor. Elke slag wordt opnieuw gevonden en getoond als haal, finish, doorglijden en aanloop, met dezelfde tip als het apparaat op het water geeft.",
+    stepStop: "Stop de sessie op de tablet.",
+    stepRead: "Sluit hem met USB-C aan op deze computer en kies <b>Lees van Tab5</b>, of open de opnamebestanden die je van de kaart hebt gekopieerd (de <code>_imu.csv</code> en de <code>_info.csv</code>).",
+    stepRead2: "Kies de sessie, loop door de slagen, en zet de grafiek op de hele sessie of per slagfrequentie.",
+    privacy: "Opnames worden op deze server geanalyseerd en niet bewaard: ze zijn weg als de server herstart. Lezen van de tablet kan alleen in Chrome of Edge.",
+    buildTitle: "Nog geen apparaat?",
+    buildLead: "Het is een open project. Je hebt een M5Stack Tab5, een GNSS-unit en een microSD-kaart nodig. De firmware installeer je vanuit de browser, zonder extra gereedschap.",
+    buildStep1: "Haal de onderdelen: <b>M5Stack Tab5</b>, <b>M5Stack Unit GNSS</b> op Port A en een FAT32 <b>microSD-kaart</b>.",
+    buildStep2: "Open de installatiepagina in Chrome of Edge, sluit de Tab5 aan en kies installeren.",
+    buildStep3: "Monteer hem stevig in de boot, roei, en kom terug met de opname.",
+    installPage: "Open de installatiepagina",
+    sourceDocs: "Broncode en volledige gids op GitHub",
+    filterAll: "Alle",
+    filterTips: "Tips",
+    filterBest: "Beste",
+    filterFilled: "Ingevuld",
+    filterRate: "Tempo",
+    filterNone: "Geen slagen voor dit filter.",
+  },
+};
+
+function applyChrome() {
+  const words = CHROME[lang()];
+  document.documentElement.lang = lang();
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    const text = words[el.dataset.i18n];
+    if (text != null) el.innerHTML = text;
+  }
+  for (const el of document.querySelectorAll("[data-i18n-title]")) {
+    const text = words[el.dataset.i18nTitle];
+    if (text != null) el.title = text;
+  }
+}
+
+function startLanguage() {
+  let saved = null;
+  try { saved = localStorage.getItem("stroke-lang"); } catch (err) { /* storage blocked */ }
+  const guess = saved || ((navigator.language || "en").toLowerCase().startsWith("nl") ? "nl" : "en");
+  $("lang").value = guess === "nl" ? "nl" : "en";
+  applyChrome();
+}
 
 function sessionBlurb(data, n) {
   let text = data.name + " · " + n + " strokes";
@@ -257,8 +366,11 @@ async function loadSessions(selectId) {
     opt.textContent = s.name + "  (" + s.strokes + ")";
     sel.appendChild(opt);
   }
+  $("welcome").hidden = state.sessions.length > 0;
+  document.body.classList.toggle("empty", state.sessions.length === 0);
   if (!state.sessions.length) {
-    setStatus("No sessions in recordings/. Type a path and press Open.");
+    $("app").hidden = true;
+    setStatus("");
     return;
   }
   const want = selectId && state.sessions.some((s) => s.id === selectId) ? selectId : state.sessions[0].id;
@@ -275,6 +387,7 @@ async function loadSession(id) {
   state.id = data.id;
   if (data.preroll_s) state.preroll = data.preroll_s;
   state.rateOff = new Set();
+  state.filter = { kind: "all", rate: null };
   state.rates = null;
   state.rows = data.strokes;
   state.s0 = state.s1 = state.span0 = state.span1 = null;
@@ -282,7 +395,8 @@ async function loadSession(id) {
   const first = state.rows.findIndex((r) => r.valid);
   state.i = first >= 0 ? first : 0;
   renderList();
-  setStatus(sessionBlurb(data, state.rows.length));
+  state.blurb = sessionBlurb(data, state.rows.length);
+  setStatus(state.blurb);
   $("app").hidden = false;
   if (sessionMode()) await enterSession();
   if (rateMode()) await loadRates();
@@ -468,8 +582,14 @@ function renderRateList() {
     const top = document.createElement("div");
     top.className = "top";
     const left = document.createElement("span");
-    left.textContent = row.spm + " spm   ·   " + row.n;
-    const right = document.createElement("span");
+    left.className = "who";
+    const spm = document.createElement("b");
+    spm.textContent = row.spm + " spm";
+    const count = document.createElement("span");
+    count.textContent = row.n + (lang() === "nl" ? " slagen" : " strokes");
+    left.append(spm, count);
+    const right = document.createElement("b");
+    right.className = "split";
     right.textContent = splitText(row.split);
     top.append(left, right);
     const hint = document.createElement("div");
@@ -493,19 +613,104 @@ function renderRateList() {
   });
 }
 
+function rowMatches(row) {
+  const f = state.filter;
+  if (f.rate != null && Math.round(row.rate || 0) !== f.rate) return false;
+  switch (f.kind) {
+    case "tip": return !!row.warn;
+    case "best": return !!row.best;
+    case "filled": return !!row.rescued;
+    default: return true;
+  }
+}
+
+// Badges above the stroke list: what kind of stroke, and at which rate.
+function renderFilters(list) {
+  const words = CHROME[lang()];
+  const rows = state.rows;
+  const kinds = [
+    ["all", words.filterAll, rows.length],
+    ["tip", words.filterTips, rows.filter((r) => r.warn).length],
+    ["best", words.filterBest, rows.filter((r) => r.best).length],
+    ["filled", words.filterFilled, rows.filter((r) => r.rescued).length],
+  ];
+  const perRate = new Map();
+  for (const row of rows) {
+    if (!row.rate) continue;
+    const spm = Math.round(row.rate);
+    perRate.set(spm, (perRate.get(spm) || 0) + 1);
+  }
+  const rates = [...perRate.entries()].filter(([, n]) => n >= 3).sort((a, b) => a[0] - b[0]);
+
+  const bar = document.createElement("div");
+  bar.className = "filters";
+  const badge = (label, count, on, onClick, extra) => {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "badge" + (on ? " on" : "") + (extra ? " " + extra : "");
+    el.setAttribute("aria-pressed", on ? "true" : "false");
+    el.append(document.createTextNode(label));
+    if (count != null) {
+      const n = document.createElement("span");
+      n.textContent = count;
+      el.append(n);
+    }
+    el.addEventListener("click", onClick);
+    return el;
+  };
+  const kindRow = document.createElement("div");
+  kindRow.className = "badges";
+  for (const [kind, label, count] of kinds) {
+    if (kind !== "all" && !count) continue;
+    kindRow.append(badge(label, count, state.filter.kind === kind, () => {
+      state.filter.kind = kind;
+      renderList();
+    }));
+  }
+  bar.append(kindRow);
+  if (rates.length > 1) {
+    const rateRow = document.createElement("div");
+    rateRow.className = "badges";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = words.filterRate;
+    rateRow.append(name);
+    for (const [spm, count] of rates) {
+      const el = badge(String(spm), null, state.filter.rate === spm, () => {
+        state.filter.rate = state.filter.rate === spm ? null : spm;
+        renderList();
+      }, "rate-badge");
+      el.title = count + " " + (lang() === "nl" ? "slagen" : "strokes");
+      rateRow.append(el);
+    }
+    bar.append(rateRow);
+  }
+  list.append(bar);
+}
+
 function renderList() {
   if (rateMode() && state.rates) { renderRateList(); return; }
   const list = $("list");
   list.innerHTML = "";
+  if (state.rows.length) renderFilters(list);
+  let shown = 0;
   state.rows.forEach((row, i) => {
+    if (!rowMatches(row)) return;
+    shown++;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "stroke" + (i === state.i ? " on" : "") + (row.warn ? " warn" : "");
     const top = document.createElement("div");
     top.className = "top";
     const left = document.createElement("span");
-    left.textContent = clock(row.elapsed) + "   " + (row.rate ? row.rate.toFixed(1) : "—") + " spm";
-    const right = document.createElement("span");
+    left.className = "who";
+    const time = document.createElement("b");
+    time.textContent = clock(row.elapsed);
+    const spm = document.createElement("span");
+    spm.textContent = (row.rate ? row.rate.toFixed(1) : "—") + " spm";
+    left.append(time, spm);
+    const right = document.createElement("b");
+    right.className = "split";
     right.textContent = splitText(row.split);
     top.append(left, right);
     const hint = document.createElement("div");
@@ -535,6 +740,14 @@ function renderList() {
     });
     list.append(btn);
   });
+  if (state.rows.length && !shown) {
+    const none = document.createElement("div");
+    none.className = "none";
+    none.textContent = CHROME[lang()].filterNone;
+    list.append(none);
+  }
+  const on = list.querySelector(".stroke.on");
+  if (on) on.scrollIntoView({ block: "nearest" });
 }
 
 function renderHint() {
@@ -609,10 +822,26 @@ function renderChips() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "chip" + (state.focus === id ? " on" : "") + (d.focus === id && d.warn ? " hot" : "");
-    btn.textContent = names[id] + "  " + chipValue(id, d);
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = names[id];
+    const v = document.createElement("span");
+    v.className = "v";
+    v.textContent = chipValue(id, d);
+    btn.append(k, v);
     btn.addEventListener("click", () => onChip(id));
     box.append(btn);
   }
+  fadeChips();
+}
+
+// The chip row scrolls sideways when it is wider than the page. A fade on the
+// right edge says there is more.
+function fadeChips() {
+  const box = $("chips");
+  const more = box.scrollWidth > box.clientWidth + 2;
+  box.classList.toggle("more", more);
+  box.classList.toggle("end", more && box.scrollLeft + box.clientWidth >= box.scrollWidth - 2);
 }
 
 function zoomSpan(id, d) {
@@ -814,6 +1043,7 @@ function renderLegend() {
   });
   $("help").textContent = session ? copy().sessionHelp : rate ? copy().rateHelp : copy().help;
   $("chips").hidden = session;
+  fadeChips();
 }
 
 function sampleAt(t, v, time) {
@@ -840,8 +1070,113 @@ function refPoints(d) {
   return pts;
 }
 
+// Round tick values that fit a range, about `want` of them.
+function niceTicks(lo, hi, want) {
+  const span = hi - lo;
+  if (!(span > 0)) return [lo];
+  const rough = span / Math.max(1, want);
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const unit = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((s) => s >= rough) || 10 * pow;
+  const out = [];
+  for (let v = Math.ceil(lo / unit - 1e-9) * unit; v <= hi + 1e-9; v += unit) out.push(Math.abs(v) < unit * 1e-6 ? 0 : v);
+  out.unit = unit;
+  return out;
+}
+
+function roundedRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// The two plot panels, drawn under the phase bands.
+function paintPanels(ctx, box) {
+  ctx.fillStyle = PANEL;
+  ctx.strokeStyle = EDGE;
+  ctx.lineWidth = 1;
+  for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+    roundedRect(ctx, box.L + 0.5, top + 0.5, box.R - box.L - 1, bottom - top - 1, 4);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+function panelTitles(kind) {
+  const nl = lang() === "nl";
+  return {
+    accel: nl ? "Versnelling (g)" : "Acceleration (g)",
+    speed: nl ? "Snelheid (m/s)" : "Speed (m/s)",
+    time: kind === "session" ? "" : nl ? "seconden vanaf de haal" : "seconds from the catch",
+  };
+}
+
+// Grid lines and value labels for both panels, with a title above each.
+function drawGrid(ctx, box, aRange, vRange, xs, kind) {
+  const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
+  const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
+  ctx.save();
+  ctx.lineWidth = 1;
+  for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+    ctx.strokeStyle = GRID;
+    ctx.beginPath();
+    for (const x of xs) {
+      ctx.moveTo(Math.round(x) + 0.5, top + 1);
+      ctx.lineTo(Math.round(x) + 0.5, bottom - 1);
+    }
+    ctx.stroke();
+  }
+  ctx.font = "11px " + FONT;
+  ctx.fillStyle = MUTED;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  const rows = [
+    [niceTicks(aRange[0], aRange[1], 4), Ya, box.aT, box.aB, true],
+    [niceTicks(vRange[0], vRange[1], 4), Yv, box.vT, box.vB, false],
+  ];
+  for (const [ticks, Y, top, bottom, signed] of rows) {
+    const tenths = ticks.unit * 10;
+    const dec = ticks.unit >= 1 ? 0 : ticks.unit >= 0.1 && Math.abs(tenths - Math.round(tenths)) < 1e-6 ? 1 : 2;
+    for (const v of ticks) {
+      const y = Math.round(Y(v)) + 0.5;
+      if (y < top + 5 || y > bottom - 5) continue;
+      ctx.strokeStyle = v === 0 && signed ? ZERO : GRID;
+      ctx.beginPath();
+      ctx.moveTo(box.L + 1, y);
+      ctx.lineTo(box.R - 1, y);
+      ctx.stroke();
+      ctx.fillText((signed && v > 0 ? "+" : "") + v.toFixed(dec), box.L - 8, y);
+    }
+  }
+  const names = panelTitles(kind);
+  ctx.font = "600 11px " + FONT;
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#4a443a";
+  ctx.fillText(names.accel, box.L, box.aT - 7);
+  ctx.fillText(names.speed, box.L, box.vT - 7);
+  if (names.time) {
+    ctx.font = "11px " + FONT;
+    ctx.fillStyle = MUTED;
+    ctx.textAlign = "right";
+    ctx.fillText(names.time, box.R, box.vT - 7);
+  }
+  ctx.restore();
+}
+
+function strokeTicks(t0, t1) {
+  const span = t1 - t0;
+  const step = span > 2 ? 0.5 : span > 0.8 ? 0.2 : span > 0.3 ? 0.1 : 0.02;
+  const out = [];
+  for (let t = Math.ceil(t0 / step) * step; t <= t1 + 1e-6; t += step) out.push(t);
+  return { step, times: out };
+}
+
 function layoutOf(w, h) {
-  const L = 54, R = w - 12, top = 22, gap = 28, axis = 18;
+  const L = 54, R = w - 14, top = 26, gap = 34, axis = 22;
   const inner = Math.max(80, h - top - gap - axis);
   const aH = Math.round(inner * 0.62);
   return { L, R, aT: top, aB: top + aH, vT: top + aH + gap, vB: h - axis, axis: h - 4 };
@@ -947,11 +1282,11 @@ function draw() {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#faf7f1";
+  ctx.fillStyle = CARD;
   ctx.fillRect(0, 0, w, h);
   const d = state.stroke;
   if (!d || !d.valid || !d.curve) {
-    ctx.fillStyle = "#6d675e";
+    ctx.fillStyle = MUTED;
     ctx.font = "16px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(copy().unread, w / 2, h / 2);
@@ -988,37 +1323,18 @@ function draw() {
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
 
+  paintPanels(ctx, box);
   drawBands(ctx, d.bounds, X, box);
-
-  const hline = (y, panel, color) => {
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(box.L, y);
-    ctx.lineTo(box.R, y);
-    ctx.stroke();
-  };
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "#e4ddd0";
-  hline(Ya(0), "a", "#c9c1b4");
-  hline(Yv((vRange[0] + vRange[1]) / 2), "v", "#e4ddd0");
-  ctx.fillStyle = "#6d675e";
-  ctx.font = "11px Segoe UI, sans-serif";
-  ctx.textAlign = "right";
-  ctx.textBaseline = "middle";
-  const place = (y, top, bot) => Math.min(bot - 8, Math.max(top + 8, y));
-  for (const g of [aRange[0], 0, aRange[1]]) {
-    ctx.fillText((g >= 0 ? "+" : "") + g.toFixed(1), box.L - 6, place(Ya(g), box.aT, box.aB));
-  }
-  for (const v of [vRange[0], (vRange[0] + vRange[1]) / 2, vRange[1]]) {
-    ctx.fillText(v.toFixed(1), box.L - 6, place(Yv(v), box.vT, box.vB));
-  }
+  drawGrid(ctx, box, aRange, vRange, strokeTicks(state.t0, state.t1).times.map(X), "stroke");
 
   const vline = (t, color) => {
     if (t < state.t0 || t > state.t1) return;
     ctx.strokeStyle = color;
     ctx.beginPath();
-    ctx.moveTo(X(t), box.aT);
-    ctx.lineTo(X(t), box.vB);
+    for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+      ctx.moveTo(X(t), top);
+      ctx.lineTo(X(t), bottom);
+    }
     ctx.stroke();
   };
   ctx.lineWidth = 1.5;
@@ -1036,6 +1352,8 @@ function draw() {
     }
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     ctx.stroke();
   };
   const pairs = (ts, vs, Y) => {
@@ -1043,20 +1361,33 @@ function draw() {
     for (let i = 0; i < ts.length; i++) if (vs[i] != null) out.push([ts[i], Y(vs[i])]);
     return out;
   };
-  if (rawOn && d.raw && d.raw.t) strokeLine(pairs(d.raw.t, d.raw.a, Ya), "rgba(29, 78, 137, 0.28)", 1);
-  if (ref.length) strokeLine(ref.map((p) => [p[0], Ya(p[1])]), "#8a8478", 1.5);
-  strokeLine(pairs(curve.t, curve.a, Ya), "#1d4e89", 2.2);
-  strokeLine(pairs(curve.t, curve.v, Yv), "#1d4e89", 2.2);
-  if (d.gps && d.gps.t) {
-    ctx.fillStyle = "#1c1915";
-    for (let i = 0; i < d.gps.t.length; i++) {
-      const t = d.gps.t[i];
-      if (t < state.t0 || t > state.t1 || d.gps.v[i] == null || d.gps.v[i] < 0) continue;
-      ctx.beginPath();
-      ctx.arc(X(t), Yv(d.gps.v[i]), 3, 0, Math.PI * 2);
-      ctx.fill();
+  // Each curve stays inside its own panel.
+  const inPanel = (top, bottom, paint) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(box.L, top, box.R - box.L, bottom - top);
+    ctx.clip();
+    paint();
+    ctx.restore();
+  };
+  inPanel(box.aT, box.aB, () => {
+    if (rawOn && d.raw && d.raw.t) strokeLine(pairs(d.raw.t, d.raw.a, Ya), "rgba(29, 78, 137, 0.28)", 1);
+    if (ref.length) strokeLine(ref.map((p) => [p[0], Ya(p[1])]), "#8a8478", 1.5);
+    strokeLine(pairs(curve.t, curve.a, Ya), "#1d4e89", 2.2);
+  });
+  inPanel(box.vT, box.vB, () => {
+    strokeLine(pairs(curve.t, curve.v, Yv), "#1d4e89", 2.2);
+    if (d.gps && d.gps.t) {
+      ctx.fillStyle = "#1c1915";
+      for (let i = 0; i < d.gps.t.length; i++) {
+        const t = d.gps.t[i];
+        if (t < state.t0 || t > state.t1 || d.gps.v[i] == null || d.gps.v[i] < 0) continue;
+        ctx.beginPath();
+        ctx.arc(X(t), Yv(d.gps.v[i]), 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
-  }
+  });
 
   drawMarks(ctx, d, X, Ya, Yv, box);
   drawAxis(ctx, X, box);
@@ -1075,21 +1406,25 @@ function drawBands(ctx, b, X, box) {
   ];
   ctx.save();
   ctx.beginPath();
-  ctx.rect(box.L, box.aT, box.R - box.L, box.vB - box.aT);
+  ctx.rect(box.L, box.aT, box.R - box.L, box.aB - box.aT);
+  ctx.rect(box.L, box.vT, box.R - box.L, box.vB - box.vT);
   ctx.clip();
-  ctx.font = "11px Segoe UI, sans-serif";
+  ctx.font = "600 11px " + FONT;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   for (const [from, to, p, named] of spans) {
     const u0 = Math.max(state.t0, from);
     const u1 = Math.min(state.t1, to);
     if (u1 - u0 < 0.01) continue;
+    ctx.globalAlpha = 0.6;
     ctx.fillStyle = PHASE[p];
-    ctx.fillRect(X(u0), box.aT, X(u1) - X(u0), box.vB - box.aT);
+    ctx.fillRect(X(u0), box.aT, X(u1) - X(u0), box.aB - box.aT);
+    ctx.fillRect(X(u0), box.vT, X(u1) - X(u0), box.vB - box.vT);
+    ctx.globalAlpha = 1;
     const name = copy().phases[p];
     if (named && X(u1) - X(u0) > ctx.measureText(name).width + 8) {
-      ctx.fillStyle = "#1c1915";
-      ctx.fillText(name, (X(u0) + X(u1)) / 2, box.aT + 3);
+      ctx.fillStyle = "#4a443a";
+      ctx.fillText(name, (X(u0) + X(u1)) / 2, box.aT + 6);
     }
   }
   ctx.restore();
@@ -1108,11 +1443,11 @@ function drawRate() {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#faf7f1";
+  ctx.fillStyle = CARD;
   ctx.fillRect(0, 0, w, h);
   const d = state.stroke;
   if (!d || !d.valid || !d.curve) {
-    ctx.fillStyle = "#6d675e";
+    ctx.fillStyle = MUTED;
     ctx.font = "16px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(copy().rateEmpty, w / 2, h / 2);
@@ -1150,30 +1485,9 @@ function drawRate() {
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
 
+  paintPanels(ctx, box);
   drawBands(ctx, d.bounds, X, box);
-
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = "#c9c1b4";
-  ctx.beginPath();
-  ctx.moveTo(box.L, Ya(0));
-  ctx.lineTo(box.R, Ya(0));
-  ctx.stroke();
-  ctx.strokeStyle = "#e4ddd0";
-  ctx.beginPath();
-  ctx.moveTo(box.L, Yv((vRange[0] + vRange[1]) / 2));
-  ctx.lineTo(box.R, Yv((vRange[0] + vRange[1]) / 2));
-  ctx.stroke();
-  ctx.fillStyle = "#6d675e";
-  ctx.font = "11px Segoe UI, sans-serif";
-  ctx.textAlign = "right";
-  ctx.textBaseline = "middle";
-  const place = (y, top, bot) => Math.min(bot - 8, Math.max(top + 8, y));
-  for (const g of [aRange[0], 0, aRange[1]]) {
-    ctx.fillText((g >= 0 ? "+" : "") + g.toFixed(1), box.L - 6, place(Ya(g), box.aT, box.aB));
-  }
-  for (const v of [vRange[0], (vRange[0] + vRange[1]) / 2, vRange[1]]) {
-    ctx.fillText(v.toFixed(1), box.L - 6, place(Yv(v), box.vT, box.vB));
-  }
+  drawGrid(ctx, box, aRange, vRange, strokeTicks(state.t0, state.t1).times.map(X), "rate");
 
   const vline = (t, color, dash) => {
     if (t == null || t < state.t0 || t > state.t1) return;
@@ -1182,8 +1496,10 @@ function drawRate() {
     ctx.lineWidth = 1.5;
     if (dash) ctx.setLineDash(dash);
     ctx.beginPath();
-    ctx.moveTo(X(t), box.aT);
-    ctx.lineTo(X(t), box.vB);
+    for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+      ctx.moveTo(X(t), top);
+      ctx.lineTo(X(t), bottom);
+    }
     ctx.stroke();
     ctx.restore();
   };
@@ -1202,6 +1518,8 @@ function drawRate() {
     }
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     ctx.stroke();
   };
   const pairs = (ts, vs, Y) => {
@@ -1261,11 +1579,11 @@ function drawSession() {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#faf7f1";
+  ctx.fillStyle = CARD;
   ctx.fillRect(0, 0, w, h);
   const tr = state.trace;
   if (!tr || state.s0 == null) {
-    ctx.fillStyle = "#6d675e";
+    ctx.fillStyle = MUTED;
     ctx.font = "16px Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(lang() === "nl" ? "Sessie wordt gelezen…" : "Reading the session…", w / 2, h / 2);
@@ -1289,10 +1607,15 @@ function drawSession() {
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
   const close = state.s1 - state.s0 < 30;
 
+  paintPanels(ctx, box);
+  const panels = [[box.aT, box.aB], [box.vT, box.vB]];
+  const clipPanels = () => {
+    ctx.beginPath();
+    for (const [top, bottom] of panels) ctx.rect(box.L, top, box.R - box.L, bottom - top);
+    ctx.clip();
+  };
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(box.L, box.aT, box.R - box.L, box.vB - box.aT);
-  ctx.clip();
+  clipPanels();
   for (let i = 0; i < state.rows.length; i++) {
     const row = state.rows[i];
     if (row.t0 == null || row.t1 < state.s0 || row.t0 > state.s1) continue;
@@ -1300,47 +1623,41 @@ function drawSession() {
     const x1 = X(Math.min(state.s1, row.t1));
     if (x1 - x0 < 0.5) continue;
     const on = i === state.i;
-    ctx.fillStyle = on ? (row.warn ? "rgba(196,85,42,0.30)" : "rgba(31,122,77,0.24)")
-      : (row.warn ? "rgba(196,85,42,0.14)" : "rgba(31,122,77,0.10)");
-    ctx.fillRect(x0, box.aT, x1 - x0, box.vB - box.aT);
+    ctx.fillStyle = on ? (row.warn ? "rgba(196,85,42,0.26)" : "rgba(31,122,77,0.20)")
+      : (row.warn ? "rgba(196,85,42,0.11)" : "rgba(31,122,77,0.08)");
+    for (const [top, bottom] of panels) ctx.fillRect(x0, top, x1 - x0, bottom - top);
     ctx.fillStyle = row.warn ? "#c4552a" : "#1f7a4d";
-    ctx.fillRect(x0, box.aT, Math.max(1, x1 - x0), on ? 5 : 3);
+    ctx.fillRect(x0, box.aT, Math.max(1, x1 - x0), on ? 4 : 2);
     if (close && row.t1 >= state.s0 && row.t1 <= state.s1) {
       ctx.strokeStyle = "#1f7a4d";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(X(row.t1), box.aT);
-      ctx.lineTo(X(row.t1), box.vB);
+      for (const [top, bottom] of panels) {
+        ctx.moveTo(X(row.t1), top);
+        ctx.lineTo(X(row.t1), bottom);
+      }
       ctx.stroke();
     }
     if (close && row.drive && row.t0 + row.drive >= state.s0 && row.t0 + row.drive <= state.s1) {
       ctx.strokeStyle = "#0e7c86";
       ctx.beginPath();
-      ctx.moveTo(X(row.t0 + row.drive), box.aT);
-      ctx.lineTo(X(row.t0 + row.drive), box.vB);
+      for (const [top, bottom] of panels) {
+        ctx.moveTo(X(row.t0 + row.drive), top);
+        ctx.lineTo(X(row.t0 + row.drive), bottom);
+      }
       ctx.stroke();
     }
   }
   ctx.restore();
 
-  ctx.strokeStyle = "#c9c1b4";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(box.L, Ya(0));
-  ctx.lineTo(box.R, Ya(0));
-  ctx.stroke();
-  ctx.fillStyle = "#6d675e";
-  ctx.font = "11px Segoe UI, sans-serif";
-  ctx.textAlign = "right";
-  ctx.textBaseline = "middle";
-  const place = (y, top, bot) => Math.min(bot - 8, Math.max(top + 8, y));
-  for (const g of [aRange[0], 0, aRange[1]]) {
-    ctx.fillText((g >= 0 ? "+" : "") + g.toFixed(1), box.L - 6, place(Ya(g), box.aT, box.aB));
-  }
-  for (const v of [vRange[0], (vRange[0] + vRange[1]) / 2, vRange[1]]) {
-    ctx.fillText(v.toFixed(1), box.L - 6, place(Yv(v), box.vT, box.vB));
-  }
+  const gridStep = tickStep(state.s1 - state.s0);
+  const gridX = [];
+  for (let t = Math.ceil(state.s0 / gridStep) * gridStep; t <= state.s1 + 1e-6; t += gridStep) gridX.push(X(t));
+  drawGrid(ctx, box, aRange, vRange, gridX, "session");
 
+  ctx.save();
+  clipPanels();
+  ctx.lineJoin = "round";
   ctx.beginPath();
   let pen = false;
   for (let i = 0; i < tr.t.length; i++) {
@@ -1379,9 +1696,10 @@ function drawSession() {
   ctx.strokeStyle = "#1c1915";
   ctx.lineWidth = 1.5;
   ctx.stroke();
+  ctx.restore();
 
   const step = tickStep(state.s1 - state.s0);
-  ctx.fillStyle = "#6d675e";
+  ctx.fillStyle = MUTED;
   ctx.font = "11px Segoe UI, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
@@ -1406,7 +1724,7 @@ function tickStep(span) {
 function drawAxis(ctx, X, box) {
   const span = state.t1 - state.t0;
   const step = span > 2 ? 0.5 : span > 0.8 ? 0.2 : span > 0.3 ? 0.1 : 0.02;
-  ctx.fillStyle = "#6d675e";
+  ctx.fillStyle = MUTED;
   ctx.font = "11px Segoe UI, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
@@ -1437,7 +1755,7 @@ function drawMarks(ctx, d, X, Ya, Yv, box) {
   const label = (text, x, y) => {
     ctx.textAlign = "center";
     ctx.lineWidth = 3;
-    ctx.strokeStyle = "#faf7f1";
+    ctx.strokeStyle = CARD;
     ctx.fillStyle = ink;
     const xx = Math.max(box.L + 24, Math.min(box.R - 24, x));
     const yy = Math.max(box.aT + 16, y) - 6;
@@ -1539,6 +1857,8 @@ function drawMarks(ctx, d, X, Ya, Yv, box) {
     ctx.setLineDash([2, 3]);
     ctx.beginPath();
     ctx.moveTo(X(b.approach), box.aT);
+    ctx.lineTo(X(b.approach), box.aB);
+    ctx.moveTo(X(b.approach), box.vT);
     ctx.lineTo(X(b.approach), box.vB);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -1563,7 +1883,7 @@ function drawMarks(ctx, d, X, Ya, Yv, box) {
     if (on) {
       ctx.textAlign = "center";
       ctx.lineWidth = 3;
-      ctx.strokeStyle = "#faf7f1";
+      ctx.strokeStyle = CARD;
       const lx = X((t0 + t1) / 2);
       const ly = Math.min(Yv(y0), Yv(y1)) - 6;
       ctx.strokeText(text, lx, ly);
@@ -1700,19 +2020,36 @@ canvas.addEventListener("wheel", (e) => {
 $("chartmode").addEventListener("change", () => {
   renderLegend();
   if (!state.id) return;
+  if (!rateMode() && state.blurb) setStatus(state.blurb);
   if (sessionMode()) enterSession().catch((err) => setStatus(err.message));
   else if (rateMode()) loadRates().catch((err) => setStatus(err.message));
   else loadStroke(state.i).catch((err) => setStatus(err.message));
 });
 
-window.addEventListener("resize", resize);
+window.addEventListener("resize", () => { resize(); fadeChips(); });
+$("chips").addEventListener("scroll", fadeChips);
+$("chips").addEventListener("wheel", (e) => {
+  const box = $("chips");
+  if (box.scrollWidth <= box.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  box.scrollLeft += e.deltaY;
+  e.preventDefault();
+}, { passive: false });
 $("session").addEventListener("change", () => loadSession($("session").value).catch((err) => setStatus(err.message)));
 $("crew").addEventListener("change", () => reloadHints().catch((err) => setStatus(err.message)));
-$("lang").addEventListener("change", () => { renderLegend(); reloadHints().catch((err) => setStatus(err.message)); });
+$("lang").addEventListener("change", () => {
+  try { localStorage.setItem("stroke-lang", lang()); } catch (err) { /* storage blocked */ }
+  applyChrome();
+  renderLegend();
+  reloadHints().catch((err) => setStatus(err.message));
+});
 $("view").addEventListener("change", () => {
   if (state.id && !rateMode()) reloadHints().catch((err) => setStatus(err.message));
 });
-$("open").addEventListener("click", async () => {
+function chooseFiles() { $("file").click(); }
+$("open").addEventListener("click", chooseFiles);
+$("welcome-open").addEventListener("click", chooseFiles);
+$("welcome-tab5").addEventListener("click", () => $("tab5").click());
+$("file").addEventListener("change", async () => {
   const input = $("file");
   const files = input.files ? [...input.files] : [];
   if (!files.length) return;
@@ -1728,5 +2065,6 @@ $("open").addEventListener("click", async () => {
   }
 });
 
+startLanguage();
 renderLegend();
 loadSessions().catch((err) => setStatus(err.message));

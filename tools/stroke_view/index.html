@@ -3,48 +3,105 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Stroke</title>
+  <title>M5Tab Rowing · Stroke analysis</title>
+  <meta name="description" content="Read a rowing recording stroke by stroke: drive, finish, run and approach, with the same hints as the M5Tab Rowing monitor.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c1915'/%3E%3Cpath d='M4 19c4 0 4-9 8-9s4 12 8 12 4-7 8-7' fill='none' stroke='%2358b27f' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div class="brand">Stroke</div>
-    <label>Session
-      <select id="session"></select>
-    </label>
-    <label class="path">Recording
-      <input id="file" type="file" accept=".csv,text/csv" multiple title="The _imu.csv, and the _info.csv from the same session when you have it">
-    </label>
-    <button id="open" type="button">Open</button>
-    <label>Crew
-      <select id="crew">
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="4">4</option>
-        <option value="8">8</option>
-      </select>
-    </label>
-    <label>Chart
-      <select id="chartmode">
-        <option value="stroke">One stroke</option>
-        <option value="session">Whole session</option>
-        <option value="rate">By rate</option>
-      </select>
-    </label>
-    <label>View
-      <select id="view">
-        <option value="stroke">This stroke</option>
-        <option value="average">Last 5 at this rate</option>
-      </select>
-    </label>
-    <label>Language
-      <select id="lang">
-        <option value="en">English</option>
-        <option value="nl">Nederlands</option>
-      </select>
-    </label>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="M5Tab Rowing">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7"/><path d="M4 19c4 0 4-9 8-9s4 12 8 12 4-7 8-7"/></svg>
+      <span class="name">M5Tab Rowing</span>
+      <span class="sub" data-i18n="tagline">Stroke analysis</span>
+    </a>
+    <nav>
+      <a href="https://fusiscaesar.github.io/M5TabRowing/" target="_blank" rel="noopener" data-i18n="build">Build your own</a>
+      <a class="gh" href="https://github.com/FusisCaesar/M5TabRowing" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+      </a>
+      <label class="lang">
+        <span class="sr" data-i18n="language">Language</span>
+        <select id="lang">
+          <option value="en">English</option>
+          <option value="nl">Nederlands</option>
+        </select>
+      </label>
+    </nav>
   </header>
+
+  <div class="toolbar">
+    <div class="group">
+      <label>
+        <span data-i18n="session">Session</span>
+        <select id="session"></select>
+      </label>
+      <input id="file" type="file" accept=".csv,text/csv" multiple hidden>
+      <button id="open" type="button" class="quiet" data-i18n="openFiles" data-i18n-title="openFilesTip" title="Choose the _imu.csv, and the _info.csv from the same session when you have it">Open files</button>
+      <button id="tab5" type="button" data-i18n="fromTab5" data-i18n-title="fromTab5Tip" title="Read a recording from the tablet over USB. Chrome or Edge.">Read from Tab5</button>
+    </div>
+    <div class="group">
+      <label>
+        <span data-i18n="crew">Crew</span>
+        <select id="crew">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="4">4</option>
+          <option value="8">8</option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="chart">Chart</span>
+        <select id="chartmode">
+          <option value="stroke" data-i18n="oneStroke">One stroke</option>
+          <option value="session" data-i18n="wholeSession">Whole session</option>
+          <option value="rate" data-i18n="byRate">By rate</option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="view">View</span>
+        <select id="view">
+          <option value="stroke" data-i18n="thisStroke">This stroke</option>
+          <option value="average" data-i18n="lastFive">Last 5 at this rate</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
   <div id="status" role="status"></div>
+
+  <section id="welcome" hidden>
+    <div class="card">
+      <h1 data-i18n="welcomeTitle">Read your rowing, stroke by stroke</h1>
+      <p class="lead" data-i18n="welcomeLead">Load a recording from an M5Tab Rowing monitor. Every stroke is found again and shown as drive, finish, run and approach, with the same hint the device gives on the water.</p>
+      <div class="actions">
+        <button id="welcome-tab5" type="button" data-i18n="fromTab5">Read from Tab5</button>
+        <button id="welcome-open" type="button" class="quiet" data-i18n="openFiles">Open files</button>
+      </div>
+      <ol class="steps">
+        <li data-i18n="stepStop">Stop the session on the tablet.</li>
+        <li data-i18n="stepRead">Plug it into this computer with USB-C and press Read from Tab5, or open the recording files you copied off the card (the <code>_imu.csv</code> and the <code>_info.csv</code>).</li>
+        <li data-i18n="stepRead2">Pick the session, step through the strokes, and switch the chart to the whole session or by rate.</li>
+      </ol>
+      <p class="fine" data-i18n="privacy">Recordings are analysed on this server and are not kept: they are gone when it restarts. Reading from the tablet needs Chrome or Edge.</p>
+    </div>
+
+    <div class="card build">
+      <h2 data-i18n="buildTitle">Do not have the device yet?</h2>
+      <p class="lead" data-i18n="buildLead">It is an open project. You need an M5Stack Tab5, a GNSS unit and a microSD card. The firmware installs from your browser, no tools needed.</p>
+      <ol class="steps">
+        <li data-i18n="buildStep1">Get the parts: <b>M5Stack Tab5</b>, <b>M5Stack Unit GNSS</b> on Port A, and a FAT32 <b>microSD card</b>.</li>
+        <li data-i18n="buildStep2">Open the install page in Chrome or Edge, plug in the Tab5 and press install.</li>
+        <li data-i18n="buildStep3">Mount it rigidly in the boat, row, and come back here with the recording.</li>
+      </ol>
+      <div class="actions">
+        <a class="button" href="https://fusiscaesar.github.io/M5TabRowing/" target="_blank" rel="noopener" data-i18n="installPage">Open the install page</a>
+        <a class="button quiet" href="https://github.com/FusisCaesar/M5TabRowing" target="_blank" rel="noopener" data-i18n="sourceDocs">Source and full guide on GitHub</a>
+      </div>
+    </div>
+  </section>
+
   <div id="app" hidden>
     <aside id="list" aria-label="Strokes"></aside>
     <main>
@@ -60,6 +117,17 @@
     </main>
     <aside id="gauges"></aside>
   </div>
+
+  <dialog id="device">
+    <div id="device-title"></div>
+    <select id="device-session" size="8"></select>
+    <p id="device-note"></p>
+    <div class="actions">
+      <button id="device-close" type="button"></button>
+      <button id="device-get" type="button"></button>
+    </div>
+  </dialog>
   <script src="app.js"></script>
+  <script src="tab5.js"></script>
 </body>
 </html>
