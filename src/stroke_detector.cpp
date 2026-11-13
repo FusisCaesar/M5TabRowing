@@ -28,6 +28,8 @@ void StrokeDetector::reset() {
     skewN_ = 0;
     gpsLocked_ = false;
     vInt_ = gpsMean_ = 0;
+    for (float& v : vDelay_) v = 0;
+    vDelayHead_ = 0;
     dirVg_ = dirVv_ = dirGg_ = 0;
     gpsDirN_ = 0;
     dip_ = DipState::Seek;
@@ -232,11 +234,15 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
     if (warm && gpsValid_ && gpsSpeed_ >= cfg::GPS_DIR_MIN_SPEED_MPS) {
         constexpr float dt = cfg::IMU_DT_S;
         vInt_ += (pLin * cfg::STANDARD_GRAVITY - vInt_ / cfg::GPS_DIR_INTEGRATOR_TAU_S) * dt;
+        // GPS speed is late, so it is compared with the surge of that long ago.
+        float vOld = vDelay_[vDelayHead_];
+        vDelay_[vDelayHead_] = vInt_;
+        vDelayHead_ = (vDelayHead_ + 1) % cfg::GPS_DIR_DELAY_SAMPLES;
         gpsMean_ += (gpsSpeed_ - gpsMean_) * dsp::emaAlpha(cfg::GPS_DIR_HP_TAU_S, dt);
         float vg = gpsSpeed_ - gpsMean_;
         float a = dsp::emaAlpha(cfg::GPS_DIR_CORR_TAU_S, dt);
-        dirVg_ += (vInt_ * vg - dirVg_) * a;
-        dirVv_ += (vInt_ * vInt_ - dirVv_) * a;
+        dirVg_ += (vOld * vg - dirVg_) * a;
+        dirVv_ += (vOld * vOld - dirVv_) * a;
         dirGg_ += (vg * vg - dirGg_) * a;
         gpsDirN_++;
         float corr = gpsCorrelation();

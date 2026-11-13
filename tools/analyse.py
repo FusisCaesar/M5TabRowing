@@ -296,7 +296,7 @@ def main():
         floor = args.floor if args.floor is not None else float(info.get("threshold_floor_g", 0.12))
         minima = args.minima or info.get("minima_threshold") == "1"
         rows = list(zip(t_abs, imu["ax_g"], imu["ay_g"], imu["az_g"], imu["catch"].astype(int), gps))
-        events, _, _ = replay.run(rows, k, floor, minima)
+        events, _, _ = replay.run(rows, k, floor, minima, gps_delay=replay.gps_delay_of(info))
         replay_t = np.array([e["t"] for e in events]) - t0
         replay_label = f"K {k:.2f} floor {floor:.2f} minima {int(minima)}"
 

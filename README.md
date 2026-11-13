@@ -304,15 +304,17 @@ coaching text on this screen and on Stroke. It stays until you tap it again.
 
 The **Stroke** screen splits the stroke you are rowing into five phases and compares the last few strokes with your own best at the same rate.
 
-The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. A green line marks the catch and a cyan line the finish, as on the Plot screen.
+The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. The receiver reports speed about half a second late, so each dot is drawn that much earlier than it arrived; the last half second of the stroke has no dots yet. A green line marks the catch and a cyan line the finish, as on the Plot screen.
 
 The shaded bands are the phases:
 
-- **Catch.** The dip as the blade goes in: how long it lasts, how deep it is, and how much speed it costs.
+- **Catch.** The dip as the blade goes in: how long it lasts, how deep it is, and how much speed it costs from the catch on.
 - **Drive.** The push: the speed it adds, and whether the peak comes early or late.
 - **Finish.** The release: how fast the push dies away, and any dip as the blade comes out.
-- **Run.** The glide: how hard the boat is slowing, and when the speed peaks.
-- **Approach.** The run-in to the next catch: how long before the catch the boat starts to slow.
+- **Run.** The glide: how evenly the boat runs (the scatter of the acceleration around a straight line, lower is steadier), and when the speed peaks.
+- **Approach.** The run-in to the next catch: how long before the catch the boat starts to slow, and the speed that costs. The chart starts 0.4 s before the catch, and the slowing there is drawn in the approach colour, because it belongs to the stroke before.
+
+With a crew, the catch also counts its notches: separate dips inside the catch, where the curve comes back up by 15% of the depth before going down again. One is a clean catch. Ripple on the way down does not count.
 
 The line above the buttons gives the one most useful hint. In order: catch together, dip later, a quicker catch, push harder, build the drive earlier or hold it through, then a cleaner release. With nothing to correct it says the stroke matches your reference.
 
@@ -487,6 +489,39 @@ Seconds without a GPS fix are left out of the GPX track.
    and shows its catches as orange triangles, so you can see whether other
    settings fix a problem.
 
+   To inspect a stroke the way the Stroke screen does, and to see the marks the
+   coaching tip is read from:
+
+   ```powershell
+   python tools\stroke_view.py
+   ```
+
+   Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). Sessions in `recordings\`
+   are listed, or type the path of an `_imu.csv`. The strokes are found again with the
+   current detector, so a catch the device missed is filled in from the rhythm
+   and marked as such. Forward is settled from GPS over the whole recording, so
+   the first strokes are drawn the right way up even where the device had not
+   worked out the direction yet. Each stroke gets the same hint and gauges as the
+   device. View → Last 5 at this rate is what the device shows; This stroke reads
+   one stroke, which carries more ripple and so draws more tips. The list follows
+   the view. Chart → By rate averages every stroke at one rate and draws the
+   average of the best strokes at that rate on top: the fifth that went furthest
+   per stroke, at least three. The split of a rate is its time over its distance.
+   Tick the rates in the list to compare only those. The rate marked "hold" is the
+   quickest pace in that outing that was actually kept up, with a stroke that stays
+   clean. A faster split that only lasted a few strokes is named beside it. When
+   the outing was rowed in spells of hard and light strokes, no rate is marked:
+   the rates then differ because the effort did, and the spells are listed
+   instead, with how many there were, how long, and at what rate and split.
+   Chart → Whole session draws the outing on one
+   timeline: scroll to zoom in until the strokes separate, drag to move along
+   it, and double-click a stroke to open it. On a single stroke, scroll to zoom,
+   drag to move, and click a mark (catch width, drive peak, finish, release,
+   approach) to jump to the part of the curve that mark is measured on. The
+   reference is your best at that rate in the finished session when at least
+   three strokes earned it, otherwise your usual. Crew 1, 2, 4 or 8 changes the
+   catch and finish wording the same way the device does.
+
 ## Serial tools
 
 Open the port with DTR/RTS held low; otherwise opening it resets the ESP32-P4.
@@ -634,7 +669,20 @@ session is recording. Map data is
    python tools\replay.py S0007_imu.csv --k 1.2 --floor 0.08
    python tools\replay.py S0007_imu.csv --plot 60 90       # needs matplotlib
    python tools\replay.py --synthetic 120                  # self-test on simulated rowing
+   python tools\replay.py recordings\S0019_imu.csv --rebuild
    ```
+
+   `--rebuild` writes the strokes the current detector finds back into that
+   session, using the K and floor stored with it. A catch the original file
+   missed is filled in and marked. The rate on each second and the stroke count
+   on each lap are updated to match. Before the first rebuild the device's own
+   stroke, second and lap files are copied to `recordings\original\`, and the
+   session's info file gets a `strokes_rebuilt` line.
+
+   A rebuild, the stroke viewer and `--hindsight` settle the forward direction
+   from GPS over the whole recording, then run the detector again with it. The
+   device cannot do that: it has to decide as it goes. Without `--hindsight`,
+   `replay.py` does what the device does.
 
    `replay.py` is a line-by-line port of `src/stroke_detector.cpp`; keep them in
    sync when changing the detector.
@@ -649,7 +697,8 @@ Tuning hints:
   the minima threshold, which follows the depth of your recent catches.
 - Drive and recovery look swapped on the Plot screen during the first strokes
   without GPS: the forward direction is still being learned from the stroke shape.
-  It settles within a few strokes, and GPS overrides it after about 10 s of rowing.
+  It settles within a few strokes, and GPS overrides it from about 10 s of rowing
+  with a fix.
 
 ## How it works
 
@@ -671,7 +720,10 @@ Tuning hints:
 - **Forward direction**: the catch dip is short and deep, the drive is long and
   shallow, so the forward acceleration has negative skew. When GPS is moving, the
   integrated acceleration is correlated with the GPS speed fluctuations, which
-  settles the direction even for smooth rowers.
+  settles the direction even for smooth rowers. The receiver reports speed about
+  half a second late, so the acceleration is held back by that much first
+  (`GPS_SPEED_DELAY_S`). Compared without the delay the two are a fifth of a
+  stroke apart and the match can tip either way.
 - **Split and distance per stroke**: the split on screen is the GPS speed over
   the last 3 strokes, taken as distance over time, so it does not jump with the
   speed swing inside a single stroke. Right after a start or a pause it uses

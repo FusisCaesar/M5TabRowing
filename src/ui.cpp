@@ -915,21 +915,24 @@ void drawStrokeChart(const anatomy::Summary& s) {
     auto Yv = [&](float v) { return (int)lroundf(sB - (v - vLo) / (vHi - vLo) * (sB - sT)); };
 
     if (s.now.valid) {
-        const float edge[6] = {s.bounds.catch0, s.bounds.catch1, s.bounds.finish, s.bounds.finishEnd, s.bounds.approach,
-                                s.bounds.interval};
+        // The catch phase starts at the catch. The slowing before it is the approach
+        // of the stroke before, so it gets the approach colour and no second label.
+        const float edge[7] = {fminf(s.bounds.catch0, 0.0f), 0.0f, s.bounds.catch1, s.bounds.finish,
+                                s.bounds.finishEnd, s.bounds.approach, s.bounds.interval};
+        const int phase[6] = {4, 0, 1, 2, 3, 4};
         const char* name[5] = {i18n::tr(i18n::PhaseCatch), i18n::tr(i18n::PhaseDrive),
                                 i18n::tr(i18n::PhaseFinish), i18n::tr(i18n::PhaseRun),
                                 i18n::tr(i18n::PhaseApproach)};
         c.setFont(&fonts::FreeSans9pt7b);
         c.setTextDatum(top_center);
-        for (int p = 0; p < 5; p++) {
+        for (int p = 0; p < 6; p++) {
             float u0 = fmaxf(tLeft, edge[p]), u1 = fminf(tRight, edge[p + 1]);
             if (u1 - u0 < 0.02f) continue;
             int x0 = X(u0), x1 = X(u1);
-            c.fillRect(x0, aT, x1 - x0, sB - aT, strokeBand(p));
-            if (x1 - x0 > c.textWidth(name[p]) + 6) {
+            c.fillRect(x0, aT, x1 - x0, sB - aT, strokeBand(phase[p]));
+            if (p > 0 && x1 - x0 > c.textWidth(name[phase[p]]) + 6) {
                 c.setTextColor(th->fg);
-                c.drawString(name[p], (x0 + x1) / 2, aT + 3);
+                c.drawString(name[phase[p]], (x0 + x1) / 2, aT + 3);
             }
         }
     }
@@ -1125,15 +1128,16 @@ void drawStrokePanel(const anatomy::Summary& s) {
           s.haveRef ? ref.fallTimeS / fallScale : 0);
 
     if (ok) {
-        snprintf(value, sizeof(value), "%d mg", (int)lroundf(now.runDecelMg));
+        snprintf(value, sizeof(value), "%d mg", (int)lroundf(now.runUnevenMg));
         snprintf(caption, sizeof(caption), i18n::tr(i18n::CapRun), now.speedPeakS);
     } else {
         snprintf(value, sizeof(value), "--");
         caption[0] = 0;
     }
-    float runScale = scaleOf(ref.runDecelMg, 80.0f);
-    gauge(i18n::tr(i18n::PhaseRun), 3, value, caption, strokeVs(now.runDecelMg, ref.runDecelMg, true, s.haveRef && ok),
-          ok ? now.runDecelMg / runScale : 0, s.haveRef ? ref.runDecelMg / runScale : 0);
+    // How unevenly the boat glides: lower is a steadier run.
+    float runScale = scaleOf(ref.runUnevenMg, 40.0f);
+    gauge(i18n::tr(i18n::PhaseRun), 3, value, caption, strokeVs(now.runUnevenMg, ref.runUnevenMg, true, s.haveRef && ok),
+          ok ? now.runUnevenMg / runScale : 0, s.haveRef ? ref.runUnevenMg / runScale : 0);
 
     if (ok) {
         snprintf(value, sizeof(value), "%.2f s", now.approachLeadS);

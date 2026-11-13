@@ -96,6 +96,8 @@ private:
     bool gpsValid_ = false;
     bool gpsLocked_ = false;
     float vInt_ = 0, gpsMean_ = 0;
+    float vDelay_[cfg::GPS_DIR_DELAY_SAMPLES] = {};  // integrated surge, oldest at vDelayHead_
+    int vDelayHead_ = 0;
     float dirVg_ = 0, dirVv_ = 0, dirGg_ = 0;
     uint32_t gpsDirN_ = 0;
     float ms_ = 0;
