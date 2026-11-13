@@ -949,6 +949,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, open(os.path.join(PAGE, "index.html"), "rb").read(), "text/html; charset=utf-8")
             elif url.path == "/app.js":
                 self._send(200, open(os.path.join(PAGE, "app.js"), "rb").read(), "text/javascript; charset=utf-8")
+            elif url.path == "/tab5.js":
+                self._send(200, open(os.path.join(PAGE, "tab5.js"), "rb").read(), "text/javascript; charset=utf-8")
             elif url.path == "/style.css":
                 self._send(200, open(os.path.join(PAGE, "style.css"), "rb").read(), "text/css; charset=utf-8")
             elif url.path == "/health":

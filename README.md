@@ -499,7 +499,12 @@ Seconds without a GPS fix are left out of the GPX track.
    Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). Sessions in `recordings\`
    are listed. **Open** uploads an `_imu.csv`, and the `_info.csv` from the same
    session when you have it. The upload is kept under `recordings\uploads\`, so
-   it does not replace a recording already there. The strokes are found again with the
+   it does not replace a recording already there. **Tab5** reads a recording
+   straight off the tablet over USB, in Chrome or Edge, and then opens it. The
+   server cannot see the tablet, so the browser does the reading. Stop the
+   session on the tablet first: connecting can restart it, and a download is
+   refused while it is recording. A recording over 80 MB is too big for the
+   hosted server. The strokes are found again with the
    current detector, so a catch the device missed is filled in from the rhythm
    and marked as such. Forward is settled from GPS over the whole recording, so
    the first strokes are drawn the right way up even where the device had not
