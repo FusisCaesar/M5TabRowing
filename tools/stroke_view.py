@@ -30,6 +30,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import anatomy
+import overview
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "stroke_view")
@@ -46,6 +47,15 @@ _root = "recordings"
 # 512 MB, and the whole recording is held in memory while it is read.
 MAX_UPLOAD = 80 * 1024 * 1024
 _UPLOAD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,120}\.csv\Z")
+STATIC = {
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/tab5.js": ("tab5.js", "text/javascript; charset=utf-8"),
+    "/overview.js": ("overview.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/vendor/leaflet.js": ("vendor/leaflet.js", "text/javascript; charset=utf-8"),
+    "/vendor/leaflet.css": ("vendor/leaflet.css", "text/css; charset=utf-8"),
+}
+UPLOAD_SUFFIXES = ("_imu.csv", "_info.csv", "_seconds.csv", "_laps.csv", "_strokes.csv")
 
 
 def band_of(rate):
@@ -898,6 +908,18 @@ def session_trace(session, t0, t1, n):
     }
 
 
+def session_overview(sid):
+    imu = _imu_file(sid)
+    if imu is None:
+        raise FileNotFoundError(sid)
+    data = overview.build(imu, _sessions.get(sid))
+    if data is None:
+        return {"has_seconds": False}
+    data["has_seconds"] = True
+    data["id"] = sid
+    return data
+
+
 def get_session(sid):
     if sid in _sessions:
         return _sessions[sid]
@@ -911,13 +933,13 @@ def get_session(sid):
 
 def _store_upload(name, data):
     base = os.path.basename(str(name).replace("\\", "/"))
-    if not _UPLOAD_NAME.match(base) or not (base.endswith("_imu.csv") or base.endswith("_info.csv")):
-        raise ValueError("upload the _imu.csv, and the _info.csv beside it when you have one")
+    if not _UPLOAD_NAME.match(base) or not base.endswith(UPLOAD_SUFFIXES):
+        raise ValueError("upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them")
     folder = _uploads_dir()
     os.makedirs(folder, exist_ok=True)
     dest = os.path.join(folder, base)
     if not _inside_root(dest):
-        raise ValueError("upload the _imu.csv, and the _info.csv beside it when you have one")
+        raise ValueError("upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them")
     with open(dest, "wb") as f:
         f.write(data)
     if base.endswith("_imu.csv"):
@@ -947,12 +969,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path in ("/", "/index.html"):
                 self._send(200, open(os.path.join(PAGE, "index.html"), "rb").read(), "text/html; charset=utf-8")
-            elif url.path == "/app.js":
-                self._send(200, open(os.path.join(PAGE, "app.js"), "rb").read(), "text/javascript; charset=utf-8")
-            elif url.path == "/tab5.js":
-                self._send(200, open(os.path.join(PAGE, "tab5.js"), "rb").read(), "text/javascript; charset=utf-8")
-            elif url.path == "/style.css":
-                self._send(200, open(os.path.join(PAGE, "style.css"), "rb").read(), "text/css; charset=utf-8")
+            elif url.path in STATIC:
+                name, kind = STATIC[url.path]
+                self._send(200, open(os.path.join(PAGE, *name.split("/")), "rb").read(), kind)
             elif url.path == "/health":
                 self._send(200, "ok", "text/plain; charset=utf-8")
             elif url.path == "/api/sessions":
@@ -979,6 +998,25 @@ class Handler(BaseHTTPRequestHandler):
                 crew = int(q.get("crew", ["1"])[0])
                 lang = q.get("lang", ["en"])[0]
                 self._json(200, rate_report(get_session(sid), crew, lang))
+            elif url.path == "/api/overview":
+                self._json(200, session_overview(q.get("id", [""])[0]))
+            elif url.path == "/api/export":
+                sid = q.get("id", [""])[0]
+                imu = _imu_file(sid)
+                if imu is None:
+                    raise FileNotFoundError(sid)
+                try:
+                    data, filename, kind = overview.export_file(imu, q.get("format", ["gpx"])[0], sid)
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Content-Disposition", 'attachment; filename="%s"' % filename)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
             elif url.path == "/api/trace":
                 sid = q.get("id", [""])[0]
                 n = int(q.get("n", ["900"])[0])
@@ -1002,7 +1040,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype:
-            self._json(400, {"error": "upload the _imu.csv, and the _info.csv beside it when you have one"})
+            self._json(400, {"error": "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"})
             return
         raw = self.rfile.read(length)
         head = ("Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % ctype).encode("utf-8")
@@ -1016,7 +1054,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = part.get_payload(decode=True) or b""
                 saved.append(_store_upload(filename, payload))
         if not any(path.endswith("_imu.csv") for path in saved):
-            self._json(400, {"error": "upload the _imu.csv, and the _info.csv beside it when you have one"})
+            self._json(400, {"error": "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"})
             return
         imu = next(path for path in saved if path.endswith("_imu.csv"))
         session = load_session(imu)

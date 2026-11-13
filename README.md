@@ -497,10 +497,12 @@ Seconds without a GPS fix are left out of the GPX track.
    ```
 
    Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/). Sessions in `recordings\`
-   are listed. **Open** uploads an `_imu.csv`, and the `_info.csv` from the same
-   session when you have it. The upload is kept under `recordings\uploads\`, so
+   are listed. **Open** uploads an `_imu.csv`, with the `_seconds.csv`,
+   `_laps.csv` and `_info.csv` from the same session when you have them. The
+   upload is kept under `recordings\uploads\`, so
    it does not replace a recording already there. **Tab5** reads a recording
-   straight off the tablet over USB, in Chrome or Edge, and then opens it. The
+   straight off the tablet over USB, in Chrome or Edge, and then opens it, with
+   the same session files. The
    server cannot see the tablet, so the browser does the reading. Stop the
    session on the tablet first: connecting can restart it, and a download is
    refused while it is recording. A recording over 80 MB is too big for the
@@ -520,6 +522,17 @@ Seconds without a GPS fix are left out of the GPX track.
    the outing was rowed in spells of hard and light strokes, no rate is marked:
    the rates then differ because the effort did, and the spells are listed
    instead, with how many there were, how long, and at what rate and split.
+   The **Overview** tab (shown when the session has its `_seconds.csv`) is the
+   device's Session review on the web: the track on a map, coloured from slow
+   (red) to fast (green) with a start dot and a finish square, the distance, time,
+   split, best 500 m, rate, strokes, distance per stroke, top speed and heart
+   rate, the laps, and split, rate and heart rate over the session. Hover a graph
+   and the map shows where you were. A session without GPS shows the figures and
+   graphs without a map. The map is OpenStreetMap, loaded by your browser. **Download GPX** and
+   **Download TCX** make a file Strava, Garmin Connect and the like accept
+   (the same as `python tools\export.py`); **Upload to Strava** opens Strava's
+   own upload page, where you pick the downloaded file. The GPX is marked as
+   rowing and carries stroke rate and heart rate.
    Chart → Whole session draws the outing on one
    timeline: scroll to zoom in until the strokes separate, drag to move along
    it, and double-click a stroke to open it. On a single stroke, scroll to zoom,
