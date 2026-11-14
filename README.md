@@ -21,6 +21,10 @@ is already loaded.
   including how much the boat rolls and yaws.
 - **Strokes**: every stroke on its own, with the same coaching hint the device
   gives, and your strokes compared by rate.
+- **Guide**: what the sensors measure, a drawn stroke (catch, drive, finish,
+  run, approach), a real stroke from the demo with numbered marks, and what each
+  figure of a session lets you conclude and what it cannot tell you. It is
+  there before you load anything.
 - **Strava and Garmin**: download your session as a GPX or TCX file with one
   click, then upload it to Strava or Garmin Connect.
 
@@ -569,6 +573,14 @@ Seconds without a GPS fix are left out of the GPX track.
    (the same as `python tools\export.py`); **Upload to Strava** opens Strava's
    own upload page, where you pick the downloaded file. The GPX is marked as
    rowing and carries stroke rate and heart rate.
+   The **Guide** tab is for someone who has not seen the data before. It is always
+   there, also with no session loaded (the welcome page has a "How to read your
+   data" button). It explains where the numbers come from (GPS, accelerometer,
+   gyro, heart rate), draws the acceleration and speed of one stroke split into its
+   phases, marks a real stroke from the demo recording with numbers you can point
+   at, and lists for each figure of the Overview and By rate what you can deduce and
+   what it cannot tell you. The real stroke is read from the demo recording once
+   per start of the server (`/api/guide`) and is not kept in the session cache.
    Chart → Whole session draws the outing on one
    timeline: scroll to zoom in until the strokes separate, drag to move along
    it, and double-click a stroke to open it. On a single stroke, scroll to zoom,

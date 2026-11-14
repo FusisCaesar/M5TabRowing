@@ -105,13 +105,33 @@ function ovColorOf(v, scale) {
 
 function ovCss(rgb) { return "rgb(" + rgb.map((x) => Math.round(x)).join(",") + ")"; }
 
+// Which tabs make sense: the Guide is always there; Overview and Strokes need a session (Overview also
+// its per-second log); with no session at all there is only Start, the welcome page.
+function ovTabs() {
+  const any = state.sessions.length > 0;
+  $("page-start").hidden = any;
+  $("page-overview").hidden = !(any && ov.data);
+  $("page-strokes").hidden = !any;
+  const shown = [...document.querySelectorAll("#pages button")].filter((b) => !b.hidden);
+  shown.forEach((b, i) => {
+    b.classList.toggle("first", i === 0);
+    b.classList.toggle("last", i === shown.length - 1);
+  });
+  const now = ov.page === "guide" ? "guide" : any ? ov.page : "start";
+  for (const key of ["start", "overview", "strokes", "guide"]) {
+    $("page-" + key).setAttribute("aria-selected", key === now);
+  }
+}
+
 function ovShowPage(page) {
   ov.page = page;
   document.body.classList.toggle("page-overview", page === "overview");
   document.body.classList.toggle("page-strokes", page === "strokes");
-  $("page-overview").setAttribute("aria-selected", page === "overview");
-  $("page-strokes").setAttribute("aria-selected", page === "strokes");
-  if (page === "overview") {
+  document.body.classList.toggle("page-guide", page === "guide");
+  ovTabs();
+  if (page === "guide") {
+    if (window.guideShow) guideShow();
+  } else if (page === "overview") {
     requestAnimationFrame(() => {
       if (ov.map) {
         ov.map.invalidateSize();
@@ -552,12 +572,10 @@ async function overviewLoad(id) {
   if (mine !== ov.token) return;
   if (!d || !d.has_seconds) {
     ov.data = null;
-    $("pages").hidden = true;
     $("overview").hidden = true;
-    ovShowPage("strokes");
+    ovShowPage(ov.page === "guide" ? "guide" : "strokes");
     return;
   }
-  $("pages").hidden = false;
   $("overview").hidden = false;
   ovRender(d);
   ovShowPage(ov.page || "overview");
@@ -571,6 +589,8 @@ for (const box of document.querySelectorAll(".ov-chart")) {
 }
 $("page-overview").addEventListener("click", () => ovShowPage("overview"));
 $("page-strokes").addEventListener("click", () => ovShowPage("strokes"));
+$("page-start").addEventListener("click", () => ovShowPage("strokes"));
+$("page-guide").addEventListener("click", () => ovShowPage("guide"));
 $("lang").addEventListener("change", () => { if (ov.data) ovRender(ov.data); });
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => ovSchedule()).observe($("ov-charts"));

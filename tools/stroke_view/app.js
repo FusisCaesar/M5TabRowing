@@ -393,6 +393,7 @@ async function loadSessions(selectId) {
   }
   $("welcome").hidden = state.sessions.length > 0;
   document.body.classList.toggle("empty", state.sessions.length === 0);
+  if (window.ovTabs) ovTabs();
   if (!state.sessions.length) {
     $("app").hidden = true;
     setStatus("");
@@ -2152,6 +2153,7 @@ $("motion").addEventListener("change", () => {
 function chooseFiles() { $("file").click(); }
 $("open").addEventListener("click", chooseFiles);
 $("welcome-open").addEventListener("click", chooseFiles);
+$("welcome-guide").addEventListener("click", () => ovShowPage("guide"));
 $("welcome-tab5").addEventListener("click", () => $("tab5").click());
 $("file").addEventListener("change", async () => {
   const input = $("file");
