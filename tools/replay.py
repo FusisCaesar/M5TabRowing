@@ -13,6 +13,7 @@ Usage:
 import argparse
 import bisect
 import csv
+from array import array
 import math
 import os
 import random
@@ -466,12 +467,17 @@ def synthetic(seconds, seed=1, facing=1.0, catch_depth=0.45, gps=True):
 # ---- analysis -------------------------------------------------------------
 
 def _run_once(rows, det, keep_trace):
-    events, trace = [], []
+    """keep_trace True keeps a row per sample; "surge" keeps only the unfiltered surge, as one
+    float per sample, which is all a long recording can afford to hold."""
+    events = []
+    trace = array("d") if keep_trace == "surge" else []
     for t, ax, ay, az, _, gps in rows:
         x, thr, ev, fin = det.process(t, ax, ay, az, gps)
         if ev:
             events.append(ev)
-        if keep_trace:
+        if keep_trace == "surge":
+            trace.append(det.sign * det.p_lin)
+        elif keep_trace:
             trace.append((t, x, thr, ev is not None, fin, det.sign * det.p_lin))
     return events, trace
 
@@ -503,8 +509,8 @@ def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS
     direction from the first sample, so the strokes before the device was sure
     come out the right way up too. det.hindsight says whether that happened.
     """
-    if hindsight:
-        rows = rows if isinstance(rows, list) else list(rows)
+    if hindsight and iter(rows) is rows:  # a one-shot iterator; the log is read twice
+        rows = list(rows)
     det = StrokeDetector(k, floor, minima, gps_delay=gps_delay)
     events, trace = _run_once(rows, det, keep_trace)
     det.hindsight = None

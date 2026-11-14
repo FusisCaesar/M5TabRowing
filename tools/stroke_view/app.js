@@ -315,7 +315,16 @@ function sessionBlurb(data, n) {
 
 async function getJSON(url, options) {
   const res = await fetch(url, options);
-  const data = await res.json();
+  const text = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    // Not our JSON: the server was restarting or ran out of memory and the host sent a web page.
+    throw new Error(res.ok
+      ? "The server sent an unexpected answer. Try again."
+      : "The server is not answering (" + res.status + "). A very long recording can be too much for it, try again in a minute.");
+  }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }

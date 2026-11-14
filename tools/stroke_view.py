@@ -21,8 +21,7 @@ import sys
 import threading
 import traceback
 import webbrowser
-from email import message_from_bytes
-from email.policy import default as email_default
+from itertools import repeat
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -211,6 +210,27 @@ def _mean_speed(t, gps, t0, t1):
     return float(good.mean()) if len(good) else 0.0
 
 
+class _Samples:
+    """The recording as the replay's rows, made a slice at a time. A list of tuples of Python
+    floats takes about 200 bytes a sample, which for a three hour recording is a quarter of a GB."""
+
+    CHUNK = 50000
+
+    def __init__(self, t, ax, ay, az, gps):
+        self.cols = (t, ax, ay, az, gps)
+
+    def __iter__(self):
+        t, ax, ay, az, gps = self.cols
+        for lo in range(0, len(t), self.CHUNK):
+            hi = lo + self.CHUNK
+            for row in zip(t[lo:hi].tolist(), ax[lo:hi].tolist(), ay[lo:hi].tolist(),
+                           az[lo:hi].tolist(), repeat(0), gps[lo:hi].tolist()):
+                yield row
+
+    def __len__(self):
+        return len(self.cols[0])
+
+
 def _replay_strokes(imu, t, gps, info, origin):
     """Catches and the surge curve from the current detector.
 
@@ -224,11 +244,10 @@ def _replay_strokes(imu, t, gps, info, origin):
     k = float(info.get("threshold_k", 1.8))
     floor = float(info.get("threshold_floor_g", 0.12))
     minima = info.get("minima_threshold") == "1"
-    ax, ay, az = imu["ax_g"], imu["ay_g"], imu["az_g"]
-    rows = [(float(t[i]), float(ax[i]), float(ay[i]), float(az[i]), 0, float(gps[i])) for i in range(len(t))]
-    events, trace, det = replay.run(rows, k, floor, minima, keep_trace=True, hindsight=True,
+    rows = _Samples(t, imu["ax_g"], imu["ay_g"], imu["az_g"], gps)
+    events, trace, det = replay.run(rows, k, floor, minima, keep_trace="surge", hindsight=True,
                                     gps_delay=replay.gps_delay_of(info))
-    surge = np.array([row[5] for row in trace])
+    surge = np.frombuffer(trace, dtype=np.float64)
     meta = []
     rescued = 0
     for ev in events:
@@ -254,14 +273,35 @@ def _replay_strokes(imu, t, gps, info, origin):
     return meta, len(events), rescued, label, surge
 
 
+IMU_COLUMNS = ("t_s", "ax_g", "ay_g", "az_g", "gps_mps")
+
+
+def _read_imu(path):
+    """The columns the replay needs, as float64 arrays. A 30 MB recording has hundreds of
+    thousands of rows, and genfromtxt would hold every column of every row as Python objects
+    on the way in (over 600 MB, more than a small server has). loadtxt reads only these."""
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        header = f.readline().strip().split(",")
+    missing = [name for name in IMU_COLUMNS[:4] if name not in header]
+    if missing:
+        raise ValueError("%s is not an _imu.csv: no %s column" % (os.path.basename(path), missing[0]))
+    wanted = [name for name in IMU_COLUMNS if name in header]
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=[header.index(n) for n in wanted],
+                      dtype=np.float64, ndmin=2)
+    out = {name: np.ascontiguousarray(data[:, i]) for i, name in enumerate(wanted)}
+    del data
+    if "gps_mps" not in out:
+        out["gps_mps"] = np.full(len(out["t_s"]), -1.0)
+    return out
+
 def load_session(imu_path):
     base, imu_path, strokes_path = anatomy.session_paths(imu_path)
     sid = os.path.basename(base)
     label = sid.split("_", 1)
     name = sid if len(label) == 1 else "%s %s" % (label[0], label[1].replace("_", " "))
-    imu = np.genfromtxt(imu_path, delimiter=",", names=True)
+    imu = _read_imu(imu_path)
     t = imu["t_s"]
-    gps = imu["gps_mps"] if "gps_mps" in imu.dtype.names else np.full(len(t), -1.0)
+    gps = imu["gps_mps"]
     info = _info(base)
     origin = float(info.get("start_t_s", t[0])) if len(t) else 0.0
     logged = _stroke_rows(strokes_path) if os.path.exists(strokes_path) else []
@@ -925,31 +965,147 @@ def session_overview(sid):
     return data
 
 
+_load_lock = threading.Lock()
+# How many analysed sessions stay in memory. A small hosted server has 512 MB in all.
+_cache_max = 100
+
+
+def _remember(session):
+    _sessions.pop(session.id, None)
+    _sessions[session.id] = session
+    while len(_sessions) > _cache_max:
+        _sessions.pop(next(iter(_sessions)))
+
+
+def _load_and_keep(path):
+    """Analyses a recording, one at a time: two long ones together would not fit a small server."""
+    with _load_lock:
+        session = load_session(path)
+        _remember(session)
+    return session
+
+
 def get_session(sid):
     if sid in _sessions:
         return _sessions[sid]
     imu = _imu_file(sid)
     if imu is None:
         raise FileNotFoundError(sid)
-    session = load_session(imu)
-    _sessions[session.id] = session
-    return session
+    with _load_lock:
+        if sid in _sessions:
+            return _sessions[sid]
+        session = load_session(imu)
+        _remember(session)
+        return session
 
 
-def _store_upload(name, data):
+UPLOAD_HELP = "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"
+
+
+def _upload_target(name):
+    """Where an uploaded file goes. ValueError for a name that is not a session file."""
     base = os.path.basename(str(name).replace("\\", "/"))
     if not _UPLOAD_NAME.match(base) or not base.endswith(UPLOAD_SUFFIXES):
-        raise ValueError("upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them")
+        raise ValueError(UPLOAD_HELP)
     folder = _uploads_dir()
     os.makedirs(folder, exist_ok=True)
     dest = os.path.join(folder, base)
     if not _inside_root(dest):
-        raise ValueError("upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them")
-    with open(dest, "wb") as f:
-        f.write(data)
+        raise ValueError(UPLOAD_HELP)
     if base.endswith("_imu.csv"):
         _sessions.pop(base[: -len("_imu.csv")], None)
     return dest
+
+
+_PART_NAME = re.compile(rb'filename="([^"]*)"')
+
+
+def save_multipart(rfile, content_type, length, target=_upload_target, block=1 << 20):
+    """Reads a multipart/form-data body from rfile and writes each file part to disk as it
+    arrives, a block at a time, so a 50 MB recording never sits in memory. Returns the paths."""
+    m = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not m:
+        raise ValueError(UPLOAD_HELP)
+    delim = b"\r\n--" + m.group(1).encode("ascii")
+    keep = len(delim) + 4
+    buf = b"\r\n"  # the first boundary has no line break before it; this gives it one
+    left = length
+    state = "preamble"
+    out = None
+    tmp = None
+    saved = []
+    try:
+        while True:
+            if left > 0 and state != "done":
+                data = rfile.read(min(block, left))
+                if not data:
+                    raise ValueError("the upload stopped before the end")
+                left -= len(data)
+                buf += data
+            elif left <= 0 and state == "body" and delim not in buf:
+                raise ValueError("the upload stopped before the end")
+            progressed = True
+            while progressed:
+                progressed = False
+                if state == "preamble":
+                    i = buf.find(delim)
+                    if i >= 0:
+                        buf = buf[i + len(delim):]
+                        state = "after"
+                        progressed = True
+                    else:
+                        buf = buf[-keep:]
+                elif state == "after":
+                    if len(buf) >= 2:
+                        if buf[:2] == b"--":
+                            state = "done"
+                        else:
+                            buf = buf[2:]  # the line break after the boundary
+                            state = "headers"
+                        progressed = True
+                elif state == "headers":
+                    i = buf.find(b"\r\n\r\n")
+                    if i >= 0:
+                        name = _PART_NAME.search(buf[:i])
+                        buf = buf[i + 4:]
+                        out = None
+                        if name and name.group(1):
+                            path = target(name.group(1).decode("utf-8", "replace"))
+                            # written beside the target and moved in when complete, so a
+                            # second upload of the same name never reads a half-written file
+                            tmp = "%s.%d.part" % (path, threading.get_ident())
+                            out = open(tmp, "wb")
+                        state = "body"
+                        progressed = True
+                elif state == "body":
+                    i = buf.find(delim)
+                    if i >= 0:
+                        if out:
+                            out.write(buf[:i])
+                            out.close()
+                            try:
+                                os.replace(tmp, path)
+                            except PermissionError:  # Windows: that recording is being analysed
+                                raise ValueError("this recording is being analysed right now, try again in a moment")
+                            saved.append(path)
+                        out = None
+                        buf = buf[i + len(delim):]
+                        state = "after"
+                        progressed = True
+                    elif len(buf) > keep:
+                        if out:
+                            out.write(buf[:-keep])
+                        buf = buf[-keep:]
+            if state == "done" or (left <= 0 and not progressed and state != "body"):
+                break
+    finally:
+        if out:
+            out.close()
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return saved
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1047,23 +1203,12 @@ class Handler(BaseHTTPRequestHandler):
         if "multipart/form-data" not in ctype:
             self._json(400, {"error": "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"})
             return
-        raw = self.rfile.read(length)
-        head = ("Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % ctype).encode("utf-8")
-        msg = message_from_bytes(head + raw, policy=email_default)
-        saved = []
-        if msg.is_multipart():
-            for part in msg.iter_parts():
-                filename = part.get_filename()
-                if not filename:
-                    continue
-                payload = part.get_payload(decode=True) or b""
-                saved.append(_store_upload(filename, payload))
+        saved = save_multipart(self.rfile, ctype, length)
         if not any(path.endswith("_imu.csv") for path in saved):
             self._json(400, {"error": "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"})
             return
         imu = next(path for path in saved if path.endswith("_imu.csv"))
-        session = load_session(imu)
-        _sessions[session.id] = session
+        session = _load_and_keep(imu)
         self._json(200, {"id": session.id, "name": session.name, "strokes": len(session.strokes)})
 
     def do_POST(self):
@@ -1081,8 +1226,7 @@ class Handler(BaseHTTPRequestHandler):
             if not path or not os.path.isfile(path) or not _inside_root(path):
                 self._json(400, {"error": "that file is not in the recordings folder"})
                 return
-            session = load_session(path)
-            _sessions[session.id] = session
+            session = _load_and_keep(path)
             self._json(200, {"id": session.id, "name": session.name, "strokes": len(session.strokes)})
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
@@ -1101,6 +1245,9 @@ def main():
     # Render sets PORT and reaches the process on every interface. Locally neither
     # is set, so the viewer stays on this machine only.
     hosted = "PORT" in os.environ
+    if hosted:
+        global _cache_max
+        _cache_max = 2
     port = args.port if args.port is not None else int(os.environ.get("PORT", "8765"))
     host = "0.0.0.0" if hosted else "127.0.0.1"
     _root = args.recordings or os.environ.get("RECORDINGS_DIR", "recordings")
