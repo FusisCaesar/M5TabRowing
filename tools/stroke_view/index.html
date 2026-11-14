@@ -42,9 +42,11 @@
       <button id="open" type="button" class="quiet" data-i18n="openFiles" data-i18n-title="openFilesTip" title="Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate">Open files</button>
       <button id="tab5" type="button" data-i18n="fromTab5" data-i18n-title="fromTab5Tip" title="Read a recording from the tablet over USB. Chrome or Edge.">Read from Tab5</button>
     </div>
-    <div class="group pages" id="pages" role="tablist" hidden>
-      <button id="page-overview" type="button" role="tab" data-i18n="pageOverview">Overview</button>
-      <button id="page-strokes" type="button" role="tab" data-i18n="pageStrokes">Strokes</button>
+    <div class="group pages" id="pages" role="tablist">
+      <button id="page-start" type="button" role="tab" data-i18n="pageStart" hidden>Start</button>
+      <button id="page-overview" type="button" role="tab" data-i18n="pageOverview" hidden>Overview</button>
+      <button id="page-strokes" type="button" role="tab" data-i18n="pageStrokes" hidden>Strokes</button>
+      <button id="page-guide" type="button" role="tab" data-i18n="pageGuide">Guide</button>
     </div>
     <div class="group analysis">
       <label>
@@ -92,6 +94,7 @@
       <div class="actions">
         <button id="welcome-tab5" type="button" data-i18n="fromTab5">Read from Tab5</button>
         <button id="welcome-open" type="button" class="quiet" data-i18n="openFiles">Open files</button>
+        <button id="welcome-guide" type="button" class="quiet" data-i18n="welcomeGuide">How to read your data</button>
       </div>
       <ol class="steps">
         <li data-i18n="stepStop">Stop the session on the tablet.</li>
@@ -160,6 +163,7 @@
       </div>
     </div>
   </section>
+  <section id="guide" aria-label="Guide"></section>
   <dialog id="device">
     <div id="device-title"></div>
     <select id="device-session" size="8"></select>
@@ -172,6 +176,7 @@
   <script src="vendor/leaflet.js"></script>
   <script src="app.js"></script>
   <script src="overview.js"></script>
+  <script src="guide.js"></script>
   <script src="tab5.js"></script>
 </body>
 </html>

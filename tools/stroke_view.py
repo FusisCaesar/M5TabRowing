@@ -52,6 +52,7 @@ STATIC = {
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/tab5.js": ("tab5.js", "text/javascript; charset=utf-8"),
     "/overview.js": ("overview.js", "text/javascript; charset=utf-8"),
+    "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/vendor/leaflet.js": ("vendor/leaflet.js", "text/javascript; charset=utf-8"),
     "/vendor/leaflet.css": ("vendor/leaflet.css", "text/css; charset=utf-8"),
@@ -579,6 +580,36 @@ def _motion_summary(t, gps, motion):
         total = count[rowing].sum()
         out[key + "_rms"] = float(np.sqrt(squares[rowing].sum() / total)) if total else 0.0
     return out
+
+
+_guide_example = None
+
+
+def guide_example():
+    """One clean stroke from the demo recording, for the Guide page to draw and annotate. The demo is
+    read on its own and not kept in the session cache, and the answer is remembered, so the Guide costs
+    one short read per start of the server and does not push anyone's session out of the cache."""
+    global _guide_example
+    if _guide_example is not None:
+        return _guide_example
+    imu = os.path.join(DEMO, "S0018_BBR_race_imu.csv")
+    if not os.path.isfile(imu):
+        _guide_example = {"has": False}
+        return _guide_example
+    with _load_lock:
+        session = load_session(imu)
+    for index, row in enumerate(session.strokes):
+        if not row.get("ok"):
+            continue
+        detail = stroke_detail(session, index, 1, "stroke", "en")
+        m, now = detail["markers"], detail["now"]
+        if (detail["valid"] and 22 <= detail["rate"] <= 27 and m["sag_t"] is not None and m["sag_g"] > 0.08
+                and m["release_t"] is not None and m["notch_t"]):
+            keep = ("rate", "split", "dps", "drive", "rec", "now", "bounds", "markers", "curve")
+            _guide_example = {"has": True, "id": session.id, "i": index, **{k: detail[k] for k in keep}}
+            return _guide_example
+    _guide_example = {"has": False}
+    return _guide_example
 
 
 def session_motion(session, origin):
@@ -1297,6 +1328,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, rate_report(get_session(sid), crew, lang))
             elif url.path == "/api/overview":
                 self._json(200, session_overview(q.get("id", [""])[0]))
+            elif url.path == "/api/guide":
+                self._json(200, guide_example())
             elif url.path == "/api/motion":
                 session = get_session(q.get("id", [""])[0])
                 self._json(200, session_motion(session, session.origin))
