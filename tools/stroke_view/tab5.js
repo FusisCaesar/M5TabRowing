@@ -107,6 +107,15 @@ class Tab5Port {
     return out;
   }
 
+  // Waits until the tablet has been quiet for quietMs and drops everything that arrived.
+  async drain(quietMs) {
+    for (;;) {
+      this.buf = new Uint8Array(0);
+      if (!await this._take(performance.now() + quietMs)) break;
+    }
+    this.buf = new Uint8Array(0);
+  }
+
   async readLine(timeoutMs) {
     const deadline = performance.now() + timeoutMs;
     for (;;) {
@@ -163,8 +172,18 @@ class Tab5Port {
         const want = Math.min(TAB5_CHUNK, size - got);
         let chunk = null;
         for (let attempt = 0; attempt < 20; attempt++) {
+          // After a bad chunk, let whatever the tablet is still sending arrive and throw it
+          // away. Left in the buffer, stray bytes (a log line the tablet printed in the middle
+          // of the chunk) shift every later read, and the retries can never line up again.
+          if (attempt > 0) await this.drain(300);
           await this.write(this.text.encode(attempt === 0 ? "N" : "R"));
-          const raw = await this.readExact(want + 4, 10000);
+          let raw = null;
+          try {
+            raw = await this.readExact(want + 4, attempt === 0 ? 10000 : 4000);
+          } catch (err) {
+            if (/closed the connection/.test(err.message)) throw err;
+            continue;  // bytes went missing: ask again
+          }
           const body = raw.slice(0, want);
           const crc = raw[want] | (raw[want + 1] << 8) | (raw[want + 2] << 16) | (raw[want + 3] << 24);
           if ((crc >>> 0) === crc32(body)) {
@@ -172,7 +191,7 @@ class Tab5Port {
             break;
           }
         }
-        if (!chunk) throw new Error("too many bad chunks");
+        if (!chunk) throw new Error("too many bad chunks at byte " + got + " of " + size);
         parts.push(chunk);
         got += want;
         if (onProgress) onProgress(got, size);
