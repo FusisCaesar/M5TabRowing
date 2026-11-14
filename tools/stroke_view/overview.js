@@ -37,8 +37,9 @@ const OV_COPY = {
       distance: "Distance", time: "Time", avgSplit: "Avg split", best500: "Best 500 m",
       avgRate: "Avg rate", strokes: "Strokes", dps: "Dist/stroke", maxSpeed: "Max speed",
       hr: "HR avg / max", laps: "Laps", avgHr: "Avg HR", maxHr: "Max HR",
+      roll: "Roll (rms)", yaw: "Yaw (rms)",
     },
-    charts: { split: "Split /500 m", rate: "Rate (spm)", hr: "Heart rate (bpm)" },
+    charts: { split: "Split /500 m", rate: "Rate (spm)", hr: "Heart rate (bpm)", roll: "Roll (° rms)", yaw: "Yaw (° rms)" },
     lapHead: ["Lap", "Time", "Dist", "Split", "Rate", "Strokes", "HR"],
     strokesWord: "strokes",
   },
@@ -57,8 +58,9 @@ const OV_COPY = {
       distance: "Afstand", time: "Tijd", avgSplit: "Gem. split", best500: "Beste 500 m",
       avgRate: "Gem. tempo", strokes: "Slagen", dps: "Afstand/slag", maxSpeed: "Max snelheid",
       hr: "HF gem / max", laps: "Rondes", avgHr: "Gem. HF", maxHr: "Max HF",
+      roll: "Rol (rms)", yaw: "Gieren (rms)",
     },
-    charts: { split: "Split /500 m", rate: "Tempo (spm)", hr: "Hartslag (bpm)" },
+    charts: { split: "Split /500 m", rate: "Tempo (spm)", hr: "Hartslag (bpm)", roll: "Rol (° rms)", yaw: "Gieren (° rms)" },
     lapHead: ["Ronde", "Tijd", "Afst", "Split", "Tempo", "Slagen", "HF"],
     strokesWord: "slagen",
   },
@@ -241,6 +243,10 @@ function ovDrawStats(d) {
       add("maxHr", String(Math.round(s.hr_max)), "bpm", false);
     }
   }
+  if (d.motion) {
+    add("roll", nf(d.motion.roll_rms, 1), "°", false);
+    add("yaw", nf(d.motion.yaw_rms, 1), "°", false);
+  }
   while (cells.length % 3) cells.push('<div class="stat"></div>');
   $("ov-stats").innerHTML = cells.join("");
 }
@@ -293,6 +299,7 @@ function ovNiceStep(span) {
 }
 
 function ovSeries(d, key) {
+  if (key === "roll" || key === "yaw") return d[key] || [];
   if (key === "split") return d.split.map((x) => (x != null && x <= 360 ? x : null));
   if (key === "rate") return d.rate.map((x) => (x > 0 ? x : null));
   return d.hr;
@@ -307,6 +314,11 @@ function ovRange(values, key) {
     const hi = Math.min(420, Math.max(lo + 20, Math.ceil(at(0.99) / 5) * 5));
     return [lo, hi];
   }
+  if (key === "roll" || key === "yaw") {
+    // Degrees off the mean attitude, from zero. A little headroom, in steps of a quarter degree.
+    const top = at(0.995);
+    return [0, Math.max(key === "roll" ? 1 : 0.5, Math.ceil(top * 4) / 4)];
+  }
   const step = key === "hr" ? 10 : 5;
   let lo = Math.floor((v[0] - 1) / step) * step;
   let hi = Math.ceil((v[v.length - 1] + 1) / step) * step;
@@ -318,6 +330,7 @@ function ovRange(values, key) {
 function ovFormat(key, x) {
   if (x == null) return "—";
   if (key === "split") return splitText(x);
+  if (key === "roll" || key === "yaw") return x.toFixed(1);
   return String(Math.round(x));
 }
 
@@ -346,7 +359,7 @@ function ovDrawChart(box, key, last) {
   const ph = h - top - bottom;
   const t1 = Math.max(1, d.t[d.t.length - 1]);
   const xOf = (t) => left + (t / t1) * pw;
-  const color = key === "split" ? "#1d4e89" : key === "rate" ? "#1f7a4d" : "#c4552a";
+  const color = { split: "#1d4e89", rate: "#1f7a4d", hr: "#c4552a", roll: "#0e7c86", yaw: "#8a6d1d" }[key];
 
   ctx.font = "600 11px " + FONT;
   ctx.fillStyle = MUTED;
@@ -493,6 +506,31 @@ function ovLeave() {
   ovSchedule();
 }
 
+// Roll and yaw come per second of the outing from the strokes' analysis, which can take a while on a
+// long recording, so they follow the page. Laid on the overview's own seconds.
+function ovAddMotion(d, m) {
+  if (!m || !m.has) return;
+  const at = (series) => d.t.map((t) => {
+    const j = Math.round(t - m.t[0]);
+    return j >= 0 && j < series.length ? series[j] : null;
+  });
+  d.roll = at(m.roll);
+  d.yaw = at(m.yaw);
+  d.motion = { roll_rms: m.roll_rms, yaw_rms: m.yaw_rms };
+}
+
+async function ovLoadMotion(id, mine) {
+  try {
+    const m = await getJSON("/api/motion?id=" + encodeURIComponent(id));
+    if (mine !== ov.token || !ov.data || ov.data.id !== id) return;
+    ovAddMotion(ov.data, m);
+    ovDrawStats(ov.data);
+    ovDrawCharts();
+  } catch (err) {
+    /* the page works without them */
+  }
+}
+
 function ovRender(d) {
   ov.data = d;
   ov.cursor = null;
@@ -523,6 +561,7 @@ async function overviewLoad(id) {
   $("overview").hidden = false;
   ovRender(d);
   ovShowPage(ov.page || "overview");
+  ovLoadMotion(id, mine);
 }
 
 for (const box of document.querySelectorAll(".ov-chart")) {
