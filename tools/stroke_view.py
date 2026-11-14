@@ -148,6 +148,7 @@ class Session:
         self.usual = {}
         self.best = {}
         self.usual_motion = {key: {} for key in MOTION}
+        self.motion = None  # roll and yaw over the outing, see _motion_summary()
         self.best_feat = {}
         self.usual_feat = {}
         self.avg_feat = {}
@@ -327,6 +328,7 @@ def load_session(imu_path):
 
     gps_delay = replay.gps_delay_of(info)
     session = Session(sid, name)
+    session.motion = _motion_summary(t, gps, raw_motion)
     session.logged = logged_n
     session.detected = detected
     session.rescued_n = rescued_n
@@ -545,6 +547,52 @@ def _average(session, index):
     rec = float(np.mean([s["cyc"][3] for s in chosen]))
     speed = [s["speed"] for s in chosen if s["speed"] > 0]
     return preroll, accel, drive, rec, float(np.mean(speed)) if speed else 0.0, len(chosen)
+
+
+def _motion_summary(t, gps, motion):
+    """Roll and yaw over the whole outing: how far the boat is off its mean attitude, as rms degrees
+    over a 15 s window, one value per second, only where it was being rowed. None when the recording
+    has no gyro."""
+    if len(t) < 200:
+        return None
+    roll, yaw = motion["roll"], motion["yaw"]
+    if not (np.any(roll) or np.any(yaw)):
+        return None
+    sec = np.floor(t - t[0]).astype(np.int64)
+    n = int(sec[-1]) + 1
+    count = np.bincount(sec, minlength=n).astype(np.float64)
+    fixed = gps >= 0
+    if fixed.any():
+        speed = np.bincount(sec, weights=np.where(fixed, gps, 0.0), minlength=n) / np.maximum(
+            np.bincount(sec, weights=fixed.astype(np.float64), minlength=n), 1.0)
+        rowing = speed >= 1.0
+    else:
+        rowing = count > 0
+    window = np.ones(15)
+    near = np.convolve(count, window, "same")
+    out = {"t0": float(t[0]), "n": n}
+    for key, x in (("roll", roll), ("yaw", yaw)):
+        squares = np.bincount(sec, weights=np.square(x, dtype=np.float64), minlength=n)
+        rms = np.sqrt(np.convolve(squares, window, "same") / np.maximum(near, 1.0))
+        out[key] = np.where(rowing & (near > 0), rms, np.nan)
+        total = count[rowing].sum()
+        out[key + "_rms"] = float(np.sqrt(squares[rowing].sum() / total)) if total else 0.0
+    return out
+
+
+def session_motion(session, origin):
+    m = session.motion
+    if m is None:
+        return {"has": False}
+    first = m["t0"] - origin
+    return {
+        "has": True,
+        "t": [round(first + i + 0.5, 1) for i in range(m["n"])],
+        "roll": [None if v != v else round(float(v), 2) for v in m["roll"]],
+        "yaw": [None if v != v else round(float(v), 2) for v in m["yaw"]],
+        "roll_rms": round(m["roll_rms"], 2),
+        "yaw_rms": round(m["yaw_rms"], 2),
+    }
 
 
 def _centred(cyc):
@@ -1248,6 +1296,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, rate_report(get_session(sid), crew, lang))
             elif url.path == "/api/overview":
                 self._json(200, session_overview(q.get("id", [""])[0]))
+            elif url.path == "/api/motion":
+                session = get_session(q.get("id", [""])[0])
+                self._json(200, session_motion(session, session.origin))
             elif url.path == "/api/export":
                 sid = q.get("id", [""])[0]
                 imu = _imu_file(sid)

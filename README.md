@@ -17,7 +17,8 @@ anything or know how to code, and you can try it without a device: a demo race
 is already loaded.
 
 - **Overview**: your track on a map, coloured from slow to fast, with distance,
-  time, split, best 500 m, rate, heart rate and graphs of the whole session.
+  time, split, best 500 m, rate, heart rate and graphs of the whole session,
+  including how much the boat rolls and yaws.
 - **Strokes**: every stroke on its own, with the same coaching hint the device
   gives, and your strokes compared by rate.
 - **Strava and Garmin**: download your session as a GPX or TCX file with one
@@ -556,8 +557,13 @@ Seconds without a GPS fix are left out of the GPX track.
    device's Session review on the web: the track on a map, coloured from slow
    (red) to fast (green) with a start dot and a finish square, the distance, time,
    split, best 500 m, rate, strokes, distance per stroke, top speed and heart
-   rate, the laps, and split, rate and heart rate over the session. Hover a graph
-   and the map shows where you were. A session without GPS shows the figures and
+   rate, the laps, and split, rate and heart rate over the session. Two more
+   graphs show how much the boat rolls and yaws: the rms in degrees over a 15 s
+   window, only while rowing, with the session average among the figures. They
+   measure the boat's movement around its own mean, so a steady list or a steady
+   turn does not show. They need a recording made with the gyro columns and
+   appear a moment after the page, when the strokes have been analysed. Hover a
+   graph and the map shows where you were. A session without GPS shows the figures and
    graphs without a map. The map is OpenStreetMap, loaded by your browser. **Download GPX** and
    **Download TCX** make a file Strava, Garmin Connect and the like accept
    (the same as `python tools\export.py`); **Upload to Strava** opens Strava's
