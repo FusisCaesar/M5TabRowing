@@ -147,6 +147,7 @@ class Session:
         self.strokes = []
         self.usual = {}
         self.best = {}
+        self.usual_motion = {key: {} for key in MOTION}
         self.best_feat = {}
         self.usual_feat = {}
         self.avg_feat = {}
@@ -210,21 +211,29 @@ def _mean_speed(t, gps, t0, t1):
     return float(good.mean()) if len(good) else 0.0
 
 
+# What is read off the sensor besides the surge, per stroke: sideways acceleration, roll and yaw.
+MOTION = ("sway", "roll", "yaw")
+
+
 class _Samples:
     """The recording as the replay's rows, made a slice at a time. A list of tuples of Python
     floats takes about 200 bytes a sample, which for a three hour recording is a quarter of a GB."""
 
     CHUNK = 50000
 
-    def __init__(self, t, ax, ay, az, gps):
+    def __init__(self, t, ax, ay, az, gps, gyro=None):
         self.cols = (t, ax, ay, az, gps)
+        self.gyro = gyro  # gx, gy, gz in deg/s, or None
 
     def __iter__(self):
         t, ax, ay, az, gps = self.cols
         for lo in range(0, len(t), self.CHUNK):
             hi = lo + self.CHUNK
-            for row in zip(t[lo:hi].tolist(), ax[lo:hi].tolist(), ay[lo:hi].tolist(),
-                           az[lo:hi].tolist(), repeat(0), gps[lo:hi].tolist()):
+            cols = [t[lo:hi].tolist(), ax[lo:hi].tolist(), ay[lo:hi].tolist(), az[lo:hi].tolist(),
+                    repeat(0), gps[lo:hi].tolist()]
+            if self.gyro is not None:
+                cols += [g[lo:hi].tolist() for g in self.gyro]
+            for row in zip(*cols):
                 yield row
 
     def __len__(self):
@@ -244,10 +253,14 @@ def _replay_strokes(imu, t, gps, info, origin):
     k = float(info.get("threshold_k", 1.8))
     floor = float(info.get("threshold_floor_g", 0.12))
     minima = info.get("minima_threshold") == "1"
-    rows = _Samples(t, imu["ax_g"], imu["ay_g"], imu["az_g"], gps)
+    gyro = tuple(imu[name] for name in GYRO_COLUMNS) if all(name in imu for name in GYRO_COLUMNS) else None
+    rows = _Samples(t, imu["ax_g"], imu["ay_g"], imu["az_g"], gps, gyro)
     events, trace, det = replay.run(rows, k, floor, minima, keep_trace="surge", hindsight=True,
                                     gps_delay=replay.gps_delay_of(info))
     surge = np.frombuffer(trace, dtype=np.float64)
+    motion = {"sway": np.frombuffer(det.sway, dtype=np.float32),
+              "roll": np.frombuffer(det.roll_trace, dtype=np.float32),
+              "yaw": np.frombuffer(det.yaw_trace, dtype=np.float32)}
     meta = []
     rescued = 0
     for ev in events:
@@ -270,10 +283,11 @@ def _replay_strokes(imu, t, gps, info, origin):
             "rescued": 1 if ev["rescued"] else 0,
         })
     label = "K %.2f, floor %.2f g%s, %s" % (k, floor, ", minima" if minima else "", replay.direction_note(det))
-    return meta, len(events), rescued, label, surge
+    return meta, len(events), rescued, label, surge, motion
 
 
-IMU_COLUMNS = ("t_s", "ax_g", "ay_g", "az_g", "gps_mps")
+GYRO_COLUMNS = ("gx_dps", "gy_dps", "gz_dps")
+IMU_COLUMNS = ("t_s", "ax_g", "ay_g", "az_g", "gps_mps") + GYRO_COLUMNS
 
 
 def _read_imu(path):
@@ -288,7 +302,8 @@ def _read_imu(path):
     wanted = [name for name in IMU_COLUMNS if name in header]
     data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=[header.index(n) for n in wanted],
                       dtype=np.float64, ndmin=2)
-    out = {name: np.ascontiguousarray(data[:, i]) for i, name in enumerate(wanted)}
+    out = {name: np.ascontiguousarray(data[:, i], dtype=np.float32 if name in GYRO_COLUMNS else np.float64)
+           for i, name in enumerate(wanted)}
     del data
     if "gps_mps" not in out:
         out["gps_mps"] = np.full(len(out["t_s"]), -1.0)
@@ -306,7 +321,7 @@ def load_session(imu_path):
     origin = float(info.get("start_t_s", t[0])) if len(t) else 0.0
     logged = _stroke_rows(strokes_path) if os.path.exists(strokes_path) else []
     logged_n = len(logged)
-    meta, detected, rescued_n, detector, raw_surge = _replay_strokes(imu, t, gps, info, origin)
+    meta, detected, rescued_n, detector, raw_surge, raw_motion = _replay_strokes(imu, t, gps, info, origin)
     surge = anatomy.lowpass(raw_surge)
     import replay
 
@@ -336,6 +351,22 @@ def load_session(imu_path):
         lo, hi = int(np.searchsorted(t, prev - anatomy.PREROLL_S)), int(np.searchsorted(t, catch, side="right"))
         row["raw_t"] = t[lo:hi] - prev
         row["raw_a"] = surge[lo:hi]
+        # Sideways, roll and yaw from the same samples, binned like the surge. Sideways acceleration is
+        # filtered only over this stroke (a recording is too long to run the filter over all of it).
+        # Angles are read against their own mean over the stroke.
+        for key in MOTION:
+            raw = raw_motion[key]
+            if key == "sway":
+                slo = max(0, lo - 50)
+                part = anatomy.lowpass_window(raw[slo:hi])[lo - slo:]
+            else:
+                part = np.asarray(raw[lo:hi], dtype=np.float64)
+            cyc = anatomy.cut_cycle(t[lo:hi], part, prev, finish, catch)
+            if key != "sway" and cyc is not None:
+                cyc, mean = _centred(cyc)
+                part = part - mean
+            row["raw_" + key] = part
+            row["cyc_" + key] = cyc
         # The receiver reports speed late, so a fix is drawn where the boat was doing that speed.
         glo = int(np.searchsorted(t, prev - anatomy.PREROLL_S + gps_delay))
         ghi = int(np.searchsorted(t, catch + gps_delay, side="right"))
@@ -360,12 +391,17 @@ def load_session(imu_path):
     for b in range((MAX_RATE - MIN_RATE) // BAND_W + 1):
         session.usual[b] = Template()
         session.best[b] = Template()
+        for key in MOTION:
+            session.usual_motion[key][b] = Template()
     for row in built:
         if not row.get("ok"):
             continue
         preroll, accel, drive, rec = row["cyc"]
         b = band_of(row["rate"])
         session.usual[b].blend(preroll, accel, drive, rec)
+        for key in MOTION:
+            if row.get("cyc_" + key) is not None:
+                session.usual_motion[key][b].blend(*row["cyc_" + key])
         best = bin_best.get(int(round(row["rate"])), 0)
         counted = bin_count.get(int(round(row["rate"])), 0)
         if counted >= 3 and row["dps"] > 0 and best > 0 and row["dps"] >= BEST_FRAC * best:
@@ -511,6 +547,55 @@ def _average(session, index):
     return preroll, accel, drive, rec, float(np.mean(speed)) if speed else 0.0, len(chosen)
 
 
+def _centred(cyc):
+    """A binned angle with its mean over the stroke taken off, and that mean."""
+    preroll, accel, drive, rec = cyc
+    mean = (accel[:anatomy.DRIVE_BINS].mean() * drive + accel[anatomy.DRIVE_BINS:].mean() * rec) / (drive + rec)
+    return (preroll - mean, accel - mean, drive, rec), float(mean)
+
+
+def _motion_average(session, index, key):
+    """One motion cycle of the last few strokes at this rate, the same strokes _average() takes."""
+    row = session.strokes[index]
+    band = band_of(row["rate"])
+    chosen = []
+    for i in range(index, -1, -1):
+        s = session.strokes[i]
+        if s.get("ok") and s.get("cyc_" + key) is not None and band_of(s["rate"]) == band:
+            chosen.append(s["cyc_" + key])
+        if len(chosen) >= AVG_N:
+            break
+    if not chosen:
+        return None
+    return (np.mean([c[0] for c in chosen], axis=0), np.mean([c[1] for c in chosen], axis=0),
+            float(np.mean([c[2] for c in chosen])), float(np.mean([c[3] for c in chosen])))
+
+
+def _motion_curve(cyc):
+    if cyc is None:
+        return None
+    out = anatomy.resample(*cyc)
+    if out is None:
+        return None
+    return {"t": _series(out[0]), "a": _series(out[1])}
+
+
+def _motion_of(session, index, row, averaged, key):
+    """What a motion panel shows: this stroke (or the last few), and the usual one at this rate."""
+    cyc = _motion_average(session, index, key) if averaged else row.get("cyc_" + key)
+    now = _motion_curve(cyc)
+    if now is None:
+        return None
+    usual = session.usual_motion[key].get(band_of(row["rate"]))
+    ref = None
+    if usual is not None and usual.n >= REF_MIN:
+        ref = _motion_curve((usual.preroll, usual.accel, cyc[2], cyc[3]))
+    raw = None
+    if not averaged and row.get("raw_" + key) is not None:
+        raw = {"t": _series(row["raw_t"]), "a": _series(row["raw_" + key])}
+    return {"now": now, "ref": ref, "raw": raw}
+
+
 def stroke_detail(session, index, crew, view, lang):
     row = session.strokes[index]
     if view == "average":
@@ -559,6 +644,8 @@ def stroke_detail(session, index, crew, view, lang):
         "gps": {"t": _series(row.get("gps_t", [])), "v": _series(row.get("gps_v", []))},
         "ref_preroll": None,
         "ref_accel": None,
+        "motion": {key: _motion_of(session, index, row, averaged is not None, key) for key in MOTION}
+                  if feat is not None else None,
     }
     if feat is not None:
         body["curve"] = {
