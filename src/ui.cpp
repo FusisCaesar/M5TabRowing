@@ -1259,7 +1259,7 @@ void drawPlot(const metrics::View& v) {
 
 // ---- settings screen -------------------------------------------------------
 
-enum SettingRow { S_K, S_FLOOR, S_MINIMA, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_COUNT };
+enum SettingRow { S_AUTO, S_K, S_FLOOR, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_COUNT };
 constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 4;
 constexpr int SET_ICON = 74, SET_PLUS_X = W - 20 - SET_ICON, SET_MINUS_X = SET_PLUS_X - 16 - SET_ICON;
 constexpr int SET_SWITCH_W = 130, SET_SWITCH_H = 60, SET_TEXT_BTN_W = 190;
@@ -1269,7 +1269,7 @@ struct SettingsTab {
     int rows[SET_ROWS];  // -1 = empty slot
 };
 constexpr SettingsTab SET_TABS[] = {
-    {"STROKE", {S_K, S_FLOOR, S_MINIMA, S_RATIO}},
+    {"STROKE", {S_AUTO, S_K, S_FLOOR, S_RATIO}},
     {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR}},
     {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS}},
     {"WIFI", {-1, -1, -1, -1}},
@@ -1299,7 +1299,7 @@ bool isNumeric(int row) { return row == S_K || row == S_FLOOR || row == S_RATIO 
 int switchState(int row) {
     const Settings& s = settings::get();
     switch (row) {
-        case S_MINIMA: return s.useMinimaThreshold;
+        case S_AUTO: return s.autoThreshold;
         case S_RAW: return s.rawLog;
         case S_FUSION: return s.fusion;
         case S_CAM_MIRROR: return s.camMirror;
@@ -1311,9 +1311,17 @@ int switchState(int row) {
 void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
     const Settings& s = settings::get();
     switch (row) {
-        case S_K: snprintf(label, ln, "Catch threshold factor (x RMS)"); snprintf(value, vn, "%.1f", s.thresholdK); break;
-        case S_FLOOR: snprintf(label, ln, "Catch threshold floor"); snprintf(value, vn, "%.2f g", s.thresholdFloorG); break;
-        case S_MINIMA: snprintf(label, ln, "Threshold from last 5 catch depths"); snprintf(value, vn, "%s", s.useMinimaThreshold ? "ON" : "OFF"); break;
+        case S_AUTO: snprintf(label, ln, "Automatic catch threshold"); snprintf(value, vn, "%s", s.autoThreshold ? "ON" : "OFF"); break;
+        case S_K:
+            snprintf(label, ln, "Catch threshold factor (x RMS)");
+            if (s.autoThreshold) snprintf(value, vn, "AUTO");
+            else snprintf(value, vn, "%.1f", s.thresholdK);
+            break;
+        case S_FLOOR:
+            snprintf(label, ln, "Catch threshold floor");
+            if (s.autoThreshold) snprintf(value, vn, "AUTO");
+            else snprintf(value, vn, "%.2f g", s.thresholdFloorG);
+            break;
         case S_RAW: snprintf(label, ln, "Raw IMU logging (100 Hz)"); snprintf(value, vn, "%s", s.rawLog ? "ON" : "OFF"); break;
         case S_FUSION: snprintf(label, ln, "GPS+IMU fusion for distance/stroke"); snprintf(value, vn, "%s", s.fusion ? "ON" : "OFF"); break;
         case S_RATIO: snprintf(label, ln, "Rec:drive target shift (2.5 at 20 spm)"); snprintf(value, vn, "%+.1f", s.ratioShift); break;
@@ -1646,11 +1654,14 @@ void onSettingsTap(int x, int y) {
     Settings& s = settings::get();
     bool full = false;
     switch (row) {
+        case S_AUTO: if (toggle) s.autoThreshold = !s.autoThreshold; break;
         case S_K:
+            if (s.autoThreshold) return;  // the setting is not in use
             if (minus) s.thresholdK = fmaxf(1.0f, s.thresholdK - 0.1f);
             if (plus) s.thresholdK = fminf(3.5f, s.thresholdK + 0.1f);
             break;
         case S_FLOOR:
+            if (s.autoThreshold) return;
             if (minus) s.thresholdFloorG = fmaxf(0.04f, s.thresholdFloorG - 0.01f);
             if (plus) s.thresholdFloorG = fminf(0.40f, s.thresholdFloorG + 0.01f);
             break;
@@ -1662,7 +1673,6 @@ void onSettingsTap(int x, int y) {
             if (minus) s.brightness = (uint8_t)max(20, s.brightness - 25);
             if (plus) s.brightness = (uint8_t)min(255, s.brightness + 25);
             break;
-        case S_MINIMA: if (toggle) s.useMinimaThreshold = !s.useMinimaThreshold; break;
         case S_RAW: if (toggle) s.rawLog = !s.rawLog; break;
         case S_FUSION: if (toggle) s.fusion = !s.fusion; break;
         case S_CAM_MIRROR: if (toggle) s.camMirror = !s.camMirror; break;

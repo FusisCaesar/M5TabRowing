@@ -19,7 +19,8 @@ void begin() {
     prefs.begin(NS, false);
     s.thresholdK = prefs.getFloat("thrK", cfg::THRESHOLD_K_DEFAULT);
     s.thresholdFloorG = prefs.getFloat("thrFloor", cfg::THRESHOLD_FLOOR_G_DEFAULT);
-    s.useMinimaThreshold = prefs.getBool("minima", false);
+    s.useMinimaThreshold = false;
+    s.autoThreshold = prefs.getBool("thrAuto", true);
     s.rawLog = prefs.getBool("rawLog", true);
     s.fusion = prefs.getBool("fusion", false);
     s.dayTheme = prefs.getBool("day", false);
@@ -60,7 +61,7 @@ void save() {
     prefs.begin(NS, false);
     prefs.putFloat("thrK", s.thresholdK);
     prefs.putFloat("thrFloor", s.thresholdFloorG);
-    prefs.putBool("minima", s.useMinimaThreshold);
+    prefs.putBool("thrAuto", s.autoThreshold);
     prefs.putBool("rawLog", s.rawLog);
     prefs.putBool("fusion", s.fusion);
     prefs.putBool("day", s.dayTheme);

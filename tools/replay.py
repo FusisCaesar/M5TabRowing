@@ -32,6 +32,16 @@ BANDPASS = (0.1, 3.0)
 RMS_TAU_S = 5.0
 MINIMA_FACTOR = 0.6
 MINIMA_COUNT = 5
+# Automatic threshold: how deep the catch dips are is read from the signal itself, not from a setting.
+AUTO_BLOCK_S = 1.0       # the deepest value of x is kept per block
+AUTO_WINDOW_BLOCKS = 4   # a sliding window of this many blocks always holds at least one catch above ~15 spm
+AUTO_HISTORY = 30        # windows kept: the typical dip is their median
+AUTO_MIN_HISTORY = 6     # windows needed before the median is trusted
+AUTO_FRACTION = 0.55     # the threshold is this part of the typical dip
+AUTO_MIN_G = 0.045       # never below this: it stays above the noise of a boat at rest
+AUTO_HUMP_FACTOR = 0.5   # a catch is followed by the drive: x must climb above zero by this part of the threshold ...
+AUTO_HUMP_MIN_G = 0.06   # ... but at least this much, so that the quiet dip of a slow stroke does not count ...
+AUTO_HUMP_WINDOW_S = 0.8  # ... within this long after the dip. The dip halfway through a slow stroke has no drive.
 MIN_STROKE_INTERVAL_S = 1.0
 MAX_DIP_DURATION_S = 0.8
 FINISH_FRACTION = 0.35
@@ -116,8 +126,9 @@ def norm(a):
 
 
 class StrokeDetector:
-    def __init__(self, k=1.8, floor=0.12, minima=False, forward=None, gps_delay=GPS_SPEED_DELAY_S):
-        self.k, self.floor, self.use_minima = k, floor, minima
+    def __init__(self, k=1.8, floor=0.12, minima=False, forward=None, gps_delay=GPS_SPEED_DELAY_S, auto=True):
+        self.k, self.floor, self.use_minima, self.auto = k, floor, minima, auto
+        self.blk_min, self.blk_n, self.blocks, self.depths = 0.0, 0, [], []
         # The firmware has one fixed delay. A recording can say otherwise: see gps_delay_of().
         self.delay_n = max(1, int(gps_delay * FS + 0.5) + 1)
         # Forward as a unit vector in the device's frame. Given: it decides the sign and
@@ -160,6 +171,7 @@ class StrokeDetector:
         self.gps_dir_n = 0
         self.in_dip = False
         self.in_rescue = False
+        self.hump = None  # (catch_t, dip_min, t_up, level) while an automatic-threshold dip waits for its drive
         self.rescue_chain = 0
         self.last_catch = -1.0
         self.intervals, self.minima = [], []
@@ -237,7 +249,29 @@ class StrokeDetector:
             return 0.0
         return 60.0 * len(self.intervals) / sum(self.intervals)
 
+    def auto_track(self, x):
+        """Keeps the deepest x per block, the deepest of the last few blocks, and a history of those."""
+        self.blk_min = min(self.blk_min, x)
+        self.blk_n += 1
+        if self.blk_n < AUTO_BLOCK_S * FS:
+            return
+        self.blocks = (self.blocks + [self.blk_min])[-AUTO_WINDOW_BLOCKS:]
+        if len(self.blocks) == AUTO_WINDOW_BLOCKS:
+            self.depths = (self.depths + [min(self.blocks)])[-AUTO_HISTORY:]
+        self.blk_min, self.blk_n = 0.0, 0
+
+    def typical_dip(self):
+        """Median depth (g, positive) of the dips in the last half minute; 0 until known."""
+        if len(self.depths) < AUTO_MIN_HISTORY:
+            return 0.0
+        s = sorted(self.depths)
+        n = len(s)
+        mid = s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+        return -min(mid, 0.0)
+
     def thr_mag(self):
+        if self.auto:
+            return max(AUTO_MIN_G, AUTO_FRACTION * self.typical_dip())
         mag = max(self.k * self.rms(), self.floor)
         if self.use_minima and len(self.minima) >= MINIMA_COUNT:
             mag = max(self.floor, MINIMA_FACTOR * -min(min(self.minima), 0.0))
@@ -404,8 +438,9 @@ class StrokeDetector:
             self.roll += (dot(r, scale(self.axis, self.sign)) - self.roll * leak) * DT
             self.yaw += (-dot(r, gu) - self.yaw * leak) * DT
         self.ms += (x * x - self.ms) * self.aR
+        self.auto_track(x)
         if flipped:
-            self.in_dip, self.in_rescue, self.phase = False, False, None
+            self.in_dip, self.in_rescue, self.hump, self.phase = False, False, None, None
             self.reset_cycle()
 
         normal_mag = self.thr_mag()
@@ -426,7 +461,7 @@ class StrokeDetector:
         if self.phase == "drive":
             self.drive_peak = max(self.drive_peak, x)
             fin = FINISH_FRACTION * self.drive_peak
-            if self.drive_peak > 0.5 * self.floor and self.prev_x >= fin > x:
+            if self.drive_peak > 0.5 * (AUTO_MIN_G if self.auto else self.floor) and self.prev_x >= fin > x:
                 tf = self.prev_t + (fin - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
                 self.finish_t, self.drive_time = tf, tf - self.last_catch
                 self.phase, finish = "recovery", True
@@ -439,14 +474,23 @@ class StrokeDetector:
 
         event = None
         normal_thr = -normal_thr_mag
+        if self.hump is not None:
+            catch_t, dip_min, t_up, level = self.hump
+            if x >= level:
+                self.hump = None
+                event = self.accept_catch(t, catch_t, dip_min, False)
+            elif t - t_up > AUTO_HUMP_WINDOW_S:
+                self.hump = None
         if not warm:
             self.in_dip = False
             self.in_rescue = False
+            self.hump = None
         elif not self.in_dip and self.prev_x >= normal_thr > x:
             # Deep enough for the normal threshold: this dip belongs to it, not the gap-fill.
             self.t_down = self.prev_t + (normal_thr - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
             self.dip_min, self.dip_thr, self.in_dip = x, normal_thr_mag, True
             self.in_rescue = False
+            self.hump = None
         elif not self.in_dip and not self.in_rescue and relax_useful and self.in_rescue_window(t, RESCUE_WINDOW_LO) \
                 and self.prev_x >= -relax_mag > x:
             self.rescue_t_down = self.prev_t + (-relax_mag - self.prev_x) / (x - self.prev_x) * (t - self.prev_t)
@@ -469,7 +513,10 @@ class StrokeDetector:
                 catch_t = 0.5 * (self.t_down + t_up)
                 self.in_dip = False
                 self.in_rescue = False
-                event = self.accept_catch(t, catch_t, self.dip_min, False)
+                if self.auto:
+                    self.hump = (catch_t, self.dip_min, t_up, max(AUTO_HUMP_MIN_G, AUTO_HUMP_FACTOR * self.dip_thr))
+                else:
+                    event = self.accept_catch(t, catch_t, self.dip_min, False)
             elif t - self.t_down > MAX_DIP_DURATION_S:
                 self.in_dip = False
 
@@ -568,7 +615,7 @@ def direction_note(det):
     return "forward from %s as it went, r %+.2f" % ("GPS" if det.gps_locked else "the stroke shape", det.gps_corr())
 
 
-def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS_SPEED_DELAY_S):
+def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS_SPEED_DELAY_S, auto=False):
     """Replays a log. Trace rows: t, surge, threshold, catch, finish, unfiltered surge.
 
     Without hindsight this is what the device does. With it, forward is first
@@ -578,14 +625,14 @@ def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS
     """
     if hindsight and iter(rows) is rows:  # a one-shot iterator; the log is read twice
         rows = list(rows)
-    det = StrokeDetector(k, floor, minima, gps_delay=gps_delay)
+    det = StrokeDetector(k, floor, minima, gps_delay=gps_delay, auto=auto)
     events, trace = _run_once(rows, det, keep_trace)
     det.hindsight = None
     if hindsight:
         learned = det.learned_forward()
         if learned and learned[1] >= GPS_DIR_MIN_CORR and learned[2] >= HINDSIGHT_MIN_S:
             live = [e["t"] for e in events]
-            det = StrokeDetector(k, floor, minima, forward=learned[0], gps_delay=gps_delay)
+            det = StrokeDetector(k, floor, minima, forward=learned[0], gps_delay=gps_delay, auto=auto)
             events, trace = _run_once(rows, det, keep_trace)
             moved = 0
             for e in events:
@@ -616,6 +663,12 @@ def _read_info(path):
         return {}
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
         return {r["key"]: r["value"] for r in csv.DictReader(f) if r.get("key")}
+
+
+def threshold_label(k, floor, minima, auto):
+    if auto:
+        return "automatic threshold"
+    return "K %.2f, floor %.2f g%s" % (k, floor, ", minima" if minima else "")
 
 
 def _newline(path):
@@ -700,21 +753,27 @@ def _keep_originals(imu_path, info):
     return kept
 
 
-def _mark_rebuilt(info_path, when):
-    """Notes in the session's info file that its strokes no longer come from the device."""
+def _mark_rebuilt(info_path, when, auto=False):
+    """Notes in the session's info file that its strokes no longer come from the device.
+
+    auto: they came from the automatic threshold, whatever the device ran, so the viewer follows suit."""
     lines = ["key,value"]
     if os.path.exists(info_path):
         with open(info_path, newline="", encoding="utf-8", errors="replace") as f:
             lines = [line for line in f.read().splitlines() if line.strip()]
     lines = [line for line in lines if not line.startswith(REBUILT_KEY + ",")]
     lines.append("%s,%s" % (REBUILT_KEY, when))
+    if auto:
+        lines = [line for line in lines if not line.startswith("auto_threshold,")]
+        lines.append("auto_threshold,1")
     _write_lines(info_path, lines)
 
 
-def rebuild_session(imu_path):
+def rebuild_session(imu_path, force_auto=False):
     """Replace a session's stroke file with what the current detector finds.
 
-    Keeps the session's own K, floor and minima. Speed, split and position come
+    Keeps the session's own K, floor and minima, unless force_auto: then the automatic threshold
+    (what a recording from before it existed should be read with). Speed, split and position come
     from the recording. The per-second rate and each lap's stroke count follow
     the new catches, so the rest of the session agrees with the stroke file.
     The device's own files are copied to original/ first.
@@ -724,11 +783,12 @@ def rebuild_session(imu_path):
     k = float(info.get("threshold_k", 1.8))
     floor = float(info.get("threshold_floor_g", 0.12))
     minima = info.get("minima_threshold") == "1"
+    auto = force_auto or info.get("auto_threshold") == "1"  # recordings from before it existed were manual
     rows = load_log(imu_path)
     if not rows:
         raise SystemExit("no samples in %s" % imu_path)
     origin = float(info["start_t_s"]) if info.get("start_t_s") else rows[0][0]
-    events, _, det = run(rows, k, floor, minima, hindsight=True, gps_delay=gps_delay_of(info))
+    events, _, det = run(rows, k, floor, minima, hindsight=True, gps_delay=gps_delay_of(info), auto=auto)
     kept = _keep_originals(imu_path, info)
     times = [r[0] for r in rows]
     speeds = [r[5] for r in rows]
@@ -770,10 +830,10 @@ def rebuild_session(imu_path):
     _write_lines(strokes_path, lines)
     _rewrite_rates(_sibling(imu_path, "seconds"), events, origin)
     laps = _rewrite_laps(_sibling(imu_path, "laps"), events, origin)
-    _mark_rebuilt(info_path, time.strftime("%Y-%m-%d"))
-    print("%s  strokes %d  rescued %d  laps %d  (K %.2f, floor %.2f g%s, %s)"
-          % (os.path.basename(strokes_path), len(events), rescued, laps, k, floor,
-             ", minima" if minima else "", direction_note(det)))
+    _mark_rebuilt(info_path, time.strftime("%Y-%m-%d"), auto)
+    print("%s  strokes %d  rescued %d  laps %d  (%s, %s)"
+          % (os.path.basename(strokes_path), len(events), rescued, laps,
+             threshold_label(k, floor, minima, auto), direction_note(det)))
     if kept:
         print("  device files kept in %s" % os.path.dirname(kept[0]))
     return len(events), rescued
@@ -913,7 +973,11 @@ def main():
     ap.add_argument("--synthetic", type=float, metavar="SECONDS")
     ap.add_argument("--k", type=float, default=1.8, help="threshold factor x RMS")
     ap.add_argument("--floor", type=float, default=0.12, help="threshold floor in g")
-    ap.add_argument("--minima", action="store_true", help="threshold from last 5 catch depths")
+    ap.add_argument("--minima", action="store_true", help="threshold from last 5 catch depths (with --manual)")
+    ap.add_argument("--auto", action="store_true",
+                    help="with --rebuild: use the automatic threshold, not the settings the device ran")
+    ap.add_argument("--manual", action="store_true",
+                    help="use --k/--floor/--minima; without it the threshold follows the signal, like the device")
     ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--strokes", metavar="CSV", help="write detected strokes to CSV")
     ap.add_argument("--rebuild", action="store_true",
@@ -936,7 +1000,7 @@ def main():
     if args.rebuild:
         if not args.log:
             ap.error("--rebuild needs a session log")
-        rebuild_session(args.log)
+        rebuild_session(args.log, force_auto=not args.manual and args.auto)
         return
 
     if args.sweep:
@@ -945,10 +1009,12 @@ def main():
                 for floor in (0.06, 0.09, 0.12, 0.15):
                     events, _, _ = run(rows, k, floor, minima, gps_delay=delay)
                     summarize(events, rows, f"K {k:.1f} floor {floor:.2f} minima {int(minima)}  ")
+        events, _, _ = run(rows, 0, 0, False, gps_delay=delay, auto=True)
+        summarize(events, rows, "automatic threshold  ")
         return
 
     events, trace, det = run(rows, args.k, args.floor, args.minima, keep_trace=bool(args.plot),
-                             hindsight=args.hindsight, gps_delay=delay)
+                             hindsight=args.hindsight, gps_delay=delay, auto=not args.manual)
     summarize(events, rows)
     print(f"surge axis {tuple(round(a * det.sign, 2) for a in det.axis)}  skew {det.skew():+.2f}  "
           f"{direction_note(det)}")

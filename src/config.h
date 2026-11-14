@@ -70,6 +70,23 @@ constexpr float THRESHOLD_FLOOR_G_DEFAULT = 0.12f;
 constexpr float MINIMA_FACTOR = 0.6f;
 constexpr int MINIMA_COUNT = 5;
 
+// Automatic catch threshold: how deep the catches are is read from the signal itself, so a light
+// boat or a seat well away from the stroke needs no setting. The deepest surge is kept per block;
+// a sliding window of a few blocks always holds one catch above ~15 spm; the typical catch is the
+// median of those windows over the last half minute. The threshold is a part of it.
+constexpr float AUTO_BLOCK_S = 1.0f;
+constexpr int AUTO_BLOCK_SAMPLES = (int)(AUTO_BLOCK_S * IMU_RATE_HZ);
+constexpr int AUTO_WINDOW_BLOCKS = 4;
+constexpr int AUTO_HISTORY = 30;
+constexpr int AUTO_MIN_HISTORY = 6;
+constexpr float AUTO_FRACTION = 0.55f;
+constexpr float AUTO_MIN_G = 0.045f;  // stays above the noise of a boat at rest
+// The dip halfway through a slow stroke is as deep as a quiet catch, but only a catch is followed by
+// the drive. The surge must climb this far above zero within the window after the dip.
+constexpr float AUTO_HUMP_FACTOR = 0.5f;  // x the threshold ...
+constexpr float AUTO_HUMP_MIN_G = 0.06f;  // ... and not less than this
+constexpr float AUTO_HUMP_WINDOW_S = 0.8f;
+
 constexpr float MIN_STROKE_INTERVAL_S = 1.0f;
 constexpr float MAX_DIP_DURATION_S = 0.8f;
 constexpr float FINISH_FRACTION = 0.35f;

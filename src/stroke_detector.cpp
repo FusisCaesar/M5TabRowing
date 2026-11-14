@@ -52,6 +52,12 @@ void StrokeDetector::reset() {
     lastCatchT_ = -1;
     intervalCount_ = intervalHead_ = 0;
     minimaCount_ = minimaHead_ = 0;
+    blkMin_ = 0;
+    blkN_ = 0;
+    blockCount_ = blockHead_ = 0;
+    depthCount_ = depthHead_ = 0;
+    typicalDip_ = 0;
+    humpPending_ = false;
     seq_ = 0;
     phase_ = Phase::None;
     resetCycle();
@@ -87,7 +93,40 @@ float StrokeDetector::rate(double now) const {
     return 60.0f * intervalCount_ / sum;
 }
 
+void StrokeDetector::autoTrack(float x) {
+    if (x < blkMin_) blkMin_ = x;
+    if (++blkN_ < cfg::AUTO_BLOCK_SAMPLES) return;
+    blocks_[blockHead_] = blkMin_;
+    blockHead_ = (blockHead_ + 1) % cfg::AUTO_WINDOW_BLOCKS;
+    if (blockCount_ < cfg::AUTO_WINDOW_BLOCKS) blockCount_++;
+    blkMin_ = 0;
+    blkN_ = 0;
+    if (blockCount_ < cfg::AUTO_WINDOW_BLOCKS) return;
+
+    float deepest = 0;
+    for (float b : blocks_) deepest = fminf(deepest, b);
+    depths_[depthHead_] = deepest;
+    depthHead_ = (depthHead_ + 1) % cfg::AUTO_HISTORY;
+    if (depthCount_ < cfg::AUTO_HISTORY) depthCount_++;
+    if (depthCount_ < cfg::AUTO_MIN_HISTORY) return;
+
+    float s[cfg::AUTO_HISTORY];
+    for (int i = 0; i < depthCount_; i++) {
+        float v = depths_[i];
+        int j = i;
+        while (j > 0 && s[j - 1] > v) {
+            s[j] = s[j - 1];
+            j--;
+        }
+        s[j] = v;
+    }
+    int n = depthCount_;
+    float mid = n % 2 ? s[n / 2] : 0.5f * (s[n / 2 - 1] + s[n / 2]);
+    typicalDip_ = -fminf(mid, 0.0f);
+}
+
 float StrokeDetector::thresholdMagnitude() const {
+    if (params_.autoThreshold) return fmaxf(cfg::AUTO_MIN_G, cfg::AUTO_FRACTION * typicalDip_);
     float mag = fmaxf(params_.thresholdK * rms(), params_.thresholdFloorG);
     if (params_.useMinimaThreshold && minimaCount_ >= cfg::MINIMA_COUNT) {
         float deepest = 0;
@@ -340,8 +379,10 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
     out.finishDetected = false;
 
     ms_ += (x * x - ms_) * alphaR_;
+    autoTrack(x);
 
     if (flipped) {
+        humpPending_ = false;
         dip_ = DipState::Seek;
         rescueDip_ = DipState::Seek;
         phase_ = Phase::None;
@@ -365,7 +406,8 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
     if (phase_ == Phase::Drive) {
         if (x > drivePeak_) drivePeak_ = x;
         float fin = cfg::FINISH_FRACTION * drivePeak_;
-        if (drivePeak_ > 0.5f * params_.thresholdFloorG && prevX_ >= fin && x < fin) {
+        float finishFloor = params_.autoThreshold ? cfg::AUTO_MIN_G : params_.thresholdFloorG;
+        if (drivePeak_ > 0.5f * finishFloor && prevX_ >= fin && x < fin) {
             double tf = prevT_ + (fin - prevX_) / (x - prevX_) * (t - prevT_);
             finishT_ = tf;
             driveTime_ = (float)(tf - lastCatchT_);
@@ -386,7 +428,16 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
 
     bool produced = false;
     float normalThr = -normalThrMag;
+    if (humpPending_) {
+        if (x >= humpLevel_) {
+            humpPending_ = false;
+            produced = acceptCatch(t, humpCatchT_, humpDipMin_, false, out, ev);
+        } else if (t - humpTUp_ > cfg::AUTO_HUMP_WINDOW_S) {
+            humpPending_ = false;
+        }
+    }
     if (!warm) {
+        humpPending_ = false;
         dip_ = DipState::Seek;
         rescueDip_ = DipState::Seek;
     } else if (dip_ == DipState::Seek && prevX_ >= normalThr && x < normalThr) {
@@ -396,6 +447,7 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
         dipThr_ = normalThrMag;
         dip_ = DipState::InDip;
         rescueDip_ = DipState::Seek;
+        humpPending_ = false;
     } else if (dip_ == DipState::Seek && rescueDip_ == DipState::Seek && relaxUseful &&
                inRescueWindow(t, cfg::RESCUE_WINDOW_LO) && prevX_ >= -relaxMag && x < -relaxMag) {
         rescueTDown_ = prevT_ + (-relaxMag - prevX_) / (x - prevX_) * (t - prevT_);
@@ -421,7 +473,15 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
             double catchT = 0.5 * (tDown_ + tUp);
             dip_ = DipState::Seek;
             rescueDip_ = DipState::Seek;
-            produced = acceptCatch(t, catchT, dipMin_, false, out, ev);
+            if (params_.autoThreshold) {
+                humpPending_ = true;
+                humpCatchT_ = catchT;
+                humpTUp_ = tUp;
+                humpDipMin_ = dipMin_;
+                humpLevel_ = fmaxf(cfg::AUTO_HUMP_MIN_G, cfg::AUTO_HUMP_FACTOR * dipThr_);
+            } else {
+                produced = acceptCatch(t, catchT, dipMin_, false, out, ev);
+            }
         } else if (t - tDown_ > cfg::MAX_DIP_DURATION_S) {
             dip_ = DipState::Seek;
         }

@@ -723,19 +723,26 @@ session is recording. Map data is
    split and distance per stroke, the total distance, and lists strokes whose
    rate differs by 2 spm or more.
 
-5. If strokes are missed or doubled, replay the raw log with other settings and
-   copy the best values to the Settings screen:
+5. The catch threshold follows the signal by itself (Settings, Stroke, Automatic
+   catch threshold), so a light boat or a seat far from the stroke needs no
+   setting. If strokes are still missed or doubled, replay the raw log; to try
+   the old fixed K and floor, switch the automatic threshold off on the device
+   or add `--manual` here, and copy the best values to the Settings screen:
 
    ```powershell
    python tools\replay.py S0007_imu.csv --sweep            # grid of K / floor / minima
-   python tools\replay.py S0007_imu.csv --k 1.2 --floor 0.08
+   python tools\replay.py S0007_imu.csv                   # the automatic threshold, like the device
+   python tools\replay.py S0007_imu.csv --manual --k 1.2 --floor 0.08
    python tools\replay.py S0007_imu.csv --plot 60 90       # needs matplotlib
    python tools\replay.py --synthetic 120                  # self-test on simulated rowing
    python tools\replay.py recordings\S0019_imu.csv --rebuild
+   python tools\replay.py S0021_imu.csv --rebuild --auto  # a session recorded before the automatic threshold
    ```
 
    `--rebuild` writes the strokes the current detector finds back into that
-   session, using the K and floor stored with it. A catch the original file
+   session, using the threshold settings stored with it (`--auto`: the automatic
+   threshold instead, which is what a session from before it existed needs when
+   no strokes were found). A catch the original file
    missed is filled in and marked. The rate on each second and the stroke count
    on each lap are updated to match. Before the first rebuild the device's own
    stroke, second and lap files are copied to `recordings\original\`, and the
@@ -751,12 +758,15 @@ session is recording. Map data is
 
 Tuning hints:
 
-- **Missed strokes** (smooth or shallow catches, fixed-seat rowing): a run of
-  them is filled in from the recent rhythm once two real intervals exist. If the
-  first strokes are missed too, so there is no rhythm to follow, lower the
-  floor to 0.08 g and K to about 1.2.
-- **Double counts** (rough water, a big bounce at the finish): raise K, or turn on
-  the minima threshold, which follows the depth of your recent catches.
+- **Missed or doubled strokes**: the automatic threshold (on by default) reads
+  how deep your catches are over the last half minute, so a 4, a 2 or a steer
+  seat far from the stroke all work without changing anything. A change in the
+  Settings screen applies at once, mid-session. It needs about ten seconds of
+  rowing before it knows the depth; until then it sits at 0.045 g.
+- With the automatic threshold off, K and the floor are fixed: lower both (0.08 g,
+  K about 1.2) for smooth or shallow catches, raise K for rough water or a big
+  bounce at the finish. K × RMS is what normally sets the bar, so lowering only
+  the floor does nothing until it is below that.
 - Drive and recovery look swapped on the Plot screen during the first strokes
   without GPS: the forward direction is still being learned from the stroke shape.
   It settles within a few strokes, and GPS overrides it from about 10 s of rowing
@@ -768,14 +778,20 @@ Tuning hints:
   remaining acceleration is band-passed (0.1–3 Hz) and projected onto the
   horizontal axis with the most motion. The catch is the sharp deceleration dip:
   a catch is the midpoint of where the signal crosses an adaptive threshold
-  (K × RMS, or 0.6 × recent catch depth) on the way down and up again. When that
-  misses, a shallower dip still counts if it lands where the last intervals say
+  on the way down and up again. The threshold is 0.55 × the typical catch depth,
+  never below 0.045 g: the deepest surge is kept per second, the deepest of the
+  last four seconds always holds a catch, and the typical depth is the median of
+  those over the last 30 s. A dip only counts when the surge then climbs at least
+  0.06 g (or half the threshold) above zero within 0.8 s: that is the drive. A
+  slow stroke has a second, shallower dip halfway through the recovery with no
+  drive after it, which is how a 2-man boat at 18 spm used to be counted at
+  twice the rate. (With the automatic threshold off, the threshold is K × RMS or
+  0.6 × recent catch depth, and a dip counts at once.) When that misses, a shallower dip still counts if it lands where the last intervals say
   the next stroke should be: the catch itself between 90% and 135% of that
   interval, at half the threshold but never below 0.06 g. The dip is allowed to
   start a little earlier, so the crossing is not cut off. That stroke becomes
   the new anchor, so a run of light strokes stays tracked, and its depth is
-  remembered: with the minima threshold on, the bar follows back down after a
-  hard piece instead of staying stuck on the deep catches. The chain stops after
+  remembered. The chain stops after
   120 such strokes in a row; a normal catch or a pause starts it again. Rate is
   the average of the last 3 stroke intervals. Strokes more than 6 s apart are a
   pause, not a slow stroke.

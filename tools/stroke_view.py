@@ -254,10 +254,11 @@ def _replay_strokes(imu, t, gps, info, origin):
     k = float(info.get("threshold_k", 1.8))
     floor = float(info.get("threshold_floor_g", 0.12))
     minima = info.get("minima_threshold") == "1"
+    auto = info.get("auto_threshold") == "1"
     gyro = tuple(imu[name] for name in GYRO_COLUMNS) if all(name in imu for name in GYRO_COLUMNS) else None
     rows = _Samples(t, imu["ax_g"], imu["ay_g"], imu["az_g"], gps, gyro)
     events, trace, det = replay.run(rows, k, floor, minima, keep_trace="surge", hindsight=True,
-                                    gps_delay=replay.gps_delay_of(info))
+                                    gps_delay=replay.gps_delay_of(info), auto=auto)
     surge = np.frombuffer(trace, dtype=np.float64)
     motion = {"sway": np.frombuffer(det.sway, dtype=np.float32),
               "roll": np.frombuffer(det.roll_trace, dtype=np.float32),
@@ -283,7 +284,7 @@ def _replay_strokes(imu, t, gps, info, origin):
             "t": float(ev["t"]),
             "rescued": 1 if ev["rescued"] else 0,
         })
-    label = "K %.2f, floor %.2f g%s, %s" % (k, floor, ", minima" if minima else "", replay.direction_note(det))
+    label = "%s, %s" % (replay.threshold_label(k, floor, minima, auto), replay.direction_note(det))
     return meta, len(events), rescued, label, surge, motion
 
 

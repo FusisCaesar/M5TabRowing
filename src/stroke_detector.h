@@ -9,6 +9,8 @@ struct StrokeParams {
     float thresholdK = cfg::THRESHOLD_K_DEFAULT;
     float thresholdFloorG = cfg::THRESHOLD_FLOOR_G_DEFAULT;
     bool useMinimaThreshold = false;
+    // The threshold follows the depth of the catches; K, the floor and the minima mode are then unused.
+    bool autoThreshold = true;
 };
 
 // Emitted at each accepted catch. Interval, drive, recovery, check and bounce
@@ -78,6 +80,8 @@ private:
     void resetCycle();
     void updateAxis(const dsp::Vec3& h, const dsp::Vec3& gu);
     float thresholdMagnitude() const;
+    void autoTrack(float x);
+    bool humpPending_ = false;
     // Recent rhythm: average of the intervals kept for the rate. False until two exist.
     bool rescuePeriod(float& period) const;
     bool inRescueWindow(double t, float loFactor) const;
@@ -147,6 +151,19 @@ private:
     int intervalCount_ = 0;
     int intervalHead_ = 0;
     float minima_[cfg::MINIMA_COUNT] = {};
+
+    // Automatic threshold: deepest surge of the current block, the last few blocks, and the history
+    // of the deepest of those; typicalDip_ (g, positive) is their median, 0 until enough are known.
+    float blkMin_ = 0;
+    int blkN_ = 0;
+    float blocks_[cfg::AUTO_WINDOW_BLOCKS] = {};
+    int blockCount_ = 0, blockHead_ = 0;
+    float depths_[cfg::AUTO_HISTORY] = {};
+    int depthCount_ = 0, depthHead_ = 0;
+    float typicalDip_ = 0;
+    // A dip that went back up and now waits for its drive before it counts as a catch.
+    double humpCatchT_ = 0, humpTUp_ = 0;
+    float humpDipMin_ = 0, humpLevel_ = 0;
     int minimaCount_ = 0;
     int minimaHead_ = 0;
     uint32_t seq_ = 0;

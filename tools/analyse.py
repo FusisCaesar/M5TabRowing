@@ -295,10 +295,11 @@ def main():
         k = args.k if args.k is not None else float(info.get("threshold_k", 1.8))
         floor = args.floor if args.floor is not None else float(info.get("threshold_floor_g", 0.12))
         minima = args.minima or info.get("minima_threshold") == "1"
+        auto = info.get("auto_threshold") == "1" and args.k is None and args.floor is None and not args.minima
         rows = list(zip(t_abs, imu["ax_g"], imu["ay_g"], imu["az_g"], imu["catch"].astype(int), gps))
-        events, _, _ = replay.run(rows, k, floor, minima, gps_delay=replay.gps_delay_of(info))
+        events, _, _ = replay.run(rows, k, floor, minima, gps_delay=replay.gps_delay_of(info), auto=auto)
         replay_t = np.array([e["t"] for e in events]) - t0
-        replay_label = f"K {k:.2f} floor {floor:.2f} minima {int(minima)}"
+        replay_label = "automatic threshold" if auto else f"K {k:.2f} floor {floor:.2f} minima {int(minima)}"
 
     dts = np.diff(t)
     gaps = int((dts > 0.025).sum())
@@ -310,7 +311,7 @@ def main():
     if info:
         lines.append("Settings: " + ", ".join(f"{k}={v}" for k, v in info.items()
                                               if k in ("build", "threshold_k", "threshold_floor_g",
-                                                       "minima_threshold", "start_utc")))
+                                                       "minima_threshold", "auto_threshold", "start_utc")))
     lines.append(f"Duration {t[-1] - t[0]:.0f} s, {len(t)} samples, {len(t) / max(t[-1] - t[0], 1):.1f} Hz, "
                  f"{gaps} gaps over 25 ms")
     if len(rates):

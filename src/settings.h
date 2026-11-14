@@ -28,7 +28,8 @@ constexpr int TILE_SLOTS = 8;
 struct Settings {
     float thresholdK;
     float thresholdFloorG;
-    bool useMinimaThreshold;
+    bool useMinimaThreshold;  // not offered any more; the automatic threshold replaces it
+    bool autoThreshold;       // the catch threshold follows the signal; K and the floor are then unused
     bool rawLog;
     bool fusion;
     bool dayTheme;
@@ -49,6 +50,7 @@ struct Settings {
         p.thresholdK = thresholdK;
         p.thresholdFloorG = thresholdFloorG;
         p.useMinimaThreshold = useMinimaThreshold;
+        p.autoThreshold = autoThreshold;
         return p;
     }
 };

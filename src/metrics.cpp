@@ -300,6 +300,7 @@ void logSessionInfo(int session) {
     logInfo("threshold_k", "%.2f", s.thresholdK);
     logInfo("threshold_floor_g", "%.3f", s.thresholdFloorG);
     logInfo("minima_threshold", "%d", s.useMinimaThreshold ? 1 : 0);
+    logInfo("auto_threshold", "%d", s.autoThreshold ? 1 : 0);
     logInfo("fusion", "%d", s.fusion ? 1 : 0);
     logInfo("raw_log", "%d", s.rawLog ? 1 : 0);
     logInfo("ratio_shift", "%.1f", s.ratioShift);
