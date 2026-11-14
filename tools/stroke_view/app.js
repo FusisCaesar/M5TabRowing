@@ -214,6 +214,11 @@ const CHROME = {
     byRate: "By rate",
     thisStroke: "This stroke",
     lastFive: "Last 5 at this rate",
+    motion: "Boat motion",
+    motionRoll: "Roll",
+    motionYaw: "Yaw",
+    motionSway: "Sideways",
+    motionNone: "Off",
     openFiles: "Open files",
     openFilesTip: "Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate",
     fromTab5: "Read from Tab5",
@@ -251,6 +256,11 @@ const CHROME = {
     byRate: "Per slagfrequentie",
     thisStroke: "Deze slag",
     lastFive: "Laatste 5 op dit tempo",
+    motion: "Bootbeweging",
+    motionRoll: "Rol",
+    motionYaw: "Gieren",
+    motionSway: "Zijwaarts",
+    motionNone: "Uit",
     openFiles: "Bestanden openen",
     openFilesTip: "Kies de _imu.csv van een sessie, met de _seconds.csv, _laps.csv en _info.csv voor de kaart en hartslag",
     fromTab5: "Lees van Tab5",
@@ -1111,34 +1121,55 @@ function roundedRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// The two plot panels, drawn under the phase bands.
+// The plot panels (two, three when the stroke has its sideways swing), as [top, bottom] pairs.
+function panelsOf(box) {
+  const out = [[box.aT, box.aB], [box.vT, box.vB]];
+  if (box.sT != null) out.push([box.sT, box.sB]);
+  return out;
+}
+
+// The plot panels, drawn under the phase bands.
 function paintPanels(ctx, box) {
   ctx.fillStyle = PANEL;
   ctx.strokeStyle = EDGE;
   ctx.lineWidth = 1;
-  for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+  for (const [top, bottom] of panelsOf(box)) {
     roundedRect(ctx, box.L + 0.5, top + 0.5, box.R - box.L - 1, bottom - top - 1, 4);
     ctx.fill();
     ctx.stroke();
   }
 }
 
+// The panel under the speed: what it is called, and its unit. k turns the value from the server into it.
+const MOTION_TITLES = {
+  sway: ["Sideways (mg), + is towards starboard. Grey: usual at this rate",
+         "Zijwaarts (mg), + is naar stuurboord. Grijs: gebruikelijk op dit tempo"],
+  roll: ["Roll (°), + is starboard side down. Grey: usual at this rate",
+         "Rol (°), + is stuurboord omlaag. Grijs: gebruikelijk op dit tempo"],
+  yaw: ["Yaw (°), + is bow towards starboard. Grey: usual at this rate",
+        "Gieren (°), + is boeg naar stuurboord. Grijs: gebruikelijk op dit tempo"],
+};
+const MOTION_UNITS = { sway: { k: 1000, least: 0 }, roll: { k: 1, least: 2 }, yaw: { k: 1, least: 1 } };
+
+function motionKey() { return MOTION_TITLES[$("motion").value] ? $("motion").value : $("motion").value === "none" ? "none" : "roll"; }
+
 function panelTitles(kind) {
   const nl = lang() === "nl";
   return {
     accel: nl ? "Versnelling (g)" : "Acceleration (g)",
     speed: nl ? "Snelheid (m/s)" : "Speed (m/s)",
+    sway: (MOTION_TITLES[motionKey()] || MOTION_TITLES.sway)[nl ? 1 : 0],
     time: kind === "session" ? "" : nl ? "seconden vanaf de haal" : "seconds from the catch",
   };
 }
 
 // Grid lines and value labels for both panels, with a title above each.
-function drawGrid(ctx, box, aRange, vRange, xs, kind) {
+function drawGrid(ctx, box, aRange, vRange, xs, kind, sRange) {
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
   ctx.save();
   ctx.lineWidth = 1;
-  for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+  for (const [top, bottom] of panelsOf(box)) {
     ctx.strokeStyle = GRID;
     ctx.beginPath();
     for (const x of xs) {
@@ -1155,6 +1186,10 @@ function drawGrid(ctx, box, aRange, vRange, xs, kind) {
     [niceTicks(aRange[0], aRange[1], 4), Ya, box.aT, box.aB, true],
     [niceTicks(vRange[0], vRange[1], 4), Yv, box.vT, box.vB, false],
   ];
+  if (box.sT != null && sRange) {
+    const Ys = (mg) => box.sB - (mg - sRange[0]) / (sRange[1] - sRange[0]) * (box.sB - box.sT);
+    rows.push([niceTicks(sRange[0], sRange[1], 6), Ys, box.sT, box.sB, true]);
+  }
   for (const [ticks, Y, top, bottom, signed] of rows) {
     const tenths = ticks.unit * 10;
     const dec = ticks.unit >= 1 ? 0 : ticks.unit >= 0.1 && Math.abs(tenths - Math.round(tenths)) < 1e-6 ? 1 : 2;
@@ -1176,11 +1211,12 @@ function drawGrid(ctx, box, aRange, vRange, xs, kind) {
   ctx.fillStyle = "#4a443a";
   ctx.fillText(names.accel, box.L, box.aT - 7);
   ctx.fillText(names.speed, box.L, box.vT - 7);
+  if (box.sT != null) ctx.fillText(names.sway, box.L, box.sT - 7);
   if (names.time) {
     ctx.font = "11px " + FONT;
     ctx.fillStyle = MUTED;
     ctx.textAlign = "right";
-    ctx.fillText(names.time, box.R, box.vT - 7);
+    ctx.fillText(names.time, box.R, (box.sT != null ? box.sT : box.vT) - 7);
   }
   ctx.restore();
 }
@@ -1193,8 +1229,14 @@ function strokeTicks(t0, t1) {
   return { step, times: out };
 }
 
-function layoutOf(w, h) {
+function layoutOf(w, h, sway) {
   const L = 54, R = w - 14, top = 26, gap = 34, axis = 22;
+  if (sway) {
+    const room = Math.max(120, h - top - 2 * gap - axis);
+    const aH = Math.round(room * 0.40), vH = Math.round(room * 0.26);
+    const vT = top + aH + gap, sT = vT + vH + gap;
+    return { L, R, aT: top, aB: top + aH, vT, vB: vT + vH, sT, sB: h - axis, axis: h - 4 };
+  }
   const inner = Math.max(80, h - top - gap - axis);
   const aH = Math.round(inner * 0.62);
   return { L, R, aT: top, aB: top + aH, vT: top + aH + gap, vB: h - axis, axis: h - 4 };
@@ -1311,7 +1353,9 @@ function draw() {
     return;
   }
   clampView();
-  const box = layoutOf(w, h);
+  const wanted = motionKey();
+  const swayData = wanted !== "none" && d.motion && d.motion[wanted] && d.motion[wanted].now ? d.motion[wanted] : null;
+  const box = layoutOf(w, h, !!swayData);
   const X = (t) => box.L + (t - state.t0) / (state.t1 - state.t0) * (box.R - box.L);
   const curve = d.curve;
   const rawOn = d.view !== "average";
@@ -1341,15 +1385,37 @@ function draw() {
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
 
+  // Sideways swing in milli-g, roll and yaw in degrees, symmetric around zero so left and right read the same.
+  let sRange = null, Ys = null;
+  if (swayData) {
+    const unit = MOTION_UNITS[wanted];
+    let reach;
+    if (wanted === "sway") {
+      // Same scale as the acceleration panel above, so the sideways swing is seen at its real size:
+      // next to the surge it is small.
+      reach = Math.max(Math.abs(aRange[0]), Math.abs(aRange[1])) * unit.k;
+    } else {
+      reach = unit.least;
+      for (const s of [swayData.now, swayData.ref]) {
+        if (!s) continue;
+        for (let i = 0; i < s.t.length; i++) {
+          if (s.t[i] >= state.t0 && s.t[i] <= state.t1 && s.a[i] != null) reach = Math.max(reach, Math.abs(s.a[i]) * unit.k * 1.15);
+        }
+      }
+    }
+    sRange = [-reach, reach];
+    Ys = (mg) => box.sB - (mg - sRange[0]) / (sRange[1] - sRange[0]) * (box.sB - box.sT);
+  }
+
   paintPanels(ctx, box);
   drawBands(ctx, d.bounds, X, box);
-  drawGrid(ctx, box, aRange, vRange, strokeTicks(state.t0, state.t1).times.map(X), "stroke");
+  drawGrid(ctx, box, aRange, vRange, strokeTicks(state.t0, state.t1).times.map(X), "stroke", sRange);
 
   const vline = (t, color) => {
     if (t < state.t0 || t > state.t1) return;
     ctx.strokeStyle = color;
     ctx.beginPath();
-    for (const [top, bottom] of [[box.aT, box.aB], [box.vT, box.vB]]) {
+    for (const [top, bottom] of panelsOf(box)) {
       ctx.moveTo(X(t), top);
       ctx.lineTo(X(t), bottom);
     }
@@ -1393,6 +1459,15 @@ function draw() {
     if (ref.length) strokeLine(ref.map((p) => [p[0], Ya(p[1])]), "#8a8478", 1.5);
     strokeLine(pairs(curve.t, curve.a, Ya), "#1d4e89", 2.2);
   });
+  if (swayData) {
+    // One stroke is mostly waves and noise, the swing that comes back every stroke is the usual one.
+    const mg = (s, Y) => pairs(s.t, s.a.map((v) => (v == null ? null : v * MOTION_UNITS[wanted].k)), Y);
+    inPanel(box.sT, box.sB, () => {
+      if (rawOn && swayData.raw) strokeLine(mg(swayData.raw, Ys), "rgba(29, 78, 137, 0.28)", 1);
+      if (swayData.ref) strokeLine(mg(swayData.ref, Ys), "#6f695d", 2.6);
+      strokeLine(mg(swayData.now, Ys), "#1d4e89", 1.6);
+    });
+  }
   inPanel(box.vT, box.vB, () => {
     strokeLine(pairs(curve.t, curve.v, Yv), "#1d4e89", 2.2);
     if (d.gps && d.gps.t) {
@@ -1426,6 +1501,7 @@ function drawBands(ctx, b, X, box) {
   ctx.beginPath();
   ctx.rect(box.L, box.aT, box.R - box.L, box.aB - box.aT);
   ctx.rect(box.L, box.vT, box.R - box.L, box.vB - box.vT);
+  if (box.sT != null) ctx.rect(box.L, box.sT, box.R - box.L, box.sB - box.sT);
   ctx.clip();
   ctx.font = "600 11px " + FONT;
   ctx.textAlign = "center";
@@ -1438,6 +1514,7 @@ function drawBands(ctx, b, X, box) {
     ctx.fillStyle = PHASE[p];
     ctx.fillRect(X(u0), box.aT, X(u1) - X(u0), box.aB - box.aT);
     ctx.fillRect(X(u0), box.vT, X(u1) - X(u0), box.vB - box.vT);
+    if (box.sT != null) ctx.fillRect(X(u0), box.sT, X(u1) - X(u0), box.sB - box.sT);
     ctx.globalAlpha = 1;
     const name = copy().phases[p];
     if (named && X(u1) - X(u0) > ctx.measureText(name).width + 8) {
@@ -1740,6 +1817,7 @@ function tickStep(span) {
 }
 
 function drawAxis(ctx, X, box) {
+  const bottom = box.sB != null ? box.sB : box.vB;
   const span = state.t1 - state.t0;
   const step = span > 2 ? 0.5 : span > 0.8 ? 0.2 : span > 0.3 ? 0.1 : 0.02;
   ctx.fillStyle = MUTED;
@@ -1751,10 +1829,10 @@ function drawAxis(ctx, X, box) {
     const x = X(t);
     ctx.strokeStyle = "#d9d2c5";
     ctx.beginPath();
-    ctx.moveTo(x, box.vB);
-    ctx.lineTo(x, box.vB + 4);
+    ctx.moveTo(x, bottom);
+    ctx.lineTo(x, bottom + 4);
     ctx.stroke();
-    ctx.fillText(t.toFixed(step < 0.1 ? 2 : 1), x, box.vB + 5);
+    ctx.fillText(t.toFixed(step < 0.1 ? 2 : 1), x, bottom + 5);
   }
 }
 
@@ -2062,6 +2140,14 @@ $("lang").addEventListener("change", () => {
 });
 $("view").addEventListener("change", () => {
   if (state.id && !rateMode()) reloadHints().catch((err) => setStatus(err.message));
+});
+try {
+  const savedMotion = localStorage.getItem("stroke-motion");
+  if (savedMotion && [...$("motion").options].some((o) => o.value === savedMotion)) $("motion").value = savedMotion;
+} catch (err) { /* storage blocked */ }
+$("motion").addEventListener("change", () => {
+  try { localStorage.setItem("stroke-motion", $("motion").value); } catch (err) { /* storage blocked */ }
+  draw();
 });
 function chooseFiles() { $("file").click(); }
 $("open").addEventListener("click", chooseFiles);

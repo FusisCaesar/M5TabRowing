@@ -31,6 +31,9 @@ struct DetectorSample {
     float surge = 0;        // band-passed surge, g, forward positive
     float surgeLinear = 0;  // gravity removed, not band-passed, g
     float vertical = 0;     // band-passed vertical, g
+    float swayLinear = 0;   // sideways, gravity removed, g, positive towards starboard
+    float rollDeg = 0;      // roll off the mean, degrees, positive with the starboard side down
+    float yawDeg = 0;       // heading off the mean, degrees, positive with the bow towards starboard
     float threshold = 0;    // catch threshold, g, negative
     bool catchDetected = false;
     bool finishDetected = false;
@@ -46,6 +49,8 @@ public:
         gpsValid_ = valid;
     }
     bool directionFromGps() const { return gpsLocked_; }
+    // Forward learned from GPS, as a unit vector in the device's frame; the surge is measured along it.
+    bool forwardKnown() const { return fwdReady_; }
     float gpsCorrelation() const;
     const StrokeParams& params() const { return params_; }
     void reset();
@@ -53,6 +58,9 @@ public:
     // Acceleration in g, t in seconds (monotonic, sampled at cfg::IMU_RATE_HZ).
     // Returns true when `ev` holds a new stroke.
     bool process(double t, float ax, float ay, float az, DetectorSample& out, StrokeEvent& ev);
+
+    // Gyro in deg/s, right after process() for the same sample: fills in out.rollDeg and out.yawDeg.
+    void attitude(float gx, float gy, float gz, DetectorSample& out);
 
     float rate(double now) const;
     double lastCatchTime() const { return lastCatchT_; }
@@ -100,6 +108,24 @@ private:
     int vDelayHead_ = 0;
     float dirVg_ = 0, dirVv_ = 0, dirGg_ = 0;
     uint32_t gpsDirN_ = 0;
+
+    // Which way, in the device's frame, speeds the boat up: the horizontal acceleration is
+    // integrated (leaky) and compared with GPS speed, as for the direction above, but on all three
+    // axes. Averages of that vector times GPS speed, and of its spread.
+    float alphaF_ = 0;
+    float alphaB_ = 0, leakK_ = 0;
+    dsp::Vec3 gyroBias_;
+    uint32_t gyroN_ = 0;
+    float rollDeg_ = 0, yawDeg_ = 0;
+    dsp::Vec3 fVel_;
+    dsp::Vec3 fDelay_[cfg::GPS_DIR_DELAY_SAMPLES];
+    int fDelayHead_ = 0;
+    dsp::Vec3 fCross_;
+    float fCov_[6] = {};  // xx xy xz yy yz zz
+    float fGg_ = 0;
+    uint32_t fN_ = 0;
+    bool fwdReady_ = false;
+    dsp::Vec3 fwd_{1, 0, 0};
     float ms_ = 0;
 
     DipState dip_ = DipState::Seek;

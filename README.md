@@ -46,7 +46,10 @@ CASIC commands, with u-blox and MTK fallbacks) and only RMC + GGA sentences.
 
 Mounting: any orientation works. The detector finds the boat's forward axis by
 itself (largest horizontal acceleration) and works out which way is forward from
-the shape of the stroke, or from GPS once you are moving above 1 m/s. Mount it
+the shape of the stroke, or from GPS once you are moving above 1 m/s. After about
+half a minute of that, forward is held as a direction in the unit's own frame: the
+surge is measured along it and nothing else, so a sideways push is not counted as
+a forward one, and the sideways acceleration is kept apart (see sway below). Mount it
 rigidly: a wobbly holder adds noise that looks like strokes. **Rotate screen 180**
 in Settings if the case is mounted the other way up.
 
@@ -445,7 +448,7 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 | `_seconds.csv` | second | UTC, position, speed, the 3-stroke split, distance, rate, HDOP, satellites, battery, heart rate (empty without a sensor) |
 | `_laps.csv` | lap | lap time, distance, average split and rate, strokes, average and maximum heart rate |
 | `_info.csv` | setting | build, start time, and the detector settings in use, so a session can be replayed exactly |
-| `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed (only with raw logging on) |
+| `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed, and the boat's motion: sway_lin_g (sideways acceleration), oll_deg and yaw_deg (only with raw logging on) |
 
 `t_s` is the same clock in every file, so strokes and IMU samples line up.
 `_info.csv` records where the session time came from (`time_source`: NTP, GPS
@@ -535,7 +538,8 @@ Seconds without a GPS fix are left out of the GPX track.
    the first strokes are drawn the right way up even where the device had not
    worked out the direction yet. Each stroke gets the same hint and gauges as the
    device. View → Last 5 at this rate is what the device shows; This stroke reads
-   one stroke, which carries more ripple and so draws more tips. The list follows
+   one stroke, which carries more ripple and so draws more tips. Below the speed
+   a third chart shows the roll, yaw or sideways swing of the stroke (Boat motion), with the usual one at that rate in grey. The list follows
    the view. Chart → By rate averages every stroke at one rate and draws the
    average of the best strokes at that rate on top: the fifth that went furthest
    per stroke, at least three. The split of a rate is its time over its distance.
@@ -776,6 +780,7 @@ Tuning hints:
   half a second late, so the acceleration is held back by that much first
   (`GPS_SPEED_DELAY_S`). Compared without the delay the two are a fifth of a
   stroke apart and the match can tip either way.
+- **Forward held, sway kept apart**: the same comparison is made on all three axes, to learn which way in the unit's frame speeds the boat up. That direction is averaged over a couple of minutes (FORWARD_TAU_S) and, once 30 s of moving GPS agree with it (r of at least 0.3), the surge is measured along it. A sideways push then stays out of the surge, which the axis that follows the largest motion could not promise. What is left, perpendicular to forward and horizontal, is the sway: positive towards starboard, logged as sway_lin_g. The gyro gives the angles: its rate about forward and about up, less its slow average (so bias and a steady turn drop out), integrated with a 3 s leak, logged as oll_deg (positive with the starboard side down) and yaw_deg (positive with the bow towards starboard). They are the boat's movement around its own mean, not a compass heading. In the viewer one of the three is drawn under the speed, picked with Boat motion. One stroke of the sideways acceleration is mostly waves and noise; the swing that repeats stroke after stroke shows as the grey line, the usual one at that rate. It is acceleration, not distance, and a rolling boat tilts the unit a little too, which also reads as sideways.
 - **Split and distance per stroke**: the split on screen is the GPS speed over
   the last 3 strokes, taken as distance over time, so it does not jump with the
   speed swing inside a single stroke. Right after a start or a pause it uses

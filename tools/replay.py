@@ -54,10 +54,18 @@ GPS_DIR_CORR_TAU_S = 15.0
 GPS_DIR_MIN_CORR = 0.3
 GPS_DIR_MIN_TIME_S = 10.0
 GPS_SPEED_DELAY_S = 0.5
+# Forward in the device's frame, learned from GPS as it goes and then held (as the firmware does).
+FORWARD_TAU_S = 120.0
+FORWARD_MIN_TIME_S = 30.0
+GYRO_BIAS_TAU_S = 30.0
+ATTITUDE_LEAK_TAU_S = 3.0
 # Recordings only, not in the firmware: with the whole outing to look at, forward is
 # settled once and used from the first stroke.
 HINDSIGHT_MIN_S = 30.0
 HINDSIGHT_HYSTERESIS = 0.2
+# With forward known from GPS, surge is measured along it and nothing else: a sideways push
+# stays out of the surge. Off: surge along the axis the detector tracks by itself.
+LOCK_FORWARD = True
 
 
 def ema_alpha(tau):
@@ -99,6 +107,10 @@ def scale(a, s):
     return (a[0] * s, a[1] * s, a[2] * s)
 
 
+def cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
 def norm(a):
     return math.sqrt(dot(a, a))
 
@@ -118,7 +130,19 @@ class StrokeDetector:
         self.h_m = [0.0] * 6  # xx xy xz yy yz zz
         self.h_gg = 0.0
         self.h_n = 0
+        # The same, as the device keeps it: a running average, so it follows a remounted unit.
+        self.o_c = (0.0, 0.0, 0.0)
+        self.o_m = [0.0] * 6
+        self.o_gg = 0.0
+        self.o_n = 0
+        self.fwd_ready = False
+        self.fwd_online = (1.0, 0.0, 0.0)
         self.p_lin = 0.0
+        self.lat_lin = 0.0  # gravity removed, g, positive towards starboard (to the right of forward)
+        self.roll = self.yaw = 0.0  # degrees off the mean: starboard side down, bow to starboard
+        self.gyro_bias = (0.0, 0.0, 0.0)
+        self.gyro_n = 0
+        self.aB = ema_alpha(GYRO_BIAS_TAU_S)
         self.aG, self.aC = ema_alpha(GRAVITY_TAU_S), ema_alpha(AXIS_COV_TAU_S)
         self.aS, self.aR = ema_alpha(SKEW_TAU_S), ema_alpha(RMS_TAU_S)
         self.bp = [(Biquad("hp", BANDPASS[0]), Biquad("lp", BANDPASS[1])) for _ in range(3)]
@@ -181,6 +205,20 @@ class StrokeDetector:
             self.h_m[i] += prods[i]
         self.h_gg += vg * vg
         self.h_n += 1
+        self.o_n += 1
+        a = max(ema_alpha(FORWARD_TAU_S), 1.0 / self.o_n)
+        self.o_c = tuple(c + (o * vg - c) * a for c, o in zip(self.o_c, old))
+        self.o_m = [m + (p - m) * a for m, p in zip(self.o_m, prods)]
+        self.o_gg += (vg * vg - self.o_gg) * a
+        size = norm(self.o_c)
+        if self.o_n >= FORWARD_MIN_TIME_S * FS and size > 1e-12:
+            f = scale(self.o_c, 1 / size)
+            m = self.o_m
+            var = (m[0] * f[0] * f[0] + m[3] * f[1] * f[1] + m[5] * f[2] * f[2]
+                   + 2 * (m[1] * f[0] * f[1] + m[2] * f[0] * f[2] + m[4] * f[1] * f[2]))
+            d = math.sqrt(max(var, 0.0) * self.o_gg)
+            if d > 1e-12 and size / d >= GPS_DIR_MIN_CORR:
+                self.fwd_online, self.fwd_ready = f, True
 
     def learned_forward(self):
         """(unit vector, correlation with GPS speed, seconds of GPS it rests on), or None."""
@@ -281,7 +319,7 @@ class StrokeDetector:
             n = norm(a)
         self.axis = scale(a, 1 / n)
 
-    def process(self, t, ax, ay, az, gps=-1.0):
+    def process(self, t, ax, ay, az, gps=-1.0, gyro=None):
         """Returns (surge, threshold, stroke_event_or_None, finish_detected). gps < 0 means no fix."""
         a = (ax, ay, az)
         if not self.init:
@@ -301,6 +339,11 @@ class StrokeDetector:
         vert = dot(bp, gu)
         h = sub(bp, scale(gu, vert))
         self.update_axis(h, gu)
+        lock = self.forward if self.forward is not None else (self.fwd_online if self.fwd_ready else None)
+        if lock is not None and LOCK_FORWARD:
+            fh = sub(lock, scale(gu, dot(lock, gu)))
+            if norm(fh) > 0.2:
+                self.axis = scale(fh, 1 / norm(fh))
 
         p = dot(h, self.axis)
         lin_h = sub(lin, scale(gu, dot(lin, gu)))
@@ -335,13 +378,31 @@ class StrokeDetector:
             self.gps_dir_n += 1
             self.learn_forward(lin_h, vg)
             corr = self.gps_corr()
-            if self.forward is None and self.gps_dir_n >= GPS_DIR_MIN_TIME_S * FS and abs(corr) >= GPS_DIR_MIN_CORR:
+            if self.forward is None and LOCK_FORWARD and self.fwd_ready:
+                # Forward is known as a direction, so the axis points along it and surge is positive.
+                self.gps_locked = True
+                if self.sign != 1:
+                    self.sign, flipped = 1, True
+            elif self.forward is None and self.gps_dir_n >= GPS_DIR_MIN_TIME_S * FS and abs(corr) >= GPS_DIR_MIN_CORR:
                 want = 1 if corr > 0 else -1
                 self.gps_locked = True
                 if want != self.sign:
                     self.sign, flipped = want, True
 
         x = self.sign * p
+        # Sideways: perpendicular to forward, in the horizontal plane. Right of forward is
+        # forward x up, and gu points up (a device at rest reads +1 g upwards).
+        self.lat_lin = dot(lin_h, cross(scale(self.axis, self.sign), gu))
+        if gyro is not None:
+            # Rate about forward and about up, less its slow average, integrated with a leak. Right-hand
+            # rotation about forward lifts the port side, about up it turns the bow to port.
+            self.gyro_n += 1
+            a_b = max(self.aB, 1.0 / self.gyro_n)
+            self.gyro_bias = tuple(b + (w - b) * a_b for b, w in zip(self.gyro_bias, gyro))
+            r = sub(gyro, self.gyro_bias)
+            leak = 1.0 / ATTITUDE_LEAK_TAU_S
+            self.roll += (dot(r, scale(self.axis, self.sign)) - self.roll * leak) * DT
+            self.yaw += (-dot(r, gu) - self.yaw * leak) * DT
         self.ms += (x * x - self.ms) * self.aR
         if flipped:
             self.in_dip, self.in_rescue, self.phase = False, False, None
@@ -471,12 +532,18 @@ def _run_once(rows, det, keep_trace):
     float per sample, which is all a long recording can afford to hold."""
     events = []
     trace = array("d") if keep_trace == "surge" else []
-    for t, ax, ay, az, _, gps in rows:
-        x, thr, ev, fin = det.process(t, ax, ay, az, gps)
+    # Sideways, roll and yaw, one value per sample like the surge. Single precision is plenty.
+    kept = keep_trace == "surge"
+    det.sway, det.roll_trace, det.yaw_trace = (array("f"), array("f"), array("f")) if kept else (None, None, None)
+    for t, ax, ay, az, _, gps, *gyro in rows:
+        x, thr, ev, fin = det.process(t, ax, ay, az, gps, gyro if gyro else None)
         if ev:
             events.append(ev)
-        if keep_trace == "surge":
+        if kept:
             trace.append(det.sign * det.p_lin)
+            det.sway.append(det.lat_lin)
+            det.roll_trace.append(det.roll)
+            det.yaw_trace.append(det.yaw)
         elif keep_trace:
             trace.append((t, x, thr, ev is not None, fin, det.sign * det.p_lin))
     return events, trace

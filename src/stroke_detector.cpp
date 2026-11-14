@@ -15,6 +15,9 @@ StrokeDetector::StrokeDetector() {
     alphaC_ = dsp::emaAlpha(cfg::AXIS_COV_TAU_S, cfg::IMU_DT_S);
     alphaS_ = dsp::emaAlpha(cfg::SKEW_TAU_S, cfg::IMU_DT_S);
     alphaR_ = dsp::emaAlpha(cfg::RMS_TAU_S, cfg::IMU_DT_S);
+    alphaF_ = dsp::emaAlpha(cfg::FORWARD_TAU_S, cfg::IMU_DT_S);
+    alphaB_ = dsp::emaAlpha(cfg::GYRO_BIAS_TAU_S, cfg::IMU_DT_S);
+    leakK_ = 1.0f / cfg::ATTITUDE_LEAK_TAU_S;
     reset();
 }
 
@@ -32,6 +35,17 @@ void StrokeDetector::reset() {
     vDelayHead_ = 0;
     dirVg_ = dirVv_ = dirGg_ = 0;
     gpsDirN_ = 0;
+    fVel_ = dsp::Vec3();
+    for (auto& v : fDelay_) v = dsp::Vec3();
+    fDelayHead_ = 0;
+    fCross_ = dsp::Vec3();
+    for (float& c : fCov_) c = 0;
+    fGg_ = 0;
+    fN_ = 0;
+    fwdReady_ = false;
+    gyroBias_ = dsp::Vec3();
+    gyroN_ = 0;
+    rollDeg_ = yawDeg_ = 0;
     dip_ = DipState::Seek;
     rescueDip_ = DipState::Seek;
     rescueChain_ = 0;
@@ -182,6 +196,23 @@ void StrokeDetector::updateAxis(const Vec3& h, const Vec3& gu) {
     axis_ = a * (1.0f / n);
 }
 
+void StrokeDetector::attitude(float gx, float gy, float gz, DetectorSample& out) {
+    Vec3 w(gx, gy, gz);
+    gyroN_++;
+    gyroBias_ = gyroBias_ + (w - gyroBias_) * fmaxf(alphaB_, 1.0f / (float)gyroN_);
+    Vec3 r = w - gyroBias_;
+    float gn = g_.norm();
+    Vec3 gu = gn > 0.1f ? g_ * (1.0f / gn) : Vec3(0, 0, 1);
+    // Right-hand rotation about forward lifts the port side, so positive roll is starboard down.
+    // Right-hand rotation about up turns the bow to port, so yaw is taken the other way round.
+    float roll = r.dot(axis_ * (float)sign_);
+    float yaw = -r.dot(gu);
+    rollDeg_ += (roll - rollDeg_ * leakK_) * cfg::IMU_DT_S;
+    yawDeg_ += (yaw - yawDeg_ * leakK_) * cfg::IMU_DT_S;
+    out.rollDeg = rollDeg_;
+    out.yawDeg = yawDeg_;
+}
+
 bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSample& out,
                              StrokeEvent& ev) {
     Vec3 a(ax, ay, az);
@@ -206,6 +237,12 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
     float vert = bp.dot(gu);
     Vec3 h = bp - gu * vert;
     updateAxis(h, gu);
+    if (fwdReady_) {
+        // Forward is known: measure along it, whatever the tracked axis has drifted towards.
+        Vec3 fh = fwd_ - gu * fwd_.dot(gu);
+        float n = fh.norm();
+        if (n > 0.2f) axis_ = fh * (1.0f / n);
+    }
 
     float p = h.dot(axis_);
     Vec3 linH = lin - gu * lin.dot(gu);
@@ -240,13 +277,47 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
         vDelayHead_ = (vDelayHead_ + 1) % cfg::GPS_DIR_DELAY_SAMPLES;
         gpsMean_ += (gpsSpeed_ - gpsMean_) * dsp::emaAlpha(cfg::GPS_DIR_HP_TAU_S, dt);
         float vg = gpsSpeed_ - gpsMean_;
+
+        // The same comparison on the whole horizontal acceleration, to learn which way is forward.
+        {
+            fVel_ = fVel_ + (linH * cfg::STANDARD_GRAVITY - fVel_ * (1.0f / cfg::GPS_DIR_INTEGRATOR_TAU_S)) * dt;
+            Vec3 old = fDelay_[fDelayHead_];
+            fDelay_[fDelayHead_] = fVel_;
+            fDelayHead_ = (fDelayHead_ + 1) % cfg::GPS_DIR_DELAY_SAMPLES;
+            fN_++;
+            float aF = fmaxf(alphaF_, 1.0f / (float)fN_);
+            fCross_ = fCross_ + (old * vg - fCross_) * aF;
+            const float prods[6] = {old.x * old.x, old.x * old.y, old.x * old.z,
+                                    old.y * old.y, old.y * old.z, old.z * old.z};
+            for (int i = 0; i < 6; i++) fCov_[i] += (prods[i] - fCov_[i]) * aF;
+            fGg_ += (vg * vg - fGg_) * aF;
+            float size = fCross_.norm();
+            if (fN_ >= cfg::FORWARD_MIN_TIME_S * cfg::IMU_RATE_HZ && size > 1e-12f) {
+                Vec3 f = fCross_ * (1.0f / size);
+                float var = fCov_[0] * f.x * f.x + fCov_[3] * f.y * f.y + fCov_[5] * f.z * f.z +
+                            2.0f * (fCov_[1] * f.x * f.y + fCov_[2] * f.x * f.z + fCov_[4] * f.y * f.z);
+                float d = sqrtf(fmaxf(var, 0.0f) * fGg_);
+                if (d > 1e-12f && size / d >= cfg::GPS_DIR_MIN_CORR) {
+                    fwd_ = f;
+                    fwdReady_ = true;
+                }
+            }
+        }
+
         float a = dsp::emaAlpha(cfg::GPS_DIR_CORR_TAU_S, dt);
         dirVg_ += (vOld * vg - dirVg_) * a;
         dirVv_ += (vOld * vOld - dirVv_) * a;
         dirGg_ += (vg * vg - dirGg_) * a;
         gpsDirN_++;
         float corr = gpsCorrelation();
-        if (gpsDirN_ >= cfg::GPS_DIR_MIN_TIME_S * cfg::IMU_RATE_HZ && fabsf(corr) >= cfg::GPS_DIR_MIN_CORR) {
+        if (fwdReady_) {
+            // The axis points along forward, so surge is positive as it is.
+            gpsLocked_ = true;
+            if (sign_ != 1) {
+                sign_ = 1;
+                flipped = true;
+            }
+        } else if (gpsDirN_ >= cfg::GPS_DIR_MIN_TIME_S * cfg::IMU_RATE_HZ && fabsf(corr) >= cfg::GPS_DIR_MIN_CORR) {
             int want = corr > 0 ? 1 : -1;
             gpsLocked_ = true;
             if (want != sign_) {
@@ -259,6 +330,11 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
     float x = sign_ * p;
     out.surge = x;
     out.surgeLinear = sign_ * pLin;
+    // Right of forward is forward x up, and gu points up (a device at rest reads +1 g upwards).
+    Vec3 fwdDir = axis_ * (float)sign_;
+    Vec3 right(fwdDir.y * gu.z - fwdDir.z * gu.y, fwdDir.z * gu.x - fwdDir.x * gu.z,
+               fwdDir.x * gu.y - fwdDir.y * gu.x);
+    out.swayLinear = linH.dot(right);
     out.vertical = vert;
     out.catchDetected = false;
     out.finishDetected = false;

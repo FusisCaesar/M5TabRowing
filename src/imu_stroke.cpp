@@ -61,7 +61,7 @@ void task(void*) {
     uint32_t overruns = 0;
     DetectorSample out;
     StrokeEvent ev;
-    char line[160];
+    char line[200];
 
     for (;;) {
         if (xTaskDelayUntil(&wake, period) == pdFALSE) overruns++;
@@ -83,6 +83,7 @@ void task(void*) {
 
         detector.setGps(gpsV, gpsOk);
         bool stroke = detector.process(t, ax, ay, az, out, ev);
+        detector.attitude(gx, gy, gz, out);
         recorder.push(t, out.surgeLinear, gpsV, gpsOk);
 
         fusion.setGps(gpsV, gpsOk && fusionEnabled);
@@ -109,9 +110,9 @@ void task(void*) {
         plotHead.store(head + 1, std::memory_order_release);
 
         if (logger::rawActive()) {
-            snprintf(line, sizeof(line), "%.3f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.4f,%.4f,%d,%.2f,%.4f,%.4f,%d\n",
+            snprintf(line, sizeof(line), "%.3f,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%.4f,%.4f,%d,%.2f,%.4f,%.4f,%d,%.4f,%.3f,%.3f\n",
                      t, ax, ay, az, gx, gy, gz, out.surge, out.threshold, out.catchDetected ? 1 : 0,
-                     gpsOk ? gpsV : -1.0f, out.surgeLinear, out.vertical, out.finishDetected ? 1 : 0);
+                     gpsOk ? gpsV : -1.0f, out.surgeLinear, out.vertical, out.finishDetected ? 1 : 0, out.swayLinear, out.rollDeg, out.yawDeg);
             logger::write(logger::Stream::Raw, line);
         }
 

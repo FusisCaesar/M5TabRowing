@@ -50,6 +50,17 @@ constexpr float GPS_DIR_MIN_TIME_S = 10.0f;
 constexpr float GPS_SPEED_DELAY_S = 0.5f;
 constexpr int GPS_DIR_DELAY_SAMPLES = (int)(GPS_SPEED_DELAY_S * IMU_RATE_HZ + 0.5f);
 
+// The direction of travel in the device's own frame is learned from GPS the same way and then
+// held: surge is measured along it and nothing else, so a sideways push is not a forward one.
+// A running average, so a unit that is remounted finds its way again.
+constexpr float FORWARD_TAU_S = 120.0f;
+constexpr float FORWARD_MIN_TIME_S = 30.0f;
+
+// Roll and yaw from the gyro: its rate about forward and about up, minus its slow average (bias and
+// steady turns), integrated with a leak. The angle is how far the boat is off its mean attitude.
+constexpr float GYRO_BIAS_TAU_S = 30.0f;
+constexpr float ATTITUDE_LEAK_TAU_S = 3.0f;
+
 constexpr float BANDPASS_LOW_HZ = 0.1f;
 constexpr float BANDPASS_HIGH_HZ = 3.0f;
 

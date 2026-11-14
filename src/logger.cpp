@@ -34,7 +34,7 @@ const char* const HEADER[] = {
     "elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,hdop,sats,battery_pct,hr_bpm\n",
     "lap,elapsed_s,lap_time_s,lap_distance_m,avg_split_s,avg_rate_spm,strokes,avg_hr_bpm,max_hr_bpm\n",
     "key,value\n",
-    "t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,surge_g,threshold_g,catch,gps_mps,surge_lin_g,vert_g,finish\n",
+    "t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,surge_g,threshold_g,catch,gps_mps,surge_lin_g,vert_g,finish,sway_lin_g,roll_deg,yaw_deg\n",
 };
 static_assert(sizeof(SUFFIX) / sizeof(SUFFIX[0]) == (int)Stream::Count, "one suffix per stream");
 static_assert(sizeof(HEADER) / sizeof(HEADER[0]) == (int)Stream::Count, "one header per stream");

@@ -67,6 +67,18 @@ def lowpass(x):
     return np.array([b.process(float(v)) for v in x])
 
 
+def lowpass_window(x, prime=50):
+    """lowpass() of a short stretch. The filter starts as if the first value had always been there,
+    so the stretch does not begin with a swing up from zero."""
+    x = np.asarray(x, dtype=np.float64)
+    if len(x) == 0:
+        return x
+    b = Biquad(LOWPASS_HZ, FS)
+    for _ in range(prime):
+        b.process(float(x[0]))
+    return np.array([b.process(float(v)) for v in x])
+
+
 def preroll_time(i):
     return -PREROLL_S + (i + 0.5) * (PREROLL_S / PREROLL_N)
 
@@ -142,6 +154,18 @@ def cut_cycle(t, surge, prev_catch, finish, catch):
     if not fill(preroll, n_p) or not fill(accel, n_a):
         return None
     return preroll, accel, drive, rec
+
+
+def resample(preroll, accel, drive_s, rec_s):
+    """A binned cycle as one value every 10 ms, on the same time axis analyse() draws its curve on."""
+    interval = drive_s + rec_s
+    if drive_s < 0.15 or rec_s < 0.15:
+        return None
+    n = int(round((PREROLL_S + interval) / DT))
+    kt = np.array([preroll_time(i) for i in range(PREROLL_N)] + [bin_time(i, drive_s, rec_s) for i in range(BINS)])
+    ka = np.concatenate([preroll, accel])
+    gt = -PREROLL_S + np.arange(n) * DT
+    return gt, np.array([sample_at(kt, ka, float(ts)) for ts in gt])
 
 
 def analyse(preroll, accel, drive_s, rec_s):
