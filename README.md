@@ -36,9 +36,8 @@ is already loaded.
 To load your own session, stop it on the tablet, plug the Tab5 into your
 computer with USB-C and press **Read from Tab5** (Chrome or Edge). Or press
 **Open files** and pick the files you copied off the SD card. Sessions you read
-in stay on the server, so they are there next time; the **Rename** button next
-to the session list gives one a name of your own (empty goes back to the file
-name) and the **Remove** button deletes one. Not built a device yet? Start with the
+in stay on the server, so they are there next time. You rename or delete them in
+the **Disk** tab, which asks for a code. Not built a device yet? Start with the
 [install page](https://fusiscaesar.github.io/M5TabRowing/).
 
 ## Hardware
@@ -649,13 +648,14 @@ Seconds without a GPS fix are left out of the GPX track.
      on restart and the welcome page says they are not kept.
 
    **Disk tab.** Shows how full the disk is and lists every stored session with
-   its size and date (plus any loose files in the uploads folder), and deletes the
-   ones you tick. It asks for a code first. The server checks the code and hands
+   its size and date (plus any loose files in the uploads folder). **Rename**
+   gives a session a name of your own (empty goes back to the file name; it is
+   kept in `<id>_name.txt` beside the recording) and the ticked ones can be
+   deleted. It asks for a code first. The server checks the code and hands
    back a token that lasts 30 minutes; five wrong codes lock it for a minute. The
    default code is `9487`, which is in this public source, so set `ADMIN_PIN` on
-   the host to your own (Render: Environment). The code only guards the Disk tab:
-   the **Remove** button next to the session list still removes a session you
-   uploaded without it.
+   the host to your own (Render: Environment). Renaming and deleting are only
+   possible through the Disk tab: without the code the server refuses them.
 
 ## Serial tools
 
