@@ -464,12 +464,14 @@ async function loadSessions(selectId) {
   if (window.ovTabs) ovTabs();
   if (typeof cmpSessions === "function") cmpSessions(selectId);
   if (!state.sessions.length) {
+    if (typeof pickerSync === "function") pickerSync();
     $("app").hidden = true;
     setStatus("");
     return;
   }
   const want = selectId && state.sessions.some((s) => s.id === selectId) ? selectId : state.sessions[0].id;
   sel.value = want;
+  if (typeof pickerSync === "function") pickerSync();
   await loadSession(want);
 }
 

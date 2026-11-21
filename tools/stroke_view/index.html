@@ -36,7 +36,8 @@
     <div class="group">
       <label>
         <span data-i18n="session">Session</span>
-        <select id="session"></select>
+        <button id="session-btn" type="button" class="pick" aria-haspopup="dialog"><span id="session-name">—</span></button>
+        <select id="session" hidden tabindex="-1" aria-hidden="true"></select>
       </label>
       <input id="file" type="file" accept=".csv,text/csv" multiple hidden>
       <button id="open" type="button" class="quiet" data-i18n="openFiles" data-i18n-title="openFilesTip" title="Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate">Open files</button>
@@ -188,6 +189,30 @@
   </section>
   <section id="guide" aria-label="Guide"></section>
   <section id="disk" aria-label="Disk"></section>
+  <dialog id="picker" aria-labelledby="pk-title">
+    <div class="pk-head">
+      <b id="pk-title"></b>
+      <button id="pk-close" type="button" class="quiet"></button>
+    </div>
+    <div class="pk-body">
+      <div class="pk-cal">
+        <div class="pk-nav">
+          <button id="pk-prev" type="button" class="quiet" aria-label="Previous month">&lsaquo;</button>
+          <b id="pk-month"></b>
+          <button id="pk-next" type="button" class="quiet" aria-label="Next month">&rsaquo;</button>
+        </div>
+        <div id="pk-grid"></div>
+        <div class="pk-foot">
+          <button id="pk-today" type="button" class="quiet"></button>
+          <button id="pk-all" type="button" class="quiet"></button>
+        </div>
+      </div>
+      <div class="pk-list">
+        <div id="pk-listhead"></div>
+        <div id="pk-items"></div>
+      </div>
+    </div>
+  </dialog>
   <dialog id="device">
     <div id="device-title"></div>
     <select id="device-session" size="16"></select>
@@ -207,6 +232,7 @@
   <script src="guide.js"></script>
   <script src="compare.js"></script>
   <script src="disk.js"></script>
+  <script src="picker.js"></script>
   <script src="tab5.js"></script>
 </body>
 </html>
