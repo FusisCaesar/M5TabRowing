@@ -323,20 +323,53 @@ function sessionBlurb(data, n) {
   return text;
 }
 
+const ANALYSING = {
+  en: (s) => "Analysing the recording… " + s + " s. A long one takes a minute or two.",
+  nl: (s) => "Opname wordt geanalyseerd… " + s + " s. Een lange duurt een of twee minuten.",
+};
+
+// A long recording is analysed on the server in the background. The server answers 202 until it is
+// ready, and a GET then asks again every couple of seconds, so no single request waits long enough
+// for the host's proxy to give up on it.
 async function getJSON(url, options) {
-  const res = await fetch(url, options);
-  const text = await res.text();
-  let data = null;
-  try {
-    data = JSON.parse(text);
-  } catch (err) {
-    // Not our JSON: the server was restarting or ran out of memory and the host sent a web page.
-    throw new Error(res.ok
-      ? "The server sent an unexpected answer. Try again."
-      : "The server is not answering (" + res.status + "). A very long recording can be too much for it, try again in a minute.");
+  const started = Date.now();
+  const polls = !options || !options.method || options.method.toUpperCase() === "GET";
+  let waiting = false;
+  let dropped = 0;
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (err) {
+      // The connection dropped while the server was busy; it is still analysing, so ask again.
+      if (!waiting || ++dropped > 6) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
+    const text = await res.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch (err) {
+      // Not our JSON: the server was restarting or ran out of memory and the host sent a web page.
+      if (waiting && res.status >= 500 && ++dropped <= 6) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+      throw new Error(res.ok
+        ? "The server sent an unexpected answer. Try again."
+        : "The server is not answering (" + res.status + "). A very long recording can be too much for it, try again in a minute.");
+    }
+    if (res.status === 202 && data.loading && polls) {
+      if (Date.now() - started > 15 * 60 * 1000) throw new Error("The analysis takes too long. Try again in a minute.");
+      waiting = true;
+      setStatus(ANALYSING[lang()](Math.round((Date.now() - started) / 1000)));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      continue;
+    }
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
   }
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  return data;
 }
 
 function fullSpan(d) {

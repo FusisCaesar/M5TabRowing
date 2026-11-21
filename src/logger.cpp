@@ -267,6 +267,8 @@ void listFiles(Print& out, int headLines) {
                SD_MMC.totalBytes() / (1024ULL * 1024ULL));
     listDir(out, DIR, headLines);
     if (SD_MMC.exists("/map")) listDir(out, "/map", 0);
+    // So a reader knows the list is complete without having to wait for silence.
+    out.println("[files] end");
 }
 
 // Creates every parent directory of `path` (which starts with '/').

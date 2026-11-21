@@ -1144,12 +1144,55 @@ def _remember(session):
         _sessions.pop(next(iter(_sessions)))
 
 
-def _load_and_keep(path):
-    """Analyses a recording, one at a time: two long ones together would not fit a small server."""
-    with _load_lock:
-        session = load_session(path)
-        _remember(session)
-    return session
+class SessionLoading(Exception):
+    """The recording is still being analysed; the page asks again in a moment."""
+
+
+# A long recording takes a minute or more to analyse on a small host, and the host's proxy drops a
+# request that waits that long. So the analysis runs on its own thread and a request waits only this
+# long for it before answering "still busy"; the page then asks again until it is done.
+LOAD_WAIT_S = 15.0
+_loading = {}  # session id -> {"done": Event, "error": str or None}
+_loading_lock = threading.Lock()
+
+
+def _run_load(sid, path, job):
+    try:
+        # One at a time: two long ones together would not fit a small server.
+        with _load_lock:
+            if sid not in _sessions:
+                _remember(load_session(path))
+    except Exception as exc:
+        traceback.print_exc()
+        job["error"] = str(exc) or exc.__class__.__name__
+    finally:
+        job["done"].set()
+
+
+def _load_and_keep(path, wait=None):
+    """The analysed recording, from the cache or by analysing it. SessionLoading when that takes
+    longer than `wait` seconds: it carries on in the background and the next call finds it."""
+    wait = LOAD_WAIT_S if wait is None else wait
+    sid = os.path.basename(path)[: -len("_imu.csv")] if path.endswith("_imu.csv") else os.path.basename(path)
+    for _ in range(3):
+        with _loading_lock:
+            if sid in _sessions:
+                return _sessions[sid]
+            job = _loading.get(sid)
+            if job is None:
+                job = _loading[sid] = {"done": threading.Event(), "error": None}
+                threading.Thread(target=_run_load, args=(sid, path, job), daemon=True).start()
+        if not job["done"].wait(wait):
+            raise SessionLoading(sid)
+        with _loading_lock:
+            if _loading.get(sid) is job:
+                del _loading[sid]
+        if job["error"]:
+            raise RuntimeError(job["error"])
+        if sid in _sessions:
+            return _sessions[sid]
+        # Pushed out of the cache again by another recording before it could be used: go round.
+    raise SessionLoading(sid)
 
 
 def get_session(sid):
@@ -1158,12 +1201,7 @@ def get_session(sid):
     imu = _imu_file(sid)
     if imu is None:
         raise FileNotFoundError(sid)
-    with _load_lock:
-        if sid in _sessions:
-            return _sessions[sid]
-        session = load_session(imu)
-        _remember(session)
-        return session
+    return _load_and_keep(imu)
 
 
 UPLOAD_HELP = "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"
@@ -1360,6 +1398,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, session_trace(get_session(sid), t0, t1, n))
             else:
                 self._send(404, "not found", "text/plain")
+        except SessionLoading as exc:
+            self._json(202, {"loading": True, "id": str(exc)})
         except FileNotFoundError as exc:
             self._json(404, {"error": "session not found: %s" % exc})
         except Exception as exc:
@@ -1400,6 +1440,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             session = _load_and_keep(path)
             self._json(200, {"id": session.id, "name": session.name, "strokes": len(session.strokes)})
+        except SessionLoading as exc:
+            self._json(202, {"loading": True, "id": str(exc)})
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
         except Exception as exc:

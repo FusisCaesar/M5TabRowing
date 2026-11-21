@@ -536,8 +536,9 @@ Seconds without a GPS fix are left out of the GPX track.
    the same session files. The
    server cannot see the tablet, so the browser does the reading. Stop the
    session on the tablet first: connecting can restart it, and a download is
-   refused while it is recording. A recording over 80 MB is too big for the
-   hosted server. The strokes are found again with the
+   refused while it is recording. The list shows the newest session first, with
+   the date it was recorded, and the port is released when the window closes. A
+   recording over 80 MB is too big for the hosted server. The strokes are found again with the
    current detector, so a catch the device missed is filled in from the rhythm
    and marked as such. Forward is settled from GPS over the whole recording, so
    the first strokes are drawn the right way up even where the device had not
@@ -594,7 +595,10 @@ Seconds without a GPS fix are left out of the GPX track.
    and the process listens on `0.0.0.0`. An upload there lasts until the service
    restarts or spins down, which a free service does after 15 minutes without a
    visitor. The free instance has 512 MB of memory, and an upload has to stay
-   under 80 MB, so a very long raw log needs a larger instance.
+   under 80 MB, so a very long raw log needs a larger instance. Analysing a
+   long recording takes the server a minute or more, so it runs in the
+   background: the page shows "Analysing the recording" and asks again every
+   couple of seconds, instead of one request waiting until the host gives up on it.
 
 ## Serial tools
 

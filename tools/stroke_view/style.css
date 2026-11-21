@@ -566,9 +566,17 @@ dialog {
   min-width: min(420px, 92vw);
 }
 dialog::backdrop { background: rgba(28, 25, 21, 0.35); }
-#device-title { font-weight: 650; margin-bottom: 8px; }
-#device-session { width: 100%; min-height: 180px; }
-#device-note { color: var(--muted); font-size: 13px; margin: 8px 0; }
+#device { width: min(880px, 94vw); padding: 20px; }
+#device-title { font-weight: 650; font-size: 17px; margin-bottom: 10px; }
+#device-session {
+  width: 100%;
+  height: min(62vh, 600px);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 4px;
+}
+#device-session option { padding: 4px 8px; }
+#device-note { color: var(--muted); font-size: 13px; margin: 10px 0; }
 dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 #device-close { background: #fff; color: var(--ink); }
 
