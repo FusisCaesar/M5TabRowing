@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import threading
 import traceback
@@ -466,6 +467,52 @@ def _uploads_dir():
     return os.path.join(_root, "uploads")
 
 
+# Uploads are kept where RECORDINGS_DIR points. On Render that survives a deploy only when it is on a
+# persistent disk, so the page is told whether it does, and says so on the welcome page.
+STORAGE_MIN_FREE = 300 * 1024 * 1024
+
+
+def storage_persistent():
+    """True when what is saved here is still there after a restart: always on a computer of your own,
+    on a host only when the recordings folder is on a mounted disk. STORAGE_PERSISTENT=0 or 1 overrides."""
+    flag = os.environ.get("STORAGE_PERSISTENT")
+    if flag in ("0", "1"):
+        return flag == "1"
+    if "PORT" not in os.environ:
+        return True
+    path = os.path.realpath(_root)
+    while path and path != os.path.dirname(path):
+        if os.path.ismount(path):
+            return True
+        path = os.path.dirname(path)
+    return False
+
+
+def storage_free():
+    """Free bytes where recordings are saved, or None when it cannot be read."""
+    try:
+        return shutil.disk_usage(_root).free
+    except OSError:
+        return None
+
+
+def delete_session(sid):
+    """Removes an uploaded session: its files in the uploads folder and its analysis in memory.
+    A recording that was not uploaded (the demo, a file in the recordings folder) is left alone."""
+    if not sid or os.path.basename(sid.replace("\\", "/")) != sid or ".." in sid or not _UPLOAD_NAME.match(sid + "_imu.csv"):
+        raise FileNotFoundError(sid)
+    removed = 0
+    for suffix in UPLOAD_SUFFIXES:
+        path = os.path.join(_uploads_dir(), sid + suffix)
+        if os.path.isfile(path) and _inside_root(path):
+            os.remove(path)
+            removed += 1
+    _sessions.pop(sid, None)
+    if not removed:
+        raise FileNotFoundError(sid)
+    return removed
+
+
 def _imu_file(sid):
     """The recording to open for this id. An upload wins over a file already on disk."""
     if not sid or os.path.basename(sid.replace("\\", "/")) != sid or ".." in sid:
@@ -516,7 +563,9 @@ def list_sessions(root):
             else:
                 n = 0
             demo = os.path.realpath(folder) == os.path.realpath(DEMO)
-            found.append({"id": sid, "name": label + (" (demo)" if demo else ""), "strokes": n, "demo": demo})
+            stored = bool(uploads) and os.path.realpath(folder) == os.path.realpath(uploads)
+            found.append({"id": sid, "name": label + (" (demo)" if demo else ""), "strokes": n, "demo": demo,
+                          "stored": stored})
             seen.add(sid)
     for session in _sessions.values():
         if session.id not in seen:
@@ -1382,6 +1431,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, open(os.path.join(PAGE, *name.split("/")), "rb").read(), kind)
             elif url.path == "/health":
                 self._send(200, "ok", "text/plain; charset=utf-8")
+            elif url.path == "/api/config":
+                free = storage_free()
+                self._json(200, {"persistent": storage_persistent(), "free_mb": None if free is None else int(free // (1024 * 1024))})
             elif url.path == "/api/sessions":
                 self._json(200, list_sessions(_root))
             elif url.path == "/api/session":
@@ -1457,6 +1509,17 @@ class Handler(BaseHTTPRequestHandler):
         if "multipart/form-data" not in ctype:
             self._json(400, {"error": "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"})
             return
+        free = storage_free()
+        if free is not None and free < length + STORAGE_MIN_FREE:
+            # Read the body away first, or the browser sees a dropped connection and not this answer.
+            left = length
+            while left > 0:
+                data = self.rfile.read(min(1 << 20, left))
+                if not data:
+                    break
+                left -= len(data)
+            self._json(507, {"error": "the server's storage is full: remove a session you no longer need, then try again"})
+            return
         saved = save_multipart(self.rfile, ctype, length)
         if not any(path.endswith("_imu.csv") for path in saved):
             self._json(400, {"error": "upload the _imu.csv, with the _seconds.csv, _laps.csv, _strokes.csv and _info.csv beside it when you have them"})
@@ -1473,6 +1536,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             n = int(self.headers.get("Content-Length", "0") or "0")
             body = json.loads(self.rfile.read(n) or b"{}")
+            if url.path == "/api/delete":
+                delete_session(str(body.get("id", "")))
+                self._json(200, {"deleted": str(body.get("id", ""))})
+                return
             if url.path != "/api/open":
                 self._json(404, {"error": "not found"})
                 return
@@ -1484,6 +1551,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"id": session.id, "name": session.name, "strokes": len(session.strokes)})
         except SessionLoading as exc:
             self._json(202, {"loading": True, "id": str(exc)})
+        except FileNotFoundError:
+            self._json(404, {"error": "that is not a recording you uploaded, so it cannot be removed here"})
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
         except Exception as exc:
@@ -1507,11 +1576,17 @@ def main():
     port = args.port if args.port is not None else int(os.environ.get("PORT", "8765"))
     host = "0.0.0.0" if hosted else "127.0.0.1"
     _root = args.recordings or os.environ.get("RECORDINGS_DIR", "recordings")
-    os.makedirs(_root, exist_ok=True)
+    try:
+        os.makedirs(_root, exist_ok=True)
+    except OSError as exc:
+        # A disk that is not attached (yet) must not stop the viewer from starting.
+        print("cannot use", _root, "(%s), using recordings instead" % exc)
+        _root = "recordings"
+        os.makedirs(_root, exist_ok=True)
     server = ThreadingHTTPServer((host, port), Handler)
     url = "http://127.0.0.1:%d/" % port
     print("stroke viewer at", url)
-    print("sessions from", os.path.abspath(_root))
+    print("sessions from", os.path.abspath(_root), "(kept across restarts)" if storage_persistent() else "(lost on restart)")
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:

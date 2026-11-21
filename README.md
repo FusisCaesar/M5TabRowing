@@ -35,8 +35,9 @@ is already loaded.
 
 To load your own session, stop it on the tablet, plug the Tab5 into your
 computer with USB-C and press **Read from Tab5** (Chrome or Edge). Or press
-**Open files** and pick the files you copied off the SD card. Your sessions are
-not kept: they are gone when the server restarts. Not built a device yet? Start with the
+**Open files** and pick the files you copied off the SD card. Sessions you read
+in stay on the server, so they are there next time; the **Remove** button next to
+the session list deletes one. Not built a device yet? Start with the
 [install page](https://fusiscaesar.github.io/M5TabRowing/).
 
 ## Hardware
@@ -617,14 +618,34 @@ Seconds without a GPS fix are left out of the GPX track.
    three strokes earned it, otherwise your usual. Crew 1, 2, 4 or 8 changes the
    catch and finish wording the same way the device does.
 
-   `render.yaml` runs this same server as a free web service. Render sets `PORT`
-   and the process listens on `0.0.0.0`. An upload there lasts until the service
-   restarts or spins down, which a free service does after 15 minutes without a
-   visitor. The free instance has 512 MB of memory, and an upload has to stay
-   under 80 MB, so a very long raw log needs a larger instance. Analysing a
+   `render.yaml` runs this same server as a Render web service. Render sets `PORT`
+   and the process listens on `0.0.0.0`. The instance has 512 MB of memory, and an
+   upload has to stay under 80 MB, so a very long raw log needs a larger instance. Analysing a
    long recording takes the server a minute or more, so it runs in the
    background: the page shows "Analysing the recording" and asks again every
    couple of seconds, instead of one request waiting until the host gives up on it.
+
+   **Keeping sessions across deploys.** What is read in is saved under
+   `RECORDINGS_DIR` (default `recordings`, in `uploads/`). Render's own filesystem
+   is wiped on every deploy and restart, so `render.yaml` attaches a persistent
+   disk at `/var/data` and sets `RECORDINGS_DIR=/var/data/recordings`. A disk needs
+   a paid plan (Starter or up), and a service with a disk runs as one instance with
+   a short pause on each deploy instead of a zero-downtime switch. Plan on roughly
+   25 sessions of 40 MB per GB. Things to know:
+
+   - Uploads are not tied to a user: anyone with the address sees every stored
+     session and can remove it. The welcome page says so.
+   - A session with the same name as a stored one replaces it, so after
+     reformatting the card (the tablet starts at S0001 again) read the new
+     sessions before the old name is reused, or remove the old one first.
+   - Uploads are refused with a clear message when less than 300 MB would be left
+     on the disk. Remove sessions you no longer need.
+   - `GET /api/config` tells the page whether storage is persistent (a mounted
+     disk, or always when you run it on your own computer). `STORAGE_PERSISTENT=0`
+     or `1` overrides the guess. If `RECORDINGS_DIR` cannot be created the server
+     starts anyway with a local `recordings` folder and says so in its log.
+   - Without a disk (a free instance) it works as before, but uploads are lost
+     on restart and the welcome page says they are not kept.
 
 ## Serial tools
 
