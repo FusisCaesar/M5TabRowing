@@ -194,6 +194,12 @@ const GUIDE = {
           cannot: "It is acceleration, not distance. A rolling boat tilts the sensor and also reads as sideways.",
         },
         {
+          tag: "Strokes · Compare", title: "Blade in the water",
+          see: "A bar along the top of the stroke chart, and one per stroke along the bottom of the whole-session chart, as long as the blade was in the water.",
+          deduce: "How long the blade works each stroke and what share of the stroke that is. Compare it between rates, sessions and rigging: a longer time in the water at the same rate usually means a longer, steadier push.",
+          cannot: "It is an estimate from the boat's acceleration, from the catch dip to the end of the push, and the sensor never sees the oar. It can be a tenth of a second off, and it cannot tell how deep or how well the blade was set.",
+        },
+        {
           tag: "Strokes", title: "By rate and spells",
           see: "Your strokes grouped by rate, with the average of the best strokes at each rate.",
           deduce: "Which rate carries the boat furthest per stroke and which pace you can hold. If you row in hard and light spells the page says so instead of naming one pace.",
@@ -380,6 +386,12 @@ const GUIDE = {
           see: "De zijwaartse versnelling van de boot binnen elke slag.",
           deduce: "Hoe de boot tijdens een slag van links naar rechts zwaait. Wat slag na slag terugkomt is de grijze gebruikelijke lijn.",
           cannot: "Het is versnelling, geen afstand. Een rollende boot kantelt de sensor en leest ook als zijwaarts.",
+        },
+        {
+          tag: "Slagen · Vergelijk", title: "Blad in het water",
+          see: "Een balk boven in de slaggrafiek, en een per slag onder in de grafiek van de hele sessie, zo lang als het blad in het water was.",
+          deduce: "Hoelang het blad per slag werkt en welk deel van de slag dat is. Vergelijk het tussen tempo's, sessies en rigging: langer in het water op hetzelfde tempo betekent meestal een langere, rustigere duw.",
+          cannot: "Het is een schatting uit de versnelling van de boot, van de inpikdip tot het einde van de duw, en de sensor ziet de riem nooit. Het kan een tiende seconde schelen en het zegt niet hoe diep of hoe goed het blad stond.",
         },
         {
           tag: "Slagen", title: "Per slagfrequentie en blokken",
