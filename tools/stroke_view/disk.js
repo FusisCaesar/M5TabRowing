@@ -33,6 +33,8 @@ const DISK_COPY = {
     remove: (n) => n ? "Delete " + n + " selected" : "Delete selected",
     refresh: "Refresh",
     lock: "Lock",
+    rename: "Rename",
+    renameAsk: "Name for this session (leave empty to go back to the file name):",
     ask: (n, size) => "Delete " + n + (n === 1 ? " item" : " items") + " (" + size + ") from the server? This cannot be undone.",
     done: (n) => n + (n === 1 ? " item deleted." : " items deleted."),
     failed: (n) => n + " could not be deleted.",
@@ -63,6 +65,8 @@ const DISK_COPY = {
     remove: (n) => n ? "Verwijder " + n + " geselecteerd" : "Verwijder selectie",
     refresh: "Ververs",
     lock: "Vergrendel",
+    rename: "Hernoem",
+    renameAsk: "Naam voor deze sessie (leeg laten voor de bestandsnaam):",
     ask: (n, size) => "Verwijder " + n + (n === 1 ? " item" : " items") + " (" + size + ") van de server? Dit kan niet ongedaan worden gemaakt.",
     done: (n) => n + (n === 1 ? " item verwijderd." : " items verwijderd."),
     failed: (n) => n + " konden niet worden verwijderd.",
@@ -160,6 +164,33 @@ async function diskUnlock(pin) {
   diskRender();
 }
 
+// After the disk changed, the session list and anything the page kept about a session follow.
+async function diskSync(ids) {
+  if (typeof cmpForget === "function") for (const id of ids) cmpForget(id);
+  if (typeof loadSessions === "function") {
+    try { await loadSessions($("session").value); } catch (err) { /* the list shows on the next visit */ }
+  }
+}
+
+async function diskRename(id) {
+  const row = disk.data && disk.data.sessions.find((s) => s.id === id);
+  if (!row) return;
+  const name = window.prompt(diskCopy().renameAsk, row.name || row.id);
+  if (name === null || name.trim() === (row.name || row.id)) return;
+  disk.busy = true;
+  diskRender();
+  try {
+    const { status, data } = await diskCall("/api/admin/rename", { id, name });
+    if (status === 401) return diskLocked(diskCopy().expired);
+    if (status !== 200) throw new Error(data.error || "error " + status);
+    disk.message = "";
+  } catch (err) {
+    disk.message = err.message;
+  }
+  await diskLoad();
+  await diskSync([id]);
+}
+
 async function diskDelete() {
   const d = disk.data;
   if (!d || !disk.picked.size) return;
@@ -180,9 +211,7 @@ async function diskDelete() {
     disk.message = err.message;
   }
   await diskLoad();
-  if (typeof loadSessions === "function") {
-    try { await loadSessions($("session").value); } catch (err) { /* the list shows on the next visit */ }
-  }
+  await diskSync(ids.map((s) => s.id));
 }
 
 function diskRender() {
@@ -214,10 +243,11 @@ function diskRender() {
     + (disk.picked.has(s.id) ? " checked" : "") + "><b>" + diskEsc(s.name || s.id) + "</b></label>"
     + (s.name || s.cached ? "<small>" + diskEsc((s.name ? s.id : "") + (s.name && s.cached ? " · " : "") + (s.cached ? copy.cached : "")) + "</small>" : "") + "</td>"
     + "<td class=\"num\">" + diskBytes(s.bytes) + "</td><td>" + diskDate(s.saved) + "</td>"
-    + "<td>" + diskEsc(s.files.join(", ")) + "</td></tr>").join("");
+    + "<td>" + diskEsc(s.files.join(", ")) + "</td>"
+    + "<td class=\"num\"><button type=\"button\" class=\"quiet disk-rename\" data-rename=\"" + diskEsc(s.id) + "\">" + copy.rename + "</button></td></tr>").join("");
   const loose = d.other.map((f) => "<tr><td><label class=\"disk-tick\"><input type=\"checkbox\" data-pick=\"" + diskEsc(f.name) + "\""
     + (disk.picked.has(f.name) ? " checked" : "") + "><b>" + diskEsc(f.name) + "</b></label></td>"
-    + "<td class=\"num\">" + diskBytes(f.bytes) + "</td><td>" + diskDate(f.saved) + "</td><td></td></tr>").join("");
+    + "<td class=\"num\">" + diskBytes(f.bytes) + "</td><td>" + diskDate(f.saved) + "</td><td></td><td></td></tr>").join("");
   const all = d.sessions.length + d.other.length;
   root.innerHTML = "<div class=\"card disk-card\">" + head
     + "<div class=\"disk-bar\" role=\"img\" aria-label=\"" + diskBytes(d.total - d.free) + " " + copy.of + " " + diskBytes(d.total) + "\">"
@@ -233,8 +263,8 @@ function diskRender() {
     + "<button type=\"button\" id=\"disk-lock\" class=\"quiet\">" + copy.lock + "</button></div>"
     + "<p class=\"disk-msg\" role=\"status\">" + diskEsc(disk.message) + "</p>"
     + (all ? "<div class=\"disk-scroll\"><table id=\"disk-table\"><thead><tr><th>" + copy.name + "</th><th class=\"num\">" + copy.size
-      + "</th><th>" + copy.saved + "</th><th>" + copy.files + "</th></tr></thead><tbody>" + rows
-      + (loose ? "<tr class=\"disk-sep\"><td colspan=\"4\">" + copy.other + "</td></tr>" + loose : "") + "</tbody></table></div>"
+      + "</th><th>" + copy.saved + "</th><th>" + copy.files + "</th><th></th></tr></thead><tbody>" + rows
+      + (loose ? "<tr class=\"disk-sep\"><td colspan=\"5\">" + copy.other + "</td></tr>" + loose : "") + "</tbody></table></div>"
       : "<p class=\"disk-msg\">" + copy.none + "</p>")
     + "</div>";
   for (const box of root.querySelectorAll("input[data-pick]")) {
@@ -243,6 +273,9 @@ function diskRender() {
       else disk.picked.delete(box.dataset.pick);
       diskRender();
     });
+  }
+  for (const button of root.querySelectorAll("button[data-rename]")) {
+    button.addEventListener("click", () => diskRename(button.dataset.rename));
   }
   $("disk-all").addEventListener("click", () => {
     if (disk.picked.size === all) disk.picked.clear();

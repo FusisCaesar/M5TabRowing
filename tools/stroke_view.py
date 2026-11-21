@@ -1685,14 +1685,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             n = int(self.headers.get("Content-Length", "0") or "0")
             body = json.loads(self.rfile.read(n) or b"{}")
-            if url.path == "/api/delete":
-                delete_session(str(body.get("id", "")))
-                self._json(200, {"deleted": str(body.get("id", ""))})
-                return
-            if url.path == "/api/rename":
-                shown = rename_session(str(body.get("id", "")), body.get("name", ""))
-                self._json(200, {"id": str(body.get("id", "")), "name": shown})
-                return
             if url.path == "/api/admin/login":
                 try:
                     token = admin_login(body.get("pin", ""))
@@ -1706,6 +1698,12 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/admin/lock":
                 admin_logout(self.headers.get("X-Admin-Token", ""))
                 self._json(200, {"locked": True})
+                return
+            if url.path == "/api/admin/rename":
+                if not self._admin_ok():
+                    return
+                shown = rename_session(str(body.get("id", "")), body.get("name", ""))
+                self._json(200, {"id": str(body.get("id", "")), "name": shown})
                 return
             if url.path == "/api/admin/delete":
                 if not self._admin_ok():
