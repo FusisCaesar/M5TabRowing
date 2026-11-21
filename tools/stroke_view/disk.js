@@ -33,6 +33,10 @@ const DISK_COPY = {
     remove: (n) => n ? "Delete " + n + " selected" : "Delete selected",
     refresh: "Refresh",
     lock: "Lock",
+    analysis: "of which saved analysis",
+    clearCache: (size) => "Clear saved analysis (" + size + ")",
+    clearAsk: (size) => "Delete the saved analysis (" + size + ")? Sessions stay; each is analysed again the next time it is opened, which takes a while for a long one.",
+    cleared: (n, size) => "Saved analysis deleted: " + n + (n === 1 ? " file, " : " files, ") + size + ".",
     rename: "Rename",
     renameAsk: "Name for this session (leave empty to go back to the file name):",
     ask: (n, size) => "Delete " + n + (n === 1 ? " item" : " items") + " (" + size + ") from the server? This cannot be undone.",
@@ -65,6 +69,10 @@ const DISK_COPY = {
     remove: (n) => n ? "Verwijder " + n + " geselecteerd" : "Verwijder selectie",
     refresh: "Ververs",
     lock: "Vergrendel",
+    analysis: "waarvan opgeslagen analyse",
+    clearCache: (size) => "Wis opgeslagen analyse (" + size + ")",
+    clearAsk: (size) => "De opgeslagen analyse (" + size + ") verwijderen? De sessies blijven; elke sessie wordt bij het volgende openen opnieuw geanalyseerd, wat bij een lange opname even duurt.",
+    cleared: (n, size) => "Opgeslagen analyse gewist: " + n + (n === 1 ? " bestand, " : " bestanden, ") + size + ".",
     rename: "Hernoem",
     renameAsk: "Naam voor deze sessie (leeg laten voor de bestandsnaam):",
     ask: (n, size) => "Verwijder " + n + (n === 1 ? " item" : " items") + " (" + size + ") van de server? Dit kan niet ongedaan worden gemaakt.",
@@ -191,6 +199,23 @@ async function diskRename(id) {
   await diskSync([id]);
 }
 
+async function diskClearCache() {
+  const d = disk.data;
+  const copy = diskCopy();
+  if (!d || !d.cache || !window.confirm(copy.clearAsk(diskBytes(d.cache)))) return;
+  disk.busy = true;
+  diskRender();
+  try {
+    const { status, data } = await diskCall("/api/admin/clear-cache", {});
+    if (status === 401) return diskLocked(copy.expired);
+    if (status !== 200) throw new Error(data.error || "error " + status);
+    disk.message = copy.cleared(data.cleared, diskBytes(data.bytes));
+  } catch (err) {
+    disk.message = err.message;
+  }
+  await diskLoad();
+}
+
 async function diskDelete() {
   const d = disk.data;
   if (!d || !disk.picked.size) return;
@@ -253,12 +278,14 @@ function diskRender() {
     + "<div class=\"disk-bar\" role=\"img\" aria-label=\"" + diskBytes(d.total - d.free) + " " + copy.of + " " + diskBytes(d.total) + "\">"
     + "<i class=\"all\" style=\"width:" + used.toFixed(1) + "%\"></i><i class=\"mine\" style=\"width:" + mine.toFixed(1) + "%\"></i></div>"
     + "<p class=\"disk-stats\"><span>" + copy.used + " <b>" + diskBytes(d.kept) + "</b></span>"
+    + (d.cache ? "<span>" + copy.analysis + " <b>" + diskBytes(d.cache) + "</b></span>" : "")
     + "<span>" + copy.free + " <b>" + diskBytes(d.free) + "</b> " + copy.of + " " + diskBytes(d.total) + "</span></p>"
     + "<p class=\"disk-path\">" + copy.path + " <code>" + diskEsc(d.path) + "</code></p>"
     + (d.persistent ? "" : "<p class=\"disk-warn\">" + copy.transient + "</p>")
     + "<div class=\"disk-actions\">"
     + "<button type=\"button\" id=\"disk-all\" class=\"quiet\">" + (disk.picked.size === all && all ? copy.selectNone : copy.selectAll) + "</button>"
     + "<button type=\"button\" id=\"disk-del\" class=\"danger\"" + (disk.picked.size && !disk.busy ? "" : " disabled") + ">" + copy.remove(disk.picked.size) + "</button>"
+    + (d.cache ? "<button type=\"button\" id=\"disk-cache\" class=\"quiet\"" + (disk.busy ? " disabled" : "") + ">" + copy.clearCache(diskBytes(d.cache)) + "</button>" : "")
     + "<button type=\"button\" id=\"disk-refresh\" class=\"quiet\"" + (disk.busy ? " disabled" : "") + ">" + copy.refresh + "</button>"
     + "<button type=\"button\" id=\"disk-lock\" class=\"quiet\">" + copy.lock + "</button></div>"
     + "<p class=\"disk-msg\" role=\"status\">" + diskEsc(disk.message) + "</p>"
@@ -283,6 +310,7 @@ function diskRender() {
     diskRender();
   });
   $("disk-del").addEventListener("click", diskDelete);
+  if ($("disk-cache")) $("disk-cache").addEventListener("click", diskClearCache);
   $("disk-refresh").addEventListener("click", () => { disk.message = ""; diskLoad(); });
   $("disk-lock").addEventListener("click", async () => {
     try { await diskCall("/api/admin/lock", {}); } catch (err) { /* the token expires anyway */ }
