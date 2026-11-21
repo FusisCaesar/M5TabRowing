@@ -211,8 +211,8 @@ function diskRender() {
   const used = d.total ? Math.min(100, ((d.total - d.free) / d.total) * 100) : 0;
   const mine = d.total ? Math.min(100, (d.kept / d.total) * 100) : 0;
   const rows = d.sessions.map((s) => "<tr><td><label class=\"disk-tick\"><input type=\"checkbox\" data-pick=\"" + diskEsc(s.id) + "\""
-    + (disk.picked.has(s.id) ? " checked" : "") + "><b>" + diskEsc(s.id) + "</b></label>"
-    + (s.cached ? "<small>" + copy.cached + "</small>" : "") + "</td>"
+    + (disk.picked.has(s.id) ? " checked" : "") + "><b>" + diskEsc(s.name || s.id) + "</b></label>"
+    + (s.name || s.cached ? "<small>" + diskEsc((s.name ? s.id : "") + (s.name && s.cached ? " · " : "") + (s.cached ? copy.cached : "")) + "</small>" : "") + "</td>"
     + "<td class=\"num\">" + diskBytes(s.bytes) + "</td><td>" + diskDate(s.saved) + "</td>"
     + "<td>" + diskEsc(s.files.join(", ")) + "</td></tr>").join("");
   const loose = d.other.map((f) => "<tr><td><label class=\"disk-tick\"><input type=\"checkbox\" data-pick=\"" + diskEsc(f.name) + "\""

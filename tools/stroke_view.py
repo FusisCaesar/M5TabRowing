@@ -64,6 +64,9 @@ STATIC = {
     "/vendor/leaflet.css": ("vendor/leaflet.css", "text/css; charset=utf-8"),
 }
 UPLOAD_SUFFIXES = ("_imu.csv", "_info.csv", "_seconds.csv", "_laps.csv", "_strokes.csv")
+# A name you gave a stored session. It lives beside the recording, so it is kept with it and goes with it.
+NAME_SUFFIX = "_name.txt"
+NAME_MAX = 60
 
 
 def band_of(rate):
@@ -356,6 +359,8 @@ def load_session(imu_path):
     sid = os.path.basename(base)
     label = sid.split("_", 1)
     name = sid if len(label) == 1 else "%s %s" % (label[0], label[1].replace("_", " "))
+    if os.path.dirname(os.path.abspath(imu_path)) == os.path.abspath(_uploads_dir()):
+        name = custom_name(sid) or name
     imu = _read_imu(imu_path)
     t = imu["t_s"]
     gps = imu["gps_mps"]
@@ -530,14 +535,16 @@ def admin_storage():
             if not os.path.isfile(path):
                 continue
             info = os.stat(path)
-            suffix = next((s for s in UPLOAD_SUFFIXES if name.endswith(s) and len(name) > len(s)), None)
+            suffix = next((s for s in UPLOAD_SUFFIXES + (NAME_SUFFIX,) if name.endswith(s) and len(name) > len(s)), None)
             if suffix is None:
                 other.append({"name": name, "bytes": info.st_size, "saved": info.st_mtime})
                 continue
             sid = name[:-len(suffix)]
-            group = groups.setdefault(sid, {"id": sid, "bytes": 0, "files": [], "saved": 0.0, "cached": sid in _sessions})
+            group = groups.setdefault(sid, {"id": sid, "name": custom_name(sid), "bytes": 0, "files": [], "saved": 0.0,
+                                            "cached": sid in _sessions})
             group["bytes"] += info.st_size
-            group["files"].append(suffix[1:-4])
+            if suffix != NAME_SUFFIX:
+                group["files"].append(suffix[1:-4])
             group["saved"] = max(group["saved"], info.st_mtime)
     sessions = sorted(groups.values(), key=lambda g: g["saved"], reverse=True)
     try:
@@ -595,13 +602,45 @@ def storage_free():
         return None
 
 
+def custom_name(sid):
+    """The name given to a stored session, or None."""
+    try:
+        with open(os.path.join(_uploads_dir(), sid + NAME_SUFFIX), "r", encoding="utf-8") as f:
+            return f.readline().strip()[:NAME_MAX] or None
+    except OSError:
+        return None
+
+
+def rename_session(sid, name):
+    """Gives a stored session a name; an empty name goes back to the one from its file name.
+    Returns the name now shown. Only recordings in the uploads folder can be renamed."""
+    if not sid or os.path.basename(sid.replace("\\", "/")) != sid or ".." in sid or not _UPLOAD_NAME.match(sid + "_imu.csv"):
+        raise FileNotFoundError(sid)
+    if not os.path.isfile(os.path.join(_uploads_dir(), sid + "_imu.csv")):
+        raise FileNotFoundError(sid)
+    name = " ".join("".join(c for c in str(name) if c.isprintable() or c.isspace()).split())[:NAME_MAX]
+    path = os.path.join(_uploads_dir(), sid + NAME_SUFFIX)
+    if name:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(name + "\n")
+    elif os.path.isfile(path):
+        os.remove(path)
+    shown = name
+    if not shown:
+        parts = sid.split("_", 1)
+        shown = sid if len(parts) == 1 else "%s %s" % (parts[0], parts[1].replace("_", " "))
+    if sid in _sessions:
+        _sessions[sid].name = shown
+    return shown
+
+
 def delete_session(sid):
     """Removes an uploaded session: its files in the uploads folder and its analysis in memory.
     A recording that was not uploaded (the demo, a file in the recordings folder) is left alone."""
     if not sid or os.path.basename(sid.replace("\\", "/")) != sid or ".." in sid or not _UPLOAD_NAME.match(sid + "_imu.csv"):
         raise FileNotFoundError(sid)
     removed = 0
-    for suffix in UPLOAD_SUFFIXES:
+    for suffix in UPLOAD_SUFFIXES + (NAME_SUFFIX,):
         path = os.path.join(_uploads_dir(), sid + suffix)
         if os.path.isfile(path) and _inside_root(path):
             os.remove(path)
@@ -653,6 +692,8 @@ def list_sessions(root):
             if sid in seen:
                 continue
             label = sid.replace("_", " ")
+            if bool(uploads) and os.path.realpath(folder) == os.path.realpath(uploads):
+                label = custom_name(sid) or label
             if sid in _sessions:
                 n = len(_sessions[sid].strokes)
             elif os.path.exists(strokes):
@@ -1648,6 +1689,10 @@ class Handler(BaseHTTPRequestHandler):
                 delete_session(str(body.get("id", "")))
                 self._json(200, {"deleted": str(body.get("id", ""))})
                 return
+            if url.path == "/api/rename":
+                shown = rename_session(str(body.get("id", "")), body.get("name", ""))
+                self._json(200, {"id": str(body.get("id", "")), "name": shown})
+                return
             if url.path == "/api/admin/login":
                 try:
                     token = admin_login(body.get("pin", ""))
@@ -1692,7 +1737,7 @@ class Handler(BaseHTTPRequestHandler):
         except SessionLoading as exc:
             self._json(202, {"loading": True, "id": str(exc)})
         except FileNotFoundError:
-            self._json(404, {"error": "that is not a recording you uploaded, so it cannot be removed here"})
+            self._json(404, {"error": "that is not a recording you uploaded, so it cannot be changed here"})
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
         except Exception as exc:
