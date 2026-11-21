@@ -236,6 +236,8 @@ const CHROME = {
     openFilesTip: "Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate",
     fromTab5: "Read from Tab5",
     fromTab5Tip: "Read a recording from the tablet over USB. Chrome or Edge.",
+    renameSession: "Rename",
+    renameTip: "Give this session a name of your own.",
     removeSession: "Remove",
     removeTip: "Delete this session from the server. You can read it from the tablet again.",
     welcomeTitle: "Read your rowing, stroke by stroke",
@@ -280,6 +282,8 @@ const CHROME = {
     openFilesTip: "Kies de _imu.csv van een sessie, met de _seconds.csv, _laps.csv en _info.csv voor de kaart en hartslag",
     fromTab5: "Lees van Tab5",
     fromTab5Tip: "Lees een opname via USB van de tablet. Chrome of Edge.",
+    renameSession: "Hernoem",
+    renameTip: "Geef deze sessie een eigen naam.",
     removeSession: "Verwijder",
     removeTip: "Verwijder deze sessie van de server. Je kunt hem opnieuw van de tablet lezen.",
     welcomeTitle: "Bekijk je roeien, slag voor slag",
@@ -348,6 +352,10 @@ const KEPT = {
   en: "Recordings you read in stay on this server until you remove them with the Remove button, and anyone who opens this page can see them. Reading from the tablet needs Chrome or Edge.",
   nl: "Opnames die je inleest blijven op deze server tot je ze verwijdert met de knop Verwijder, en iedereen die deze pagina opent kan ze zien. Lezen van de tablet kan alleen in Chrome of Edge.",
 };
+const RENAME_ASK = {
+  en: "Name for this session (leave empty to go back to the file name):",
+  nl: "Naam voor deze sessie (leeg laten voor de bestandsnaam):",
+};
 const REMOVE_ASK = {
   en: (name) => "Remove " + name + " from the server? Its files are deleted. You can read it from the tablet again.",
   nl: (name) => "Verwijder " + name + " van de server? De bestanden worden gewist. Je kunt hem opnieuw van de tablet lezen.",
@@ -368,6 +376,7 @@ async function loadConfig() {
 function updateRemove() {
   const listed = state.sessions.find((s) => s.id === $("session").value);
   $("remove").hidden = !(listed && listed.stored);
+  $("rename").hidden = !(listed && listed.stored);
 }
 
 const ANALYSING = {
@@ -479,6 +488,7 @@ async function loadSessions(selectId) {
   if (typeof cmpSessions === "function") cmpSessions(selectId);
   if (!state.sessions.length) {
     $("remove").hidden = true;
+    $("rename").hidden = true;
     $("app").hidden = true;
     setStatus("");
     return;
@@ -2327,6 +2337,19 @@ $("chips").addEventListener("wheel", (e) => {
 $("session").addEventListener("change", () => {
   updateRemove();
   loadSession($("session").value).catch((err) => setStatus(err.message));
+});
+$("rename").addEventListener("click", async () => {
+  const id = $("session").value;
+  const listed = state.sessions.find((s) => s.id === id);
+  if (!listed || !listed.stored) return;
+  const name = window.prompt(RENAME_ASK[lang()], listed.name);
+  if (name === null || name.trim() === listed.name) return;
+  try {
+    await getJSON("/api/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, name }) });
+    await loadSessions(id);
+  } catch (err) {
+    setStatus(err.message);
+  }
 });
 $("remove").addEventListener("click", async () => {
   const id = $("session").value;

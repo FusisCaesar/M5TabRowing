@@ -36,8 +36,9 @@ is already loaded.
 To load your own session, stop it on the tablet, plug the Tab5 into your
 computer with USB-C and press **Read from Tab5** (Chrome or Edge). Or press
 **Open files** and pick the files you copied off the SD card. Sessions you read
-in stay on the server, so they are there next time; the **Remove** button next to
-the session list deletes one. Not built a device yet? Start with the
+in stay on the server, so they are there next time; the **Rename** button next
+to the session list gives one a name of your own (empty goes back to the file
+name) and the **Remove** button deletes one. Not built a device yet? Start with the
 [install page](https://fusiscaesar.github.io/M5TabRowing/).
 
 ## Hardware
