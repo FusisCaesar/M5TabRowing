@@ -39,7 +39,8 @@ function sessionsFromLines(lines) {
     }
     session.files.push({ name: m[1], size: Number(m[3]) });
   }
-  return [...sessions.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // Session numbers only go up, so the highest is the newest.
+  return [...sessions.values()].sort((a, b) => b.id.localeCompare(a.id));
 }
 
 function megabytes(n) {
@@ -54,6 +55,14 @@ class Tab5Port {
     this.pending = null;
     this.buf = new Uint8Array(0);
     this.text = new TextEncoder();
+    this.queue = Promise.resolve();
+  }
+
+  // One exchange at a time on the port: reading the dates in the background must not run into a download.
+  exclusive(task) {
+    const run = this.queue.then(task, task);
+    this.queue = run.catch(() => {});
+    return run;
   }
 
   async open() {
@@ -129,28 +138,48 @@ class Tab5Port {
     }
   }
 
-  async list() {
-    this.buf = new Uint8Array(0);
-    await this.write(this.text.encode("D"));
+  // Asks for the listing. Newer firmware ends it with "[files] end"; older firmware just stops, so a
+  // long silence ends it too. The first line can take a while (the card counts its free space), and a
+  // tablet that is still starting up after the port opened does not hear the request: ask again.
+  list() {
+    return this.exclusive(() => this._list());
+  }
+
+  async _list() {
     const lines = [];
-    const deadline = performance.now() + 8000;
-    let quiet = performance.now() + 1500;
-    while (performance.now() < deadline) {
-      const line = await this.readLine(Math.max(50, quiet - performance.now()));
-      if (line === null) {
-        if (lines.some((item) => item.startsWith("[files]"))) break;
-        if (performance.now() > deadline) break;
-        quiet = performance.now() + 400;
-        continue;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.buf = new Uint8Array(0);
+      await this.write(this.text.encode("D"));
+      const deadline = performance.now() + 60000;
+      let quiet = performance.now() + (attempt < 2 ? 5000 : 12000);
+      let started = false;
+      for (;;) {
+        const now = performance.now();
+        if (now >= deadline) break;
+        const line = await this.readLine(Math.max(50, Math.min(quiet, deadline) - now));
+        if (line === null) {
+          if (performance.now() >= quiet) break;
+          continue;
+        }
+        if (line.startsWith("[files]")) {
+          if (!started) lines.length = 0;
+          started = true;
+          quiet = performance.now() + 3000;
+          if (/^\[files\]\s+end\b/.test(line)) break;
+        }
+        if (started) lines.push(line);
       }
-      lines.push(line);
-      if (line.startsWith("[files]")) quiet = performance.now() + 1200;
+      if (started) break;
     }
     if (lines.some((line) => line.startsWith("[files] no SD"))) throw new Error("the tablet has no SD card");
     return sessionsFromLines(lines);
   }
 
-  async fetchFile(name, onProgress) {
+  fetchFile(name, onProgress) {
+    return this.exclusive(() => this._fetchFile(name, onProgress));
+  }
+
+  async _fetchFile(name, onProgress) {
     this.buf = new Uint8Array(0);
     await this.write(this.text.encode("B /rowing/" + name + "\n"));
     let size = null;
@@ -236,6 +265,46 @@ function deviceCopy() {
   return DEVICE_COPY[typeof lang === "function" && lang() === "nl" ? "nl" : "en"];
 }
 
+// When a session was recorded, as the tablet's own clock wrote it into the session's info file.
+function startedText(utc) {
+  const when = new Date(utc);
+  if (isNaN(when.getTime())) return "";
+  const locale = typeof lang === "function" && lang() === "nl" ? "nl-NL" : "en-GB";
+  return when.toLocaleString(locale, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function optionText(session, imu) {
+  const parts = [];
+  if (session.started) parts.push(session.started);
+  parts.push(session.name, megabytes(imu.size));
+  return parts.join("  ·  ");
+}
+
+let datesStop = false;
+
+// Fills in the date of each session, newest first, while the list is already usable. Each is one
+// small file. It stops as soon as a download starts, and quietly gives up when the tablet is busy.
+async function readDates(port, sessions) {
+  datesStop = false;
+  const box = document.getElementById("device-session");
+  for (const session of sessions) {
+    if (datesStop || port !== tab5) return;
+    const info = session.files.find((file) => file.name.endsWith("_info.csv"));
+    const imu = session.files.find((file) => file.name.endsWith("_imu.csv"));
+    if (!info || !imu || session.started) continue;
+    try {
+      const text = await (await port.fetchFile(info.name)).text();
+      const m = /^start_utc,(\S+)/m.exec(text);
+      if (!m) continue;
+      session.started = startedText(m[1]);
+      const opt = [...box.options].find((item) => item.value === session.id);
+      if (opt) opt.textContent = optionText(session, imu);
+    } catch (err) {
+      return;
+    }
+  }
+}
+
 function fillDeviceList(sessions) {
   const copy = deviceCopy();
   const box = document.getElementById("device-session");
@@ -245,7 +314,7 @@ function fillDeviceList(sessions) {
     if (!imu) continue;
     const opt = document.createElement("option");
     opt.value = session.id;
-    opt.textContent = session.name + "   " + megabytes(imu.size);
+    opt.textContent = optionText(session, imu);
     opt.disabled = imu.size > TAB5_MAX;
     box.append(opt);
   }
@@ -289,6 +358,7 @@ async function connectTab5() {
     document.getElementById("device-close").textContent = copy.close;
     document.getElementById("device").showModal();
     setStatus("");
+    readDates(tab5, sessions);
   } catch (err) {
     setStatus(err.message);
     await tab5.close();
@@ -303,6 +373,7 @@ async function getFromTab5() {
   const option = box.options[box.selectedIndex];
   if (!id || !tab5 || !option || option.disabled) return;
   document.getElementById("device-get").disabled = true;
+  datesStop = true;
   try {
     const sessions = await tab5.list();
     const session = sessions.find((item) => item.id === id);
@@ -334,6 +405,13 @@ document.getElementById("tab5").addEventListener("click", () => {
   connectTab5().catch((err) => setStatus(err.message));
 });
 document.getElementById("device-close").addEventListener("click", () => document.getElementById("device").close());
+// However the window closes, give the port back: another tool (fetch.py) cannot open it while this page holds it.
+document.getElementById("device").addEventListener("close", () => {
+  datesStop = true;
+  const port = tab5;
+  tab5 = null;
+  if (port) port.close();
+});
 document.getElementById("device-get").addEventListener("click", () => {
   getFromTab5().catch((err) => setStatus(err.message));
 });
