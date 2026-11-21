@@ -30,7 +30,7 @@ const CMP_COPY = {
     noCommon: "None of the ticked sessions has three or more strokes at one stroke rate.",
     missing: (names, spm) => "No strokes at " + spm + " spm in " + names + ".",
     baseline: "baseline",
-    fine: "A rate counts every stroke within half a stroke per minute of it, and needs three or more. The speed line is lifted to the average speed of that session, so a faster session sits higher. Differences are against the first ticked session.",
+    fine: "A rate counts every stroke within half a stroke per minute of it, and needs three or more. The speed line is lifted to the average speed of that session, so a faster session sits higher. Differences are against the first ticked session. The bars along the top of the chart show when the blade is in the water for each session, an estimate from the boat's acceleration.",
     chartAria: "Average stroke at the chosen rate for each ticked session",
     time: (t) => t.toFixed(2) + " s from the catch",
     accel: "acc",
@@ -39,6 +39,8 @@ const CMP_COPY = {
       n: "Strokes averaged",
       split: "Split /500 m",
       dps: "Distance per stroke",
+      blade: "Blade in water",
+      bladePct: "Blade share of the stroke",
       drive: "Drive time",
       rec: "Recovery time",
       ratio: "Drive : recovery",
@@ -70,7 +72,7 @@ const CMP_COPY = {
     noCommon: "Geen van de aangevinkte sessies heeft drie of meer slagen op één slagtempo.",
     missing: (names, spm) => "Geen slagen op " + spm + " spm in " + names + ".",
     baseline: "basis",
-    fine: "Een tempo telt elke slag binnen een halve slag per minuut ervan en heeft er minstens drie nodig. De snelheidslijn is opgetild naar de gemiddelde snelheid van die sessie, dus een snellere sessie ligt hoger. Verschillen zijn ten opzichte van de eerste aangevinkte sessie.",
+    fine: "Een tempo telt elke slag binnen een halve slag per minuut ervan en heeft er minstens drie nodig. De snelheidslijn is opgetild naar de gemiddelde snelheid van die sessie, dus een snellere sessie ligt hoger. Verschillen zijn ten opzichte van de eerste aangevinkte sessie. De balkjes boven in de grafiek tonen wanneer het blad in het water is voor elke sessie, een schatting uit de versnelling van de boot.",
     chartAria: "Gemiddelde slag op het gekozen tempo voor elke aangevinkte sessie",
     time: (t) => t.toFixed(2) + " s na de haal",
     accel: "versn",
@@ -79,6 +81,8 @@ const CMP_COPY = {
       n: "Slagen in gemiddelde",
       split: "Split /500 m",
       dps: "Afstand per slag",
+      blade: "Blad in het water",
+      bladePct: "Blad in water, deel van de slag",
       drive: "Duur van de haal",
       rec: "Duur van het herstel",
       ratio: "Haal : herstel",
@@ -229,6 +233,8 @@ const CMP_ROWS = [
   { key: "n", get: (r) => r.n, dec: 0, delta: false },
   { key: "split", get: (r) => r.split, show: split1, step: (d) => (d > 0 ? "+" : "−") + Math.abs(d).toFixed(1) + " s", best: "low" },
   { key: "dps", get: (r) => r.dps, dec: 2, unit: " m", best: "high" },
+  { key: "blade", get: (r) => r.now && r.now.blade, dec: 2, unit: " s" },
+  { key: "bladePct", get: (r) => (r.now && r.now.blade_pct != null ? r.now.blade_pct * 100 : null), dec: 0, unit: " %" },
   { key: "drive", get: (r) => r.drive, dec: 2, unit: " s" },
   { key: "rec", get: (r) => r.rec, dec: 2, unit: " s" },
   { key: "ratio", get: (r) => (r.drive > 0 ? r.rec / r.drive : null), dec: 1, show: (v) => "1 : " + v.toFixed(1) },
@@ -482,6 +488,7 @@ function cmpDraw(series, spm) {
   const aRange = rangeOf(aVals) || [-0.6, 0.6];
   if (aRange[0] > 0) aRange[0] = -0.05;
   if (aRange[1] < 0) aRange[1] = 0.05;
+  headroom(aRange, box, 14 + series.length * 8);
   const vRange = rangeOf(vVals) || [0, 3];
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
@@ -506,6 +513,19 @@ function cmpDraw(series, spm) {
   };
   vline(0, "#1f7a4d");
   for (const s of series) vline(s.row.drive, s.color, [3, 4], 1);
+  // When the blade is in the water, one bar per session.
+  series.forEach((s, i) => {
+    const m = s.row.markers;
+    if (!m || m.blade_t0 == null || m.blade_t1 == null) return;
+    const y = box.aT + 9 + i * 8;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "butt";
+    ctx.beginPath();
+    ctx.moveTo(X(m.blade_t0), y);
+    ctx.lineTo(X(m.blade_t1), y);
+    ctx.stroke();
+  });
 
   const line = (cv, vals, Y, color) => {
     ctx.beginPath();

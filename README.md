@@ -579,6 +579,15 @@ Seconds without a GPS fix are left out of the GPX track.
    (the same as `python tools\export.py`); **Upload to Strava** opens Strava's
    own upload page, where you pick the downloaded file. The GPX is marked as
    rowing and carries stroke rate and heart rate.
+   **Blade in the water** is shown on the stroke chart (a bar along the top, a chip
+   and a gauge with the time and its share of the stroke), on the whole-session chart
+   (one bar per stroke in a panel of its own, as wide as the blade was in the water,
+   with the median of nine strokes as a line), and in the Compare table. It is an
+   estimate: the sensor is on the hull and never sees the oar. The blade is taken as
+   in at the bottom of the catch dip and out where the push has died away, the
+   acceleration back to zero after the drive peak (`blade_span()` in
+   `tools/stroke_view.py`). Expect it to be a tenth of a second off; use it to compare
+   strokes, rates, sessions and rigging, not to read the last hundredth.
    The **Compare** tab puts sessions side by side at one stroke rate. Each ticked
    session is analysed once (`/api/rates`) and its average stroke per rate is kept in
    the page, so ticking sessions on and off is instant; reading a recording again

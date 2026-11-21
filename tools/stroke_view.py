@@ -96,18 +96,50 @@ class Template:
         self.rec += (rec - self.rec) * k
 
 
+def blade_span(feat):
+    """When the blade is in the water, as far as the hull can tell: (in, out) in seconds from the catch.
+
+    In is the bottom of the catch dip, where the blade has bitten and the boat starts to pick up. Out is
+    where the push has died away: the acceleration back down to zero after the drive peak, so the push no
+    longer outweighs the drag. The oar itself is never seen, the sensor is on the hull, so this is an
+    estimate: it can be a tenth of a second off, but it is the same measure on both sides of a comparison.
+    """
+    gt, ga = feat["curve_t"], feat["curve_a"]
+    t_in = float(feat["depth_t"])
+    t_out = None
+    i0 = int(np.searchsorted(gt, feat["peak_t"]))
+    for i in range(i0, len(gt) - 1):
+        if ga[i] >= 0 > ga[i + 1]:
+            span = ga[i + 1] - ga[i]
+            u = (0 - ga[i]) / span if span else 0
+            t_out = float(gt[i] + u * (gt[i + 1] - gt[i]))
+            break
+    finish = float(feat["finish"])
+    # Never before the finish, and not far after it: with no clear zero the finish stands in.
+    if t_out is None or t_out > finish + 0.35:
+        t_out = finish
+    return t_in, max(t_out, finish)
+
+
 def _features(feat):
     if feat is None:
         return None
     keys = ("depth", "width", "loss", "notches", "peak", "gain", "peak_pct", "sag", "release",
             "fall", "run_mg", "speed_peak", "lead", "approach_loss")
-    return {k: _num(feat[k]) for k in keys}
+    out = {k: _num(feat[k]) for k in keys}
+    t_in, t_out = blade_span(feat)
+    out["blade"] = _num(t_out - t_in)
+    out["blade_pct"] = _num((t_out - t_in) / feat["interval"]) if feat["interval"] > 0 else None
+    return out
 
 
 def _markers(feat, shift):
     if feat is None:
         return None
+    blade_in, blade_out = blade_span(feat)
     return {
+        "blade_t0": _num(blade_in),
+        "blade_t1": _num(blade_out),
         "width_l": _num(feat["width_l"]),
         "width_r": _num(feat["width_r"]),
         "half_level": _num(feat["half_level"]),
@@ -512,6 +544,9 @@ def session_index(session, crew, lang, view="stroke"):
     out = []
     for n, row in enumerate(session.strokes):
         hint = _hint_row(session, n, row, crew, lang, view)
+        blade_in = blade_out = None
+        if row.get("ok") and row.get("feat") is not None:
+            blade_in, blade_out = blade_span(row["feat"])
         out.append({
             "i": n,
             "elapsed": _num(row["elapsed"], 1),
@@ -527,6 +562,9 @@ def session_index(session, crew, lang, view="stroke"):
             "t0": _num(row["t"] - row["interval"] - session.origin, 2),
             "t1": _num(row["t"] - session.origin, 2),
             "drive": _num(row["drive"], 2),
+            "blade": _num(blade_out - blade_in, 3) if blade_in is not None else None,
+            "bin": _num(blade_in, 3),
+            "bout": _num(blade_out, 3),
         })
     return {"id": session.id, "name": session.name, "strokes": out,
             "preroll_s": anatomy.PREROLL_S,

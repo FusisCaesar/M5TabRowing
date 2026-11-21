@@ -4,6 +4,9 @@ const COPY = {
   en: {
     phases: ["Catch", "Drive", "Finish", "Run", "Approach"],
     together: "Together",
+    blade: "Blade in water",
+    bladeLabel: (s, p) => "Blade in water " + s.toFixed(2) + " s" + (p != null ? " · " + Math.round(p * 100) + "% of the stroke" : ""),
+    bladeTitle: "Blade in water per stroke (s), estimate. Line: median of 9 strokes",
     thisStroke: "This stroke",
     average: (n) => n + "-stroke average",
     rateAverage: (n) => "average of " + n + " strokes",
@@ -32,6 +35,7 @@ const COPY = {
     sessionLegend: ["surge", "gps", "tip", "selected"],
     legend: ["now", "reference", "measured surge", "gps", "catch", "finish", "mark"],
     chips: {
+      blade: "blade in water",
       width: "catch width",
       notches: "notches",
       loss: "speed loss",
@@ -45,6 +49,7 @@ const COPY = {
       speed: "speed peak",
     },
     basis: {
+      blade: "Blade in water is an estimate from the boat's acceleration: from the bottom of the catch dip, where the blade has bitten, to the moment the push has died away and the acceleration is back to zero. The sensor sits on the hull and never sees the oar, so it can be a tenth of a second off. Compare it between strokes and sessions rather than reading the last hundredth.",
       width: "Catch width is how long the dip stays below half its depth. The tip fires when that is 25% and 20 ms wider than the reference.",
       notches: "A notch is a dip of its own inside the catch: below 40% of the depth, with the curve coming back up by 15% of the depth (at least 0.02 g) before the next one counts. A clean catch counts as 1. The tip fires at 0.8 more than the reference.",
       loss: "Catch loss is the boat speed given up from the catch until the boat picks up again. What is lost before the catch counts as approach. The tip fires when that is 25% and 0.04 m/s more than the reference.",
@@ -63,6 +68,7 @@ const COPY = {
       finish: (g) => "release dip " + g.toFixed(2) + " g",
       run: (s) => "speed peaks at " + s.toFixed(1) + " s",
       approach: (v) => "loses " + v.toFixed(2) + " m/s before the blade is in",
+      blade: (pct) => pct + "% of the stroke, catch dip to the end of the push",
       notch: "1 notch in the catch",
       notches: (n) => Math.round(n) + " notches in the catch",
     },
@@ -70,6 +76,9 @@ const COPY = {
   nl: {
     phases: ["Inpik", "Haal", "Uitpik", "Uitloop", "Aanloop"],
     together: "Samen",
+    blade: "Blad in het water",
+    bladeLabel: (s, p) => "Blad in het water " + s.toFixed(2) + " s" + (p != null ? " · " + Math.round(p * 100) + "% van de slag" : ""),
+    bladeTitle: "Blad in het water per slag (s), schatting. Lijn: mediaan van 9 slagen",
     thisStroke: "Deze slag",
     average: (n) => "gemiddelde " + n + " slagen",
     rateAverage: (n) => "gemiddelde van " + n + " slagen",
@@ -98,6 +107,7 @@ const COPY = {
     sessionLegend: ["surge", "gps", "tip", "gekozen"],
     legend: ["nu", "referentie", "gemeten surge", "gps", "inpik", "uitpik", "markering"],
     chips: {
+      blade: "blad in water",
       width: "inpikbreedte",
       notches: "knikken",
       loss: "snelheidsverlies",
@@ -111,6 +121,7 @@ const COPY = {
       speed: "snelheidspiek",
     },
     basis: {
+      blade: "Blad in het water is een schatting uit de versnelling van de boot: van de bodem van de inpikdip, waar het blad vat heeft, tot het moment dat de duw is weggestorven en de versnelling weer nul is. De sensor zit op de romp en ziet de riem nooit, dus het kan een tiende seconde schelen. Vergelijk het tussen slagen en sessies in plaats van het laatste honderdste te lezen.",
       width: "De inpikbreedte is hoelang de dip onder de helft van zijn diepte blijft. De tip komt als dat 25% en 20 ms breder is dan de referentie.",
       notches: "Een knik is een eigen dip in de inpik: onder 40% van de diepte, waarbij de curve eerst 15% van de diepte (minstens 0,02 g) terugkomt voor de volgende telt. Een schone inpik telt als 1. De tip komt bij 0,8 meer dan de referentie.",
       loss: "Het inpikverlies is de bootsnelheid die verloren gaat vanaf de inpik tot de boot weer versnelt. Wat voor de inpik verloren gaat telt bij de aanloop. De tip komt bij 25% en 0,04 m/s meer dan de referentie.",
@@ -129,6 +140,7 @@ const COPY = {
       finish: (g) => "uitpikdip " + g.toFixed(2) + " g",
       run: (s) => "snelheid piekt na " + s.toFixed(1) + " s",
       approach: (v) => "verliest " + v.toFixed(2) + " m/s voor de inpik",
+      blade: (pct) => pct + "% van de slag, van inpikdip tot einde van de duw",
       notch: "1 knik in de inpik",
       notches: (n) => Math.round(n) + " knikken in de inpik",
     },
@@ -144,6 +156,7 @@ const GRID = "#eee9de";
 const ZERO = "#c9c1b4";
 const MUTED = "#766f64";
 const FONT = "Segoe UI, system-ui, sans-serif";
+const BLADE = "#0a7ea4";
 const DRIVE_BINS = 32;
 const REC_BINS = 64;
 
@@ -865,6 +878,7 @@ function chipValue(id, d) {
   const n = d.now;
   if (!n) return "";
   switch (id) {
+    case "blade": return n.blade == null ? "" : n.blade.toFixed(2) + " s";
     case "width": return Math.round(n.width * 1000) + " ms";
     case "notches": return String(Math.round(n.notches));
     case "loss": return n.loss.toFixed(2) + " m/s";
@@ -922,6 +936,7 @@ function zoomSpan(id, d) {
     return [Math.min(a, c) - extra, Math.max(a, c) + extra];
   };
   switch (id) {
+    case "blade": return pad(m.blade_t0, m.blade_t1);
     case "width": return pad(m.width_l, m.width_r);
     case "notches": return pad(b.catch0, b.catch1);
     case "loss": return pad(0, b.catch1);
@@ -1044,6 +1059,16 @@ function renderGauges() {
       cap: d.valid ? c.caps.approach(now.approach_loss) : "",
     },
   ];
+  if (d.valid && now.blade > 0) {
+    rows.push({
+      name: c.blade, color: "#bcd9ea",
+      value: now.blade.toFixed(2) + " s",
+      tone: "",
+      frac: now.blade / scaleOf(ref.blade, 1.6),
+      refFrac: have && ref.blade > 0 ? ref.blade / scaleOf(ref.blade, 1.6) : 0,
+      cap: c.caps.blade(Math.round((now.blade_pct || 0) * 100)),
+    });
+  }
   if (crew() > 1) {
     let col = "";
     if (d.valid && have && now.notches >= ref.notches + 0.8) col = "warn";
@@ -1204,7 +1229,7 @@ function panelTitles(kind) {
 }
 
 // Grid lines and value labels for both panels, with a title above each.
-function drawGrid(ctx, box, aRange, vRange, xs, kind, sRange) {
+function drawGrid(ctx, box, aRange, vRange, xs, kind, sRange, third) {
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
   ctx.save();
@@ -1228,7 +1253,7 @@ function drawGrid(ctx, box, aRange, vRange, xs, kind, sRange) {
   ];
   if (box.sT != null && sRange) {
     const Ys = (mg) => box.sB - (mg - sRange[0]) / (sRange[1] - sRange[0]) * (box.sB - box.sT);
-    rows.push([niceTicks(sRange[0], sRange[1], 6), Ys, box.sT, box.sB, true]);
+    rows.push([niceTicks(sRange[0], sRange[1], 6), Ys, box.sT, box.sB, !(third && third.signed === false)]);
   }
   for (const [ticks, Y, top, bottom, signed] of rows) {
     const tenths = ticks.unit * 10;
@@ -1251,7 +1276,7 @@ function drawGrid(ctx, box, aRange, vRange, xs, kind, sRange) {
   ctx.fillStyle = "#4a443a";
   ctx.fillText(names.accel, box.L, box.aT - 7);
   ctx.fillText(names.speed, box.L, box.vT - 7);
-  if (box.sT != null) ctx.fillText(names.sway, box.L, box.sT - 7);
+  if (box.sT != null) ctx.fillText(third && third.title ? third.title : names.sway, box.L, box.sT - 7);
   if (names.time) {
     ctx.font = "11px " + FONT;
     ctx.fillStyle = MUTED;
@@ -1280,6 +1305,12 @@ function layoutOf(w, h, sway) {
   const inner = Math.max(80, h - top - gap - axis);
   const aH = Math.round(inner * 0.62);
   return { L, R, aT: top, aB: top + aH, vT: top + aH + gap, vB: h - axis, axis: h - 4 };
+}
+
+// Room at the top of the acceleration panel, in pixels, so the blade bar sits clear of the curves.
+function headroom(range, box, px) {
+  const h = box.aB - box.aT;
+  range[1] += (range[1] - range[0]) * px / Math.max(40, h - px);
 }
 
 function rangeOf(pts) {
@@ -1421,6 +1452,7 @@ function draw() {
   let aRange = rangeOf(aVals) || [-0.6, 0.6];
   if (aRange[0] > 0) aRange[0] = -0.05;
   if (aRange[1] < 0) aRange[1] = 0.05;
+  if (d.now && d.now.blade > 0) headroom(aRange, box, 42);
   const vRange = rangeOf(vVals) || [0, 3];
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
@@ -1616,6 +1648,7 @@ function drawRate() {
   let aRange = rangeOf(aVals) || [-0.6, 0.6];
   if (aRange[0] > 0) aRange[0] = -0.05;
   if (aRange[1] < 0) aRange[1] = 0.05;
+  if (d.now && d.now.blade > 0) headroom(aRange, box, 42);
   const vRange = rangeOf(vVals) || [0, 3];
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
@@ -1725,10 +1758,16 @@ function drawSession() {
     return;
   }
   clampSession();
-  const box = layoutOf(w, h);
+  const hasBlade = state.rows.some((r) => r.blade != null && r.blade > 0);
+  const box = layoutOf(w, h, hasBlade);
   const X = (t) => box.L + (t - state.s0) / (state.s1 - state.s0) * (box.R - box.L);
   const aVals = [];
   const vVals = [];
+  const bladeRows = [];
+  for (const r of state.rows) {
+    if (r.t0 == null || !(r.blade > 0) || r.bin == null || r.t0 + r.bout < state.s0 || r.t0 + r.bin > state.s1) continue;
+    bladeRows.push(r);
+  }
   for (let i = 0; i < tr.t.length; i++) {
     if (tr.t[i] < state.s0 - 0.01 || tr.t[i] > state.s1 + 0.01) continue;
     if (tr.lo[i] != null) aVals.push(tr.lo[i], tr.hi[i]);
@@ -1740,10 +1779,13 @@ function drawSession() {
   const vRange = rangeOf(vVals) || [0, 3];
   const Ya = (g) => box.aB - (g - aRange[0]) / (aRange[1] - aRange[0]) * (box.aB - box.aT);
   const Yv = (v) => box.vB - (v - vRange[0]) / (vRange[1] - vRange[0]) * (box.vB - box.vT);
+  // Blade in the water, one bar per stroke, as long as the time it was in.
+  const bRange = rangeOf(bladeRows.map((r) => r.blade)) || [0.6, 1.6];
+  const Yb = (s) => box.sB - (s - bRange[0]) / (bRange[1] - bRange[0]) * (box.sB - box.sT);
   const close = state.s1 - state.s0 < 30;
 
   paintPanels(ctx, box);
-  const panels = [[box.aT, box.aB], [box.vT, box.vB]];
+  const panels = panelsOf(box);
   const clipPanels = () => {
     ctx.beginPath();
     for (const [top, bottom] of panels) ctx.rect(box.L, top, box.R - box.L, bottom - top);
@@ -1788,7 +1830,7 @@ function drawSession() {
   const gridStep = tickStep(state.s1 - state.s0);
   const gridX = [];
   for (let t = Math.ceil(state.s0 / gridStep) * gridStep; t <= state.s1 + 1e-6; t += gridStep) gridX.push(X(t));
-  drawGrid(ctx, box, aRange, vRange, gridX, "session");
+  drawGrid(ctx, box, aRange, vRange, gridX, "session", hasBlade ? bRange : null, hasBlade ? { title: copy().bladeTitle, signed: false } : null);
 
   ctx.save();
   clipPanels();
@@ -1833,6 +1875,44 @@ function drawSession() {
   ctx.stroke();
   ctx.restore();
 
+  if (hasBlade) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(box.L, box.sT, box.R - box.L, box.sB - box.sT);
+    ctx.clip();
+    // Each stroke sits where it happened and is as wide as the blade was in the water.
+    for (const r of bladeRows) {
+      const on = state.rows[state.i] === r;
+      const x0 = X(r.t0 + r.bin), x1 = X(r.t0 + r.bout);
+      ctx.fillStyle = on ? "#075a78" : "rgba(10, 126, 164, 0.75)";
+      if (x1 - x0 < 3) {
+        ctx.beginPath();
+        ctx.arc((x0 + x1) / 2, Yb(r.blade), on ? 3.5 : 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillRect(x0, Yb(r.blade) - (on ? 3 : 2), x1 - x0, on ? 6 : 4);
+      }
+    }
+    // The trend: the median of nine strokes around each one.
+    const mid = (r) => r.t0 + (r.bin + r.bout) / 2;
+    ctx.beginPath();
+    let pen = false;
+    for (let i = 0; i < bladeRows.length; i++) {
+      const win = bladeRows.slice(Math.max(0, i - 4), i + 5).map((r) => r.blade).sort((a, b) => a - b);
+      const med = win[win.length >> 1];
+      const x = X(mid(bladeRows[i])), y = Yb(med);
+      // A pause in the rowing breaks the line.
+      if (i > 0 && mid(bladeRows[i]) - mid(bladeRows[i - 1]) > 12) pen = false;
+      if (!pen) { ctx.moveTo(x, y); pen = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = "#1c1915";
+    ctx.lineWidth = 1.6;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    ctx.restore();
+  }
+
   const step = tickStep(state.s1 - state.s0);
   ctx.fillStyle = MUTED;
   ctx.font = "11px Segoe UI, sans-serif";
@@ -1843,10 +1923,11 @@ function drawSession() {
     const x = X(t);
     ctx.strokeStyle = "#d9d2c5";
     ctx.beginPath();
-    ctx.moveTo(x, box.vB);
-    ctx.lineTo(x, box.vB + 4);
+    const axisY = box.sB != null ? box.sB : box.vB;
+    ctx.moveTo(x, axisY);
+    ctx.lineTo(x, axisY + 4);
     ctx.stroke();
-    ctx.fillText(step >= 1 ? clock(t) : t.toFixed(1), x, box.vB + 5);
+    ctx.fillText(step >= 1 ? clock(t) : t.toFixed(1), x, axisY + 5);
   }
 }
 
@@ -1888,6 +1969,46 @@ function drawMarks(ctx, d, X, Ya, Yv, box) {
   ctx.textBaseline = "bottom";
 
   const inView = (t) => t != null && t >= state.t0 && t <= state.t1;
+  if (d.now && d.now.blade > 0 && m.blade_t0 != null && m.blade_t1 != null) {
+    const on = focus === "blade";
+    const y = box.aT + 31;
+    const x0 = X(m.blade_t0), x1 = X(m.blade_t1);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(box.L, box.aT, box.R - box.L, box.aB - box.aT);
+    ctx.clip();
+    ctx.strokeStyle = BLADE;
+    ctx.lineCap = "butt";
+    ctx.lineWidth = on ? 6 : 4;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x0, y - 6);
+    ctx.lineTo(x0, y + 6);
+    ctx.moveTo(x1, y - 6);
+    ctx.lineTo(x1, y + 6);
+    ctx.stroke();
+    ctx.restore();
+    const text = copy().bladeLabel(d.now.blade, d.now.blade_pct);
+    ctx.font = (on ? "600 " : "") + "12px Segoe UI, sans-serif";
+    ctx.textBaseline = "middle";
+    const wide = ctx.measureText(text).width;
+    let lx = x1 + 9, align = "left";
+    if (lx + wide > box.R - 4) { lx = x0 - 9; align = "right"; }
+    if (align === "right" && lx - wide < box.L + 4) { lx = box.L + 6; align = "left"; }
+    ctx.textAlign = align;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = CARD;
+    ctx.fillStyle = BLADE;
+    ctx.strokeText(text, lx, y);
+    ctx.fillText(text, lx, y);
+    ctx.textBaseline = "bottom";
+    ctx.font = "12px Segoe UI, sans-serif";
+    ctx.lineWidth = 1.5;
+  }
   const label = (text, x, y) => {
     ctx.textAlign = "center";
     ctx.lineWidth = 3;
