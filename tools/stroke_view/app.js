@@ -432,6 +432,7 @@ async function loadSessions(selectId) {
   $("welcome").hidden = state.sessions.length > 0;
   document.body.classList.toggle("empty", state.sessions.length === 0);
   if (window.ovTabs) ovTabs();
+  if (typeof cmpSessions === "function") cmpSessions(selectId);
   if (!state.sessions.length) {
     $("app").hidden = true;
     setStatus("");

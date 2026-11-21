@@ -112,13 +112,14 @@ function ovTabs() {
   $("page-start").hidden = any;
   $("page-overview").hidden = !(any && ov.data);
   $("page-strokes").hidden = !any;
+  $("page-compare").hidden = !any;
   const shown = [...document.querySelectorAll("#pages button")].filter((b) => !b.hidden);
   shown.forEach((b, i) => {
     b.classList.toggle("first", i === 0);
     b.classList.toggle("last", i === shown.length - 1);
   });
   const now = ov.page === "guide" ? "guide" : any ? ov.page : "start";
-  for (const key of ["start", "overview", "strokes", "guide"]) {
+  for (const key of ["start", "overview", "strokes", "compare", "guide"]) {
     $("page-" + key).setAttribute("aria-selected", key === now);
   }
 }
@@ -128,9 +129,12 @@ function ovShowPage(page) {
   document.body.classList.toggle("page-overview", page === "overview");
   document.body.classList.toggle("page-strokes", page === "strokes");
   document.body.classList.toggle("page-guide", page === "guide");
+  document.body.classList.toggle("page-compare", page === "compare");
   ovTabs();
   if (page === "guide") {
     if (window.guideShow) guideShow();
+  } else if (page === "compare") {
+    if (typeof cmpShow === "function") cmpShow();
   } else if (page === "overview") {
     requestAnimationFrame(() => {
       if (ov.map) {
@@ -573,7 +577,7 @@ async function overviewLoad(id) {
   if (!d || !d.has_seconds) {
     ov.data = null;
     $("overview").hidden = true;
-    ovShowPage(ov.page === "guide" ? "guide" : "strokes");
+    ovShowPage(ov.page === "guide" || ov.page === "compare" ? ov.page : "strokes");
     return;
   }
   $("overview").hidden = false;

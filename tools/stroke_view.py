@@ -53,6 +53,7 @@ STATIC = {
     "/tab5.js": ("tab5.js", "text/javascript; charset=utf-8"),
     "/overview.js": ("overview.js", "text/javascript; charset=utf-8"),
     "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
+    "/compare.js": ("compare.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/vendor/leaflet.js": ("vendor/leaflet.js", "text/javascript; charset=utf-8"),
     "/vendor/leaflet.css": ("vendor/leaflet.css", "text/css; charset=utf-8"),
@@ -157,6 +158,7 @@ class Session:
         self.surge = np.zeros(0, np.float32)
         self.gps = np.zeros(0, np.float32)
         self.origin = 0.0
+        self.started = ""
         self.logged = 0
         self.detected = 0
         self.rescued_n = 0
@@ -336,6 +338,7 @@ def load_session(imu_path):
     session.rescued_n = rescued_n
     session.detector = detector
     session.origin = origin
+    session.started = info.get("start_utc", "")
     built = []
     for row in meta:
         if row["interval"] <= 0 or row["drive"] <= 0:
@@ -877,7 +880,8 @@ def rate_report(session, crew, lang):
     pace = None if spells else _choose_pace(session, out)
     for row in out:
         row["pace"] = bool(pace and row["spm"] == pace["spm"])
-    return {"rates": out, "shown": shown, "readable": readable, "pace": pace, "spells": spells}
+    return {"rates": out, "shown": shown, "readable": readable, "pace": pace, "spells": spells,
+            "id": session.id, "name": session.name, "started": session.started}
 
 
 # Hard and light spells: an outing rowed as bursts of effort with easier rowing between.
