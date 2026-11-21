@@ -46,6 +46,7 @@
       <button id="page-start" type="button" role="tab" data-i18n="pageStart" hidden>Start</button>
       <button id="page-overview" type="button" role="tab" data-i18n="pageOverview" hidden>Overview</button>
       <button id="page-strokes" type="button" role="tab" data-i18n="pageStrokes" hidden>Strokes</button>
+      <button id="page-compare" type="button" role="tab" data-i18n="pageCompare" hidden>Compare</button>
       <button id="page-guide" type="button" role="tab" data-i18n="pageGuide">Guide</button>
     </div>
     <div class="group analysis">
@@ -163,6 +164,27 @@
       </div>
     </div>
   </section>
+  <section id="compare" aria-label="Compare">
+    <aside class="cmp-side card">
+      <h2 id="cmp-title"></h2>
+      <p id="cmp-lead"></p>
+      <label class="cmp-rate"><span id="cmp-rate-label"></span><select id="cmp-rate"></select></label>
+      <div class="cmp-head" id="cmp-sessions"></div>
+      <div id="cmp-list"></div>
+      <p id="cmp-full" hidden></p>
+    </aside>
+    <div class="cmp-main">
+      <div class="card cmp-chartbox">
+        <p id="cmp-msg" hidden></p>
+        <div id="cmp-legend"></div>
+        <canvas id="cmp-chart" role="img"></canvas>
+      </div>
+      <div class="card cmp-tablebox" id="cmp-tablebox" hidden>
+        <div class="cmp-scroll"><table id="cmp-table"></table></div>
+        <p id="cmp-fine"></p>
+      </div>
+    </div>
+  </section>
   <section id="guide" aria-label="Guide"></section>
   <dialog id="device">
     <div id="device-title"></div>
@@ -181,6 +203,7 @@
   <script src="app.js"></script>
   <script src="overview.js"></script>
   <script src="guide.js"></script>
+  <script src="compare.js"></script>
   <script src="tab5.js"></script>
 </body>
 </html>

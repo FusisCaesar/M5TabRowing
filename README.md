@@ -21,6 +21,11 @@ is already loaded.
   including how much the boat rolls and yaws.
 - **Strokes**: every stroke on its own, with the same coaching hint the device
   gives, and your strokes compared by rate.
+- **Compare**: tick several sessions and pick a stroke rate, and see the average
+  stroke of each at that rate on top of each other, with a table of split,
+  distance per stroke, drive and recovery time, catch, drive, finish and run
+  side by side. Add a note to a session (for example the rigging you used) to
+  tell them apart.
 - **Guide**: what the sensors measure, a drawn stroke (catch, drive, finish,
   run, approach), a real stroke from the demo with numbered marks, and what each
   figure of a session lets you conclude and what it cannot tell you. It is
@@ -574,6 +579,18 @@ Seconds without a GPS fix are left out of the GPX track.
    (the same as `python tools\export.py`); **Upload to Strava** opens Strava's
    own upload page, where you pick the downloaded file. The GPX is marked as
    rowing and carries stroke rate and heart rate.
+   The **Compare** tab puts sessions side by side at one stroke rate. Each ticked
+   session is analysed once (`/api/rates`) and its average stroke per rate is kept in
+   the page, so ticking sessions on and off is instant; reading a recording again
+   under the same name replaces it. A rate counts every stroke within half a stroke
+   per minute of it and needs three. The lines are acceleration and speed against
+   seconds from the catch; hover the chart for the values at that moment. The table
+   gives each figure with its difference against the first ticked session, and marks
+   the best split and distance per stroke. A note typed under a session (rigging,
+   crew, boat) is kept in this browser only. Up to six sessions at once. On the
+   hosted server only two analysed sessions stay in memory, so ticking one that was
+   pushed out analyses it again (a long one takes up to a minute or two); sessions
+   already shown stay in the page until it is reloaded.
    The **Guide** tab is for someone who has not seen the data before. It is always
    there, also with no session loaded (the welcome page has a "How to read your
    data" button). It explains where the numbers come from (GPS, accelerometer,
