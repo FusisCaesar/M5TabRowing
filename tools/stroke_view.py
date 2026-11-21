@@ -13,10 +13,13 @@ and the PORT Render sets. Locally, with no PORT, it stays on 127.0.0.1.
 """
 import argparse
 import csv
+import gzip
+import hashlib
 import hmac
 import json
 import math
 import os
+import pickle
 import re
 import secrets
 import shutil
@@ -371,13 +374,19 @@ def _read_imu(path):
         out["gps_mps"] = np.full(len(out["t_s"]), -1.0)
     return out
 
-def load_session(imu_path):
-    base, imu_path, strokes_path = anatomy.session_paths(imu_path)
-    sid = os.path.basename(base)
+def display_name(sid, imu_path):
+    """The name shown for a session: the one you gave it, else made from its file name."""
     label = sid.split("_", 1)
     name = sid if len(label) == 1 else "%s %s" % (label[0], label[1].replace("_", " "))
     if os.path.dirname(os.path.abspath(imu_path)) == os.path.abspath(_uploads_dir()):
         name = custom_name(sid) or name
+    return name
+
+
+def load_session(imu_path):
+    base, imu_path, strokes_path = anatomy.session_paths(imu_path)
+    sid = os.path.basename(base)
+    name = display_name(sid, imu_path)
     imu = _read_imu(imu_path)
     t = imu["t_s"]
     gps = imu["gps_mps"]
@@ -493,6 +502,121 @@ def _uploads_dir():
     return os.path.join(_root, "uploads")
 
 
+# Analysing a long recording takes a minute, so the result is saved beside the recordings and reused:
+# a session that fell out of memory, or a restart, or a deploy, reads it back in a fraction of a second.
+# It is only used when it still matches: the recording's files are unchanged and the code that makes the
+# analysis is the same. Anything else, or a file that cannot be read, simply means analysing again.
+CACHE_SUFFIX = ".pkl.gz"
+_stamp = None
+
+
+def _cache_dir():
+    return os.path.join(_root, "cache")
+
+
+def _code_stamp():
+    """Identifies the code that turns a recording into an analysis: this file down to where the server
+    part starts, plus anatomy.py and replay.py. A change there makes saved analyses stale."""
+    global _stamp
+    if _stamp is None:
+        digest = hashlib.sha1()
+        try:
+            with open(os.path.abspath(__file__), "rb") as f:
+                text = f.read()
+            at = text.find(b"\ndef _uploads_dir")
+            digest.update(text if at < 0 else text[:at])
+        except OSError:
+            digest.update(b"?")
+        for name in ("anatomy.py", "replay.py"):
+            try:
+                with open(os.path.join(HERE, name), "rb") as f:
+                    digest.update(f.read())
+            except OSError:
+                digest.update(name.encode())
+        _stamp = digest.hexdigest()
+    return _stamp
+
+
+def _source_signature(imu_path):
+    """The recording's files as they are now: any change to one of them makes the saved analysis stale."""
+    base = imu_path[: -len("_imu.csv")] if imu_path.endswith("_imu.csv") else imu_path
+    parts = [os.path.abspath(imu_path)]
+    for suffix in UPLOAD_SUFFIXES:
+        try:
+            info = os.stat(base + suffix)
+            parts.append((suffix, info.st_size, info.st_mtime_ns))
+        except OSError:
+            parts.append((suffix, None, None))
+    return parts
+
+
+def _cache_path(sid):
+    return os.path.join(_cache_dir(), sid + CACHE_SUFFIX)
+
+
+def cache_load(imu_path):
+    """The saved analysis of this recording, or None when there is none that still fits."""
+    sid = os.path.basename(imu_path)[: -len("_imu.csv")] if imu_path.endswith("_imu.csv") else os.path.basename(imu_path)
+    try:
+        with gzip.open(_cache_path(sid), "rb") as f:
+            blob = pickle.load(f)
+        if blob.get("stamp") != _code_stamp() or blob.get("source") != _source_signature(imu_path):
+            return None
+        session = blob["session"]
+        session.name = display_name(session.id, imu_path)  # a rename after it was saved
+        return session
+    except Exception:
+        return None
+
+
+def cache_save(session, imu_path):
+    """Keeps the analysis for next time. Never an error: not being able to save only costs a re-analysis."""
+    path = _cache_path(session.id)
+    tmp = path + ".tmp"
+    try:
+        free = storage_free()
+        if free is not None and free < 2 * STORAGE_MIN_FREE:
+            return
+        os.makedirs(_cache_dir(), exist_ok=True)
+        with gzip.open(tmp, "wb", compresslevel=6) as f:
+            pickle.dump({"stamp": _code_stamp(), "source": _source_signature(imu_path), "session": session},
+                        f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except Exception:
+        traceback.print_exc()
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def cache_files():
+    """(sid, bytes) of every saved analysis."""
+    out = []
+    try:
+        for name in os.listdir(_cache_dir()):
+            if name.endswith(CACHE_SUFFIX):
+                out.append((name[: -len(CACHE_SUFFIX)], os.path.getsize(os.path.join(_cache_dir(), name))))
+    except OSError:
+        pass
+    return out
+
+
+def cache_clear(sid=None):
+    """Removes the saved analysis of one session, or of all. Returns (files, bytes) removed."""
+    count = freed = 0
+    for name, size in cache_files():
+        if sid is not None and name != sid:
+            continue
+        try:
+            os.remove(_cache_path(name))
+            count += 1
+            freed += size
+        except OSError:
+            pass
+    return count, freed
+
+
 # Disk management is behind a code. It is a light gate, not an account: the default is in this public
 # source, so set ADMIN_PIN on the host to your own. A right code gets a token that lasts half an hour
 # and has to be sent with every disk call; five wrong codes lock the page for a minute.
@@ -563,6 +687,11 @@ def admin_storage():
             if suffix != NAME_SUFFIX:
                 group["files"].append(suffix[1:-4])
             group["saved"] = max(group["saved"], info.st_mtime)
+    cached = cache_files()
+    for sid, size in cached:
+        if sid in groups:
+            groups[sid]["bytes"] += size
+            groups[sid]["files"].append("analysis")
     sessions = sorted(groups.values(), key=lambda g: g["saved"], reverse=True)
     try:
         disk = shutil.disk_usage(_root)
@@ -574,7 +703,9 @@ def admin_storage():
         "path": os.path.abspath(_root),
         "total": total,
         "free": free,
-        "kept": sum(g["bytes"] for g in sessions) + sum(f["bytes"] for f in other),
+        "kept": sum(g["bytes"] for g in sessions) + sum(f["bytes"] for f in other)
+                + sum(size for sid, size in cached if sid not in groups),
+        "cache": sum(size for sid, size in cached),
         "sessions": sessions,
         "other": other,
     }
@@ -663,6 +794,7 @@ def delete_session(sid):
             os.remove(path)
             removed += 1
     _sessions.pop(sid, None)
+    cache_clear(sid)
     if not removed:
         raise FileNotFoundError(sid)
     return removed
@@ -1410,7 +1542,11 @@ def _run_load(sid, path, job):
         # One at a time: two long ones together would not fit a small server.
         with _load_lock:
             if sid not in _sessions:
-                _remember(load_session(path))
+                session = cache_load(path)
+                if session is None:
+                    session = load_session(path)
+                    cache_save(session, path)
+                _remember(session)
     except Exception as exc:
         traceback.print_exc()
         job["error"] = str(exc) or exc.__class__.__name__
@@ -1722,6 +1858,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 shown = rename_session(str(body.get("id", "")), body.get("name", ""))
                 self._json(200, {"id": str(body.get("id", "")), "name": shown})
+                return
+            if url.path == "/api/admin/clear-cache":
+                if not self._admin_ok():
+                    return
+                count, freed = cache_clear()
+                self._json(200, {"cleared": count, "bytes": freed})
                 return
             if url.path == "/api/admin/delete":
                 if not self._admin_ok():

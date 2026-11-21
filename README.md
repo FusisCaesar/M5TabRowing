@@ -649,8 +649,20 @@ Seconds without a GPS fix are left out of the GPX track.
    - Without a disk (a free instance) it works as before, but uploads are lost
      on restart and the welcome page says they are not kept.
 
+   **Saved analysis.** Analysing a long recording takes about 25 seconds on a PC
+   and longer on a small host, and the hosted server keeps only two analysed
+   sessions in memory. So each analysis is also saved in `cache/` next to
+   `uploads/` and read back in a fraction of a second when you switch to that
+   session again, after a restart, or after a deploy. A saved analysis is only
+   used while it still fits: the recording's files are unchanged and the analysis
+   code (`stroke_view.py` down to the server part, `anatomy.py`, `replay.py`) is
+   the same, otherwise the session is simply analysed again. A rename does not
+   affect it. It takes about 40% of the recording's size on top (a 40 MB session
+   adds roughly 15 MB); it is skipped when the disk is nearly full, goes away with
+   the session, and the Disk tab can clear all of it.
+
    **Disk tab.** Shows how full the disk is and lists every stored session with
-   its size and date (plus any loose files in the uploads folder). **Rename**
+   its size (including its saved analysis) and date (plus any loose files in the uploads folder). **Rename**
    gives a session a name of your own (empty goes back to the file name; it is
    kept in `<id>_name.txt` beside the recording) and the ticked ones can be
    deleted. It asks for a code first. The server checks the code and hands
