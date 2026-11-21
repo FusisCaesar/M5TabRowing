@@ -647,6 +647,15 @@ Seconds without a GPS fix are left out of the GPX track.
    - Without a disk (a free instance) it works as before, but uploads are lost
      on restart and the welcome page says they are not kept.
 
+   **Disk tab.** Shows how full the disk is and lists every stored session with
+   its size and date (plus any loose files in the uploads folder), and deletes the
+   ones you tick. It asks for a code first. The server checks the code and hands
+   back a token that lasts 30 minutes; five wrong codes lock it for a minute. The
+   default code is `9487`, which is in this public source, so set `ADMIN_PIN` on
+   the host to your own (Render: Environment). The code only guards the Disk tab:
+   the **Remove** button next to the session list still removes a session you
+   uploaded without it.
+
 ## Serial tools
 
 Open the port with DTR/RTS held low; otherwise opening it resets the ESP32-P4.
