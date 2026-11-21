@@ -34,7 +34,7 @@ body {
   min-height: 100%;
 }
 
-#welcome, #app, #overview, #guide, #compare { grid-row: 4; }
+#welcome, #app, #overview, #guide, #compare, #disk { grid-row: 4; }
 
 a { color: var(--now); }
 
@@ -624,6 +624,7 @@ body.page-overview #app { display: none; }
 body.page-strokes #overview { display: none; }
 body.page-guide #welcome, body.page-guide #app, body.page-guide #overview, body.page-guide .analysis { display: none; }
 body.page-compare #welcome, body.page-compare #app, body.page-compare #overview, body.page-compare .analysis { display: none; }
+body.page-disk #welcome, body.page-disk #app, body.page-disk #overview, body.page-disk .analysis { display: none; }
 
 #overview {
   display: grid;
@@ -955,6 +956,48 @@ body.page-compare #compare { display: grid; }
 #cmp-table .cmp-th { overflow-wrap: anywhere; }
 #cmp-table small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
 #cmp-table td.best span { color: var(--ok); font-weight: 650; }
+/* Disk page: what is stored on the server, behind a code. */
+#disk { display: none; overflow: auto; padding: 16px; min-height: 0; align-items: start; }
+body.page-disk #disk { display: block; }
+.disk-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--lift);
+  padding: 18px;
+  max-width: 880px;
+  margin: 0 auto;
+}
+.disk-card h2 { margin: 0 0 6px; font-size: 18px; }
+.disk-lead { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.disk-lock { max-width: 420px; }
+#disk-form { display: flex; align-items: flex-end; gap: 10px; }
+#disk-form label { flex: 1; }
+#disk-form input { width: 100%; }
+.disk-msg { margin: 10px 0 0; min-height: 1.4em; color: var(--muted); font-size: 13px; }
+.disk-bar { position: relative; height: 12px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+.disk-bar i { position: absolute; left: 0; top: 0; bottom: 0; }
+.disk-bar .all { background: #cfc6b8; }
+.disk-bar .mine { background: #1d4e89; }
+.disk-stats { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 8px 0 4px; font-size: 14px; }
+.disk-stats b { font-weight: 650; }
+.disk-path { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.disk-warn { margin: 0 0 8px; color: var(--warn); font-size: 13px; }
+.disk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.disk-actions .danger { background: #a3361f; border-color: #a3361f; color: #fff; }
+.disk-actions button:disabled { opacity: 0.45; cursor: default; }
+.disk-scroll { overflow-x: auto; margin-top: 8px; }
+#disk-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+#disk-table th, #disk-table td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+#disk-table th { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+#disk-table .num { text-align: right; white-space: nowrap; }
+#disk-table small { display: block; margin-left: 24px; color: var(--muted); font-size: 12px; }
+.disk-tick { display: flex; flex-direction: row; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--ink); cursor: pointer; }
+.disk-tick input { margin: 0; flex: none; }
+.disk-sep td { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); background: var(--panel); }
+@media (max-width: 900px) {
+  #disk { padding: 10px; }
+}
 @media (max-width: 900px) {
   #compare { grid-template-columns: minmax(0, 1fr); padding: 10px; }
   #cmp-list { max-height: none; }

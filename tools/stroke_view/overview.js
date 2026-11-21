@@ -118,8 +118,8 @@ function ovTabs() {
     b.classList.toggle("first", i === 0);
     b.classList.toggle("last", i === shown.length - 1);
   });
-  const now = ov.page === "guide" ? "guide" : any ? ov.page : "start";
-  for (const key of ["start", "overview", "strokes", "compare", "guide"]) {
+  const now = ov.page === "guide" || ov.page === "disk" ? ov.page : any ? ov.page : "start";
+  for (const key of ["start", "overview", "strokes", "compare", "guide", "disk"]) {
     $("page-" + key).setAttribute("aria-selected", key === now);
   }
 }
@@ -130,9 +130,12 @@ function ovShowPage(page) {
   document.body.classList.toggle("page-strokes", page === "strokes");
   document.body.classList.toggle("page-guide", page === "guide");
   document.body.classList.toggle("page-compare", page === "compare");
+  document.body.classList.toggle("page-disk", page === "disk");
   ovTabs();
   if (page === "guide") {
     if (window.guideShow) guideShow();
+  } else if (page === "disk") {
+    if (typeof diskShow === "function") diskShow();
   } else if (page === "compare") {
     if (typeof cmpShow === "function") cmpShow();
   } else if (page === "overview") {
@@ -577,7 +580,7 @@ async function overviewLoad(id) {
   if (!d || !d.has_seconds) {
     ov.data = null;
     $("overview").hidden = true;
-    ovShowPage(ov.page === "guide" || ov.page === "compare" ? ov.page : "strokes");
+    ovShowPage(["guide", "compare", "disk"].includes(ov.page) ? ov.page : "strokes");
     return;
   }
   $("overview").hidden = false;
@@ -595,6 +598,7 @@ $("page-overview").addEventListener("click", () => ovShowPage("overview"));
 $("page-strokes").addEventListener("click", () => ovShowPage("strokes"));
 $("page-start").addEventListener("click", () => ovShowPage("strokes"));
 $("page-guide").addEventListener("click", () => ovShowPage("guide"));
+$("page-disk").addEventListener("click", () => ovShowPage("disk"));
 $("lang").addEventListener("change", () => { if (ov.data) ovRender(ov.data); });
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => ovSchedule()).observe($("ov-charts"));

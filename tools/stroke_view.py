@@ -13,13 +13,16 @@ and the PORT Render sets. Locally, with no PORT, it stays on 127.0.0.1.
 """
 import argparse
 import csv
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import sys
 import threading
+import time
 import traceback
 import webbrowser
 from itertools import repeat
@@ -55,6 +58,7 @@ STATIC = {
     "/overview.js": ("overview.js", "text/javascript; charset=utf-8"),
     "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
     "/compare.js": ("compare.js", "text/javascript; charset=utf-8"),
+    "/disk.js": ("disk.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/vendor/leaflet.js": ("vendor/leaflet.js", "text/javascript; charset=utf-8"),
     "/vendor/leaflet.css": ("vendor/leaflet.css", "text/css; charset=utf-8"),
@@ -465,6 +469,101 @@ def load_session(imu_path):
 
 def _uploads_dir():
     return os.path.join(_root, "uploads")
+
+
+# Disk management is behind a code. It is a light gate, not an account: the default is in this public
+# source, so set ADMIN_PIN on the host to your own. A right code gets a token that lasts half an hour
+# and has to be sent with every disk call; five wrong codes lock the page for a minute.
+DEFAULT_ADMIN_PIN = "9487"
+ADMIN_TTL = 30 * 60
+ADMIN_TRIES = 5
+ADMIN_LOCK = 60
+_admin = {"tokens": {}, "fails": 0, "locked_until": 0.0}
+_admin_lock = threading.Lock()
+
+
+class AdminLocked(Exception):
+    """Too many wrong codes: the number of seconds to wait."""
+
+
+def admin_login(pin):
+    """Returns a token for the right code. Raises AdminLocked while locked, PermissionError for a wrong code."""
+    now = time.time()
+    expected = os.environ.get("ADMIN_PIN") or DEFAULT_ADMIN_PIN
+    with _admin_lock:
+        if now < _admin["locked_until"]:
+            raise AdminLocked(int(_admin["locked_until"] - now) + 1)
+        if not hmac.compare_digest(str(pin).encode("utf-8"), expected.encode("utf-8")):
+            _admin["fails"] += 1
+            if _admin["fails"] >= ADMIN_TRIES:
+                _admin["fails"] = 0
+                _admin["locked_until"] = now + ADMIN_LOCK
+            raise PermissionError("wrong code")
+        _admin["fails"] = 0
+        _admin["tokens"] = {t: end for t, end in _admin["tokens"].items() if end > now}
+        token = secrets.token_urlsafe(24)
+        _admin["tokens"][token] = now + ADMIN_TTL
+        return token
+
+
+def admin_valid(token):
+    with _admin_lock:
+        end = _admin["tokens"].get(token or "")
+        if end is None or end <= time.time():
+            _admin["tokens"].pop(token or "", None)
+            return False
+        return True
+
+
+def admin_logout(token):
+    with _admin_lock:
+        _admin["tokens"].pop(token or "", None)
+
+
+def admin_storage():
+    """What is stored: each uploaded session with its size, loose files, and the disk's room."""
+    folder = _uploads_dir()
+    groups, other = {}, []
+    if os.path.isdir(folder):
+        for name in sorted(os.listdir(folder)):
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                continue
+            info = os.stat(path)
+            suffix = next((s for s in UPLOAD_SUFFIXES if name.endswith(s) and len(name) > len(s)), None)
+            if suffix is None:
+                other.append({"name": name, "bytes": info.st_size, "saved": info.st_mtime})
+                continue
+            sid = name[:-len(suffix)]
+            group = groups.setdefault(sid, {"id": sid, "bytes": 0, "files": [], "saved": 0.0, "cached": sid in _sessions})
+            group["bytes"] += info.st_size
+            group["files"].append(suffix[1:-4])
+            group["saved"] = max(group["saved"], info.st_mtime)
+    sessions = sorted(groups.values(), key=lambda g: g["saved"], reverse=True)
+    try:
+        disk = shutil.disk_usage(_root)
+        total, free = disk.total, disk.free
+    except OSError:
+        total = free = None
+    return {
+        "persistent": storage_persistent(),
+        "path": os.path.abspath(_root),
+        "total": total,
+        "free": free,
+        "kept": sum(g["bytes"] for g in sessions) + sum(f["bytes"] for f in other),
+        "sessions": sessions,
+        "other": other,
+    }
+
+
+def delete_loose_file(name):
+    """Removes a file in the uploads folder that does not belong to any session."""
+    if not name or os.path.basename(name.replace("\\", "/")) != name or ".." in name:
+        raise FileNotFoundError(name)
+    path = os.path.join(_uploads_dir(), name)
+    if not os.path.isfile(path) or not _inside_root(path):
+        raise FileNotFoundError(name)
+    os.remove(path)
 
 
 # Uploads are kept where RECORDINGS_DIR points. On Render that survives a deploy only when it is on a
@@ -1420,6 +1519,12 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj), "application/json")
 
+    def _admin_ok(self):
+        if admin_valid(self.headers.get("X-Admin-Token", "")):
+            return True
+        self._json(401, {"error": "enter the code to manage the disk"})
+        return False
+
     def do_GET(self):
         url = urlparse(self.path)
         q = parse_qs(url.query)
@@ -1434,6 +1539,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/config":
                 free = storage_free()
                 self._json(200, {"persistent": storage_persistent(), "free_mb": None if free is None else int(free // (1024 * 1024))})
+            elif url.path == "/api/admin/storage":
+                if self._admin_ok():
+                    self._json(200, admin_storage())
             elif url.path == "/api/sessions":
                 self._json(200, list_sessions(_root))
             elif url.path == "/api/session":
@@ -1539,6 +1647,38 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/delete":
                 delete_session(str(body.get("id", "")))
                 self._json(200, {"deleted": str(body.get("id", ""))})
+                return
+            if url.path == "/api/admin/login":
+                try:
+                    token = admin_login(body.get("pin", ""))
+                except AdminLocked as wait:
+                    self._json(429, {"error": "too many wrong codes, try again in %s seconds" % wait, "wait": int(str(wait))})
+                except PermissionError:
+                    self._json(403, {"error": "that code is not right"})
+                else:
+                    self._json(200, {"token": token, "ttl": ADMIN_TTL})
+                return
+            if url.path == "/api/admin/lock":
+                admin_logout(self.headers.get("X-Admin-Token", ""))
+                self._json(200, {"locked": True})
+                return
+            if url.path == "/api/admin/delete":
+                if not self._admin_ok():
+                    return
+                gone, failed = [], []
+                for sid in body.get("ids", []):
+                    try:
+                        delete_session(str(sid))
+                        gone.append(str(sid))
+                    except FileNotFoundError:
+                        failed.append(str(sid))
+                for name in body.get("files", []):
+                    try:
+                        delete_loose_file(str(name))
+                        gone.append(str(name))
+                    except FileNotFoundError:
+                        failed.append(str(name))
+                self._json(200, {"deleted": gone, "failed": failed})
                 return
             if url.path != "/api/open":
                 self._json(404, {"error": "not found"})
