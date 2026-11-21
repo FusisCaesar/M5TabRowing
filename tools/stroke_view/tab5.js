@@ -66,7 +66,7 @@ class Tab5Port {
   }
 
   async open() {
-    await this.port.open({ baudRate: 115200, bufferSize: 65536 });
+    await this.port.open({ baudRate: 115200, bufferSize: 1 << 20 });
     // Held low so a later close does not pulse the lines. The open itself can
     // still restart the tablet; the browser sets these lines as it connects.
     await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
@@ -75,6 +75,7 @@ class Tab5Port {
   }
 
   async close() {
+    this.closing = true;
     try { if (this.reader) this.reader.releaseLock(); } catch (e) { /* already released */ }
     try { if (this.writer) this.writer.releaseLock(); } catch (e) { /* already released */ }
     this.reader = this.writer = null;
@@ -87,14 +88,27 @@ class Tab5Port {
 
   // One read stays in flight. A timeout leaves it there, so the next wait
   // collects the same bytes instead of asking the port to read twice.
-  async _take(deadline) {
+  async _take(deadline, recoveries = 0) {
+    if (this.closing || !this.reader) throw new Error("the tablet closed the connection");
     if (!this.pending) this.pending = this.reader.read();
     const left = deadline - performance.now();
     if (left <= 0) return false;
-    const timed = await Promise.race([
-      this.pending.then((value) => ({ value })),
-      new Promise((resolve) => setTimeout(() => resolve(null), left)),
-    ]);
+    let timed;
+    try {
+      timed = await Promise.race([
+        this.pending.then((value) => ({ value })),
+        new Promise((resolve) => setTimeout(() => resolve(null), left)),
+      ]);
+    } catch (err) {
+      // A read that failed (a buffer overrun, a break signalled on the line) leaves this reader broken:
+      // every later read fails at once. Take a fresh one from the port and carry on; whatever was lost
+      // shows up as a bad chunk and is asked for again.
+      this.pending = null;
+      this.lastError = (err && err.name ? err.name : "error") + (err && err.message ? ": " + err.message : "");
+      if (this.closing || recoveries >= 3) throw err;
+      await this._recover();
+      return this._take(deadline, recoveries + 1);
+    }
     if (timed === null) return false;
     this.pending = null;
     if (timed.value.done) throw new Error("the tablet closed the connection");
@@ -104,6 +118,17 @@ class Tab5Port {
     next.set(chunk, this.buf.length);
     this.buf = next;
     return true;
+  }
+
+  async _recover() {
+    this.pending = null;
+    try { if (this.reader) this.reader.releaseLock(); } catch (e) { /* already released */ }
+    this.reader = null;
+    const until = performance.now() + 2000;
+    while (!this.port.readable && performance.now() < until) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!this.port.readable) throw new Error("the USB connection to the tablet was lost");
+    this.reader = this.port.readable.getReader();
+    this.buf = new Uint8Array(0);
   }
 
   async readExact(n, timeoutMs) {
@@ -200,7 +225,8 @@ class Tab5Port {
       while (got < size) {
         const want = Math.min(TAB5_CHUNK, size - got);
         let chunk = null;
-        for (let attempt = 0; attempt < 20; attempt++) {
+        for (let attempt = 0; attempt < 30; attempt++) {
+          if (this.closing) throw new Error("the tablet closed the connection");
           // After a bad chunk, let whatever the tablet is still sending arrive and throw it
           // away. Left in the buffer, stray bytes (a log line the tablet printed in the middle
           // of the chunk) shift every later read, and the retries can never line up again.
@@ -220,7 +246,9 @@ class Tab5Port {
             break;
           }
         }
-        if (!chunk) throw new Error("too many bad chunks at byte " + got + " of " + size);
+        if (!chunk) {
+          throw new Error("too many bad chunks at byte " + got + " of " + size + (this.lastError ? " (" + this.lastError + ")" : ""));
+        }
         parts.push(chunk);
         got += want;
         if (onProgress) onProgress(got, size);
@@ -245,6 +273,10 @@ const DEVICE_COPY = {
     fetching: (name, pct) => name + "  " + pct + "%",
     tooBig: (name, size) => name + " is " + size + ", over the 80 MB this server can take.",
     recording: "the tablet is recording; stop it first",
+    stageRead: (i, n, name, pct) => "Reading from the tablet (" + i + "/" + n + "): " + name + "  " + pct + "%",
+    stageSend: (pct) => "Sending to the server  " + pct + "%",
+    stageAnalyse: (s) => "Analysing the recording… " + s + " s. A long one takes a minute or two.",
+    uploadFailed: "The upload failed: the server did not answer. Press Get recording to try again; the tablet is not read twice.",
   },
   nl: {
     unsupported: "Deze browser kan geen USB-apparaat lezen. Gebruik Chrome of Edge.",
@@ -258,8 +290,58 @@ const DEVICE_COPY = {
     fetching: (name, pct) => name + "  " + pct + "%",
     tooBig: (name, size) => name + " is " + size + ", meer dan de 80 MB die deze server aan kan.",
     recording: "de tablet is aan het opnemen; stop die eerst",
+    stageRead: (i, n, name, pct) => "Lezen van de tablet (" + i + "/" + n + "): " + name + "  " + pct + "%",
+    stageSend: (pct) => "Naar de server sturen  " + pct + "%",
+    stageAnalyse: (s) => "Opname wordt geanalyseerd… " + s + " s. Een lange duurt een of twee minuten.",
+    uploadFailed: "Het uploaden mislukte: de server antwoordde niet. Kies Haal opname op om opnieuw te proberen; de tablet wordt niet nog eens gelezen.",
   },
 };
+
+const $dev = (id) => document.getElementById(id);
+
+// The bar in the window: pct is a number, or null when there is nothing to measure (the analysis).
+function showProgress(text, pct) {
+  $dev("device-progress").hidden = false;
+  $dev("device-note").hidden = true;
+  $dev("device-progress-text").textContent = text;
+  const bar = $dev("device-bar");
+  if (pct == null) bar.removeAttribute("value");
+  else bar.value = pct;
+}
+
+function hideProgress() {
+  $dev("device-progress").hidden = true;
+  $dev("device-note").hidden = false;
+}
+
+function postForm(url, body, onProgress, onSent) {
+  const copy = deviceCopy();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    xhr.upload.onload = onSent;
+    xhr.onerror = () => reject(new Error(copy.uploadFailed));
+    xhr.onabort = () => reject(new Error(copy.uploadFailed));
+    xhr.onload = () => {
+      let data = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch (err) {
+        reject(new Error(xhr.status >= 400
+          ? "The server is not answering (" + xhr.status + "). Try again in a minute."
+          : "The server sent an unexpected answer. Try again."));
+        return;
+      }
+      if (xhr.status >= 400) reject(new Error(data.error || xhr.statusText));
+      else resolve(data);
+    };
+    xhr.send(body);
+  });
+}
+
+// Files already read off the tablet, kept while the window is open so a failed upload is not read again.
+const readFiles = new Map();
 
 function deviceCopy() {
   return DEVICE_COPY[typeof lang === "function" && lang() === "nl" ? "nl" : "en"];
@@ -373,6 +455,8 @@ async function getFromTab5() {
   const option = box.options[box.selectedIndex];
   if (!id || !tab5 || !option || option.disabled) return;
   document.getElementById("device-get").disabled = true;
+  box.disabled = true;
+  setStatus("");
   datesStop = true;
   try {
     const sessions = await tab5.list();
@@ -382,22 +466,46 @@ async function getFromTab5() {
     const imu = wanted.find((file) => file.name.endsWith("_imu.csv"));
     if (!imu) throw new Error(copy.empty);
     if (imu.size > TAB5_MAX) throw new Error(copy.tooBig(imu.name, megabytes(imu.size)));
-    const body = new FormData();
-    for (const file of wanted) {
-      setStatus(copy.fetching(file.name, 0));
-      const blob = await tab5.fetchFile(file.name, (got, size) => {
-        setStatus(copy.fetching(file.name, Math.round(100 * got / size)));
-      });
-      body.append("file", blob, file.name);
+    let blobs = readFiles.get(id);
+    if (!blobs) {
+      blobs = [];
+      for (let i = 0; i < wanted.length; i++) {
+        const file = wanted[i];
+        showProgress(copy.stageRead(i + 1, wanted.length, file.name, 0), 0);
+        const blob = await tab5.fetchFile(file.name, (got, size) => {
+          const pct = Math.round(100 * got / size);
+          showProgress(copy.stageRead(i + 1, wanted.length, file.name, pct), pct);
+        });
+        blobs.push({ name: file.name, blob });
+      }
+      readFiles.set(id, blobs);
     }
-    setStatus(copy.reading);
-    const opened = await getJSON("/api/upload", { method: "POST", body });
+    const body = new FormData();
+    for (const item of blobs) body.append("file", item.blob, item.name);
+    showProgress(copy.stageSend(0), 0);
+    const opened = await postForm("/api/upload", body,
+      (sent, total) => {
+        const pct = Math.round(100 * sent / total);
+        showProgress(copy.stageSend(pct), pct);
+      },
+      () => showProgress(copy.stageAnalyse(0), null));
+    analysingNotice = (s) => showProgress(copy.stageAnalyse(s), null);
+    try {
+      await loadSessions(opened.id);
+    } finally {
+      analysingNotice = null;
+    }
+    readFiles.delete(id);
     document.getElementById("device").close();
-    await loadSessions(opened.id);
   } catch (err) {
     const message = String(err.message || err);
+    if (!tab5) return;  // the window was closed on purpose
+    hideProgress();
     setStatus(message === "session open" ? copy.recording : message);
     document.getElementById("device-get").disabled = false;
+    box.disabled = false;
+  } finally {
+    analysingNotice = null;
   }
 }
 
@@ -408,6 +516,10 @@ document.getElementById("device-close").addEventListener("click", () => document
 // However the window closes, give the port back: another tool (fetch.py) cannot open it while this page holds it.
 document.getElementById("device").addEventListener("close", () => {
   datesStop = true;
+  analysingNotice = null;
+  readFiles.clear();
+  hideProgress();
+  $dev("device-session").disabled = false;
   const port = tab5;
   tab5 = null;
   if (port) port.close();

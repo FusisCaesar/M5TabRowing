@@ -323,6 +323,9 @@ function sessionBlurb(data, n) {
   return text;
 }
 
+// Set while the Tab5 window is open and showing the wait itself.
+let analysingNotice = null;
+
 const ANALYSING = {
   en: (s) => "Analysing the recording… " + s + " s. A long one takes a minute or two.",
   nl: (s) => "Opname wordt geanalyseerd… " + s + " s. Een lange duurt een of twee minuten.",
@@ -363,7 +366,9 @@ async function getJSON(url, options) {
     if (res.status === 202 && data.loading && polls) {
       if (Date.now() - started > 15 * 60 * 1000) throw new Error("The analysis takes too long. Try again in a minute.");
       waiting = true;
-      setStatus(ANALYSING[lang()](Math.round((Date.now() - started) / 1000)));
+      const secs = Math.round((Date.now() - started) / 1000);
+      if (analysingNotice) analysingNotice(secs);
+      else setStatus(ANALYSING[lang()](secs));
       await new Promise((resolve) => setTimeout(resolve, 1500));
       continue;
     }
