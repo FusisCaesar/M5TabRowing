@@ -25,6 +25,7 @@ import threading
 import time
 import traceback
 import webbrowser
+from datetime import datetime, timezone
 from itertools import repeat
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -59,6 +60,7 @@ STATIC = {
     "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
     "/compare.js": ("compare.js", "text/javascript; charset=utf-8"),
     "/disk.js": ("disk.js", "text/javascript; charset=utf-8"),
+    "/picker.js": ("picker.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/vendor/leaflet.js": ("vendor/leaflet.js", "text/javascript; charset=utf-8"),
     "/vendor/leaflet.css": ("vendor/leaflet.css", "text/css; charset=utf-8"),
@@ -244,6 +246,21 @@ def _info(base):
         return {}
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
         return {r["key"]: r["value"] for r in csv.DictReader(f) if r.get("key")}
+
+
+def started_iso(info, imu_path):
+    """When a recording was made, as UTC text: the GPS time in its info file, or when the file was
+    written when the tablet had no real clock yet. Empty when neither can be told."""
+    raw = info.get("start_utc", "")
+    try:
+        if datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").year >= 2020:
+            return raw
+    except ValueError:
+        pass
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(imu_path), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except OSError:
+        return ""
 
 
 def _mean_speed(t, gps, t0, t1):
@@ -705,11 +722,12 @@ def list_sessions(root):
             demo = os.path.realpath(folder) == os.path.realpath(DEMO)
             stored = bool(uploads) and os.path.realpath(folder) == os.path.realpath(uploads)
             found.append({"id": sid, "name": label + (" (demo)" if demo else ""), "strokes": n, "demo": demo,
-                          "stored": stored})
+                          "stored": stored, "started": started_iso(_info(base), os.path.join(folder, name))})
             seen.add(sid)
     for session in _sessions.values():
         if session.id not in seen:
-            found.append({"id": session.id, "name": session.name, "strokes": len(session.strokes)})
+            found.append({"id": session.id, "name": session.name, "strokes": len(session.strokes),
+                          "started": session.started})
     return found
 
 
