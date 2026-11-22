@@ -484,11 +484,15 @@ main {
 
 #stage { min-height: 0; position: relative; overflow: hidden; padding: 4px; }
 /* On/off switch in the top right corner of the chart. */
-label.switch {
+#stage-tools {
   position: absolute;
   top: 7px;
   right: 14px;
   z-index: 1;
+  display: flex;
+  gap: 18px;
+}
+label.switch {
   flex-direction: row;
   align-items: center;
   gap: 8px;
