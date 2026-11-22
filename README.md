@@ -843,6 +843,21 @@ session is recording. Map data is
    `replay.py` is a line-by-line port of `src/stroke_detector.cpp`; keep them in
    sync when changing the detector.
 
+   How late the GPS speed is in a recording (the device assumes a fixed
+   `GPS_SPEED_DELAY_S`) can be measured from the recording itself:
+
+   ```powershell
+   python tools\gps_lag.py                                  # every recordings\*_imu.csv
+   python tools\gps_lag.py recordings\S0017_imu.csv --blocks   # and the lag per minute
+   python tools\gps_lag.py --selftest                       # check the method on a known delay
+   ```
+
+   In blocks of a minute the logged surge is integrated to speed and
+   cross-correlated with the GPS speed; the lag of the peak is the delay. The
+   table gives the median lag, the spread between blocks, the match (r), the lag
+   over the first and last third of the session, and how often the logged surge
+   had the wrong sign (the lag is still found, from the negative match).
+
 Tuning hints:
 
 - **Missed or doubled strokes**: the automatic threshold (on by default) reads
