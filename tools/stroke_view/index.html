@@ -61,30 +61,33 @@
           <option value="8">8</option>
         </select>
       </label>
-      <label>
+      <div class="field">
         <span data-i18n="chart">Chart</span>
-        <select id="chartmode">
+        <div class="pages seg" role="tablist" data-for="chartmode"></div>
+        <select id="chartmode" hidden tabindex="-1" aria-hidden="true">
           <option value="stroke" data-i18n="oneStroke">One stroke</option>
           <option value="session" data-i18n="wholeSession">Whole session</option>
           <option value="rate" data-i18n="byRate">By rate</option>
         </select>
-      </label>
-      <label>
+      </div>
+      <div class="field">
         <span data-i18n="view">View</span>
-        <select id="view">
+        <div class="pages seg" role="tablist" data-for="view"></div>
+        <select id="view" hidden tabindex="-1" aria-hidden="true">
           <option value="stroke" data-i18n="thisStroke">This stroke</option>
           <option value="average" data-i18n="lastFive">Last 5 at this rate</option>
         </select>
-      </label>
-      <label>
+      </div>
+      <div class="field">
         <span data-i18n="motion">Boat motion</span>
-        <select id="motion">
+        <div class="pages seg" role="tablist" data-for="motion"></div>
+        <select id="motion" hidden tabindex="-1" aria-hidden="true">
           <option value="roll" data-i18n="motionRoll">Roll</option>
           <option value="yaw" data-i18n="motionYaw">Yaw</option>
           <option value="sway" data-i18n="motionSway">Sideways</option>
           <option value="none" data-i18n="motionNone">Off</option>
         </select>
-      </label>
+      </div>
     </div>
   </div>
 

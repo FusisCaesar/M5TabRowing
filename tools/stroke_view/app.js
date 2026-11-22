@@ -315,6 +315,43 @@ function applyChrome() {
     const text = words[el.dataset.i18nLabel];
     if (text != null) el.setAttribute("aria-label", text);
   }
+  renderSegments();
+}
+
+// Chart, View and Boat motion read as tabs, like the pages. The hidden select next to each stays the
+// value everything else reads, so the buttons only mirror it and set it.
+function renderSegments() {
+  for (const bar of document.querySelectorAll(".seg[data-for]")) {
+    const select = $(bar.dataset.for);
+    const options = [...select.options];
+    if (bar.children.length !== options.length) {
+      bar.innerHTML = "";
+      options.forEach((opt, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.setAttribute("role", "tab");
+        btn.dataset.value = opt.value;
+        if (i === 0) btn.classList.add("first");
+        if (i === options.length - 1) btn.classList.add("last");
+        btn.addEventListener("click", () => {
+          if (select.value === opt.value) return;
+          select.value = opt.value;
+          select.dispatchEvent(new Event("change"));
+          syncSegments();
+        });
+        bar.append(btn);
+      });
+    }
+    options.forEach((opt, i) => { bar.children[i].textContent = opt.textContent; });
+  }
+  syncSegments();
+}
+
+function syncSegments() {
+  for (const bar of document.querySelectorAll(".seg[data-for]")) {
+    const value = $(bar.dataset.for).value;
+    for (const btn of bar.children) btn.setAttribute("aria-selected", btn.dataset.value === value ? "true" : "false");
+  }
 }
 
 function startLanguage() {
@@ -1145,6 +1182,7 @@ function gauge(row) {
 }
 
 function renderLegend() {
+  syncSegments();
   const box = $("legend");
   box.innerHTML = "";
   const session = sessionMode();
