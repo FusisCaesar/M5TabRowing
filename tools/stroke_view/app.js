@@ -24,6 +24,7 @@ const COPY = {
     rateToggle: "Show this rate",
     rateHelp: "Tick the rates you want to compare. The chart draws only those, and the average of the best strokes at the selected rate in green. Double-click a rate to open its furthest stroke.",
     rateLegend: ["this rate", "best strokes", "slower", "faster"],
+    normAxis: "% of the stroke, catch to catch",
     bestWord: "best",
     vsBest: "against your best in this session",
     vsUsual: "against your usual in this session",
@@ -96,6 +97,7 @@ const COPY = {
     rateToggle: "Toon dit tempo",
     rateHelp: "Vink de tempo's aan die je wilt vergelijken. De grafiek tekent alleen die, en het gemiddelde van de beste slagen op het gekozen tempo in groen. Dubbelklik een tempo om de verste slag te openen.",
     rateLegend: ["dit tempo", "beste slagen", "langzamer", "sneller"],
+    normAxis: "% van de slag, van haal tot haal",
     bestWord: "beste",
     vsBest: "tegen je beste in deze sessie",
     vsUsual: "tegen je normale in deze sessie",
@@ -192,6 +194,49 @@ function crew() { return parseInt($("crew").value, 10) || 1; }
 function viewMode() { return $("view").value; }
 function sessionMode() { return $("chartmode").value === "session"; }
 function rateMode() { return $("chartmode").value === "rate"; }
+// By rate with every stroke stretched to the same length: time becomes the share of the stroke, catch to catch.
+function normOn() { return rateMode() && $("normalize").checked; }
+
+function lastOf(arr) {
+  for (let i = (arr ? arr.length : 0) - 1; i >= 0; i--) if (arr[i] != null) return arr[i];
+  return null;
+}
+
+// Seconds from catch to catch of one rate's average stroke.
+function strokeLength(bounds, curve) {
+  const s = bounds && bounds.interval > 0 ? bounds.interval : lastOf(curve && curve.t);
+  return s > 0 ? s : 1;
+}
+
+function scaleCurve(curve, k) {
+  if (!curve || !curve.t) return curve;
+  return { t: curve.t.map((t) => (t == null ? t : t * k)), a: curve.a, v: curve.v };
+}
+
+// A copy of a rate's stroke with every time divided by its stroke length. Levels stay as they are.
+function normalised(d) {
+  const k = 1 / strokeLength(d.bounds, d.curve);
+  const sc = (t) => (t == null ? t : t * k);
+  const out = Object.assign({}, d);
+  out.curve = scaleCurve(d.curve, k);
+  out.drive = sc(d.drive);
+  if (d.bounds) {
+    out.bounds = {};
+    for (const key of Object.keys(d.bounds)) out.bounds[key] = sc(d.bounds[key]);
+  }
+  if (d.markers) {
+    const m = Object.assign({}, d.markers);
+    for (const key of ["blade_t0", "blade_t1", "width_l", "width_r", "depth_t", "peak_t", "sag_t", "t80", "t20", "release_t"]) m[key] = sc(m[key]);
+    if (m.notch_t) m.notch_t = m.notch_t.map(sc);
+    out.markers = m;
+  }
+  if (d.now) out.now = Object.assign({}, d.now, { speed_peak: sc(d.now.speed_peak), speed_peak_s: d.now.speed_peak });
+  if (d.best) {
+    const kb = 1 / strokeLength({ interval: d.best.interval }, d.best.curve);
+    out.best = Object.assign({}, d.best, { curve: scaleCurve(d.best.curve, kb), drive: d.best.drive == null ? d.best.drive : d.best.drive * kb });
+  }
+  return out;
+}
 
 function clock(s) {
   if (s == null || !isFinite(s)) return "—";
@@ -232,6 +277,8 @@ const CHROME = {
     motionYaw: "Yaw",
     motionSway: "Sway",
     motionNone: "Off",
+    normalize: "Same stroke length",
+    normalizeTip: "Stretch every rate to the same stroke length, so the shapes can be compared on top of each other",
     openFiles: "Open files",
     openFilesTip: "Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate",
     fromTab5: "Read from Tab5",
@@ -274,6 +321,8 @@ const CHROME = {
     motionYaw: "Gieren",
     motionSway: "Zij",
     motionNone: "Uit",
+    normalize: "Zelfde slaglengte",
+    normalizeTip: "Rek elk tempo uit tot dezelfde slaglengte, zodat de vormen over elkaar te vergelijken zijn",
     openFiles: "Bestanden openen",
     openFilesTip: "Kies de _imu.csv van een sessie, met de _seconds.csv, _laps.csv en _info.csv voor de kaart en hartslag",
     fromTab5: "Lees van Tab5",
@@ -451,6 +500,19 @@ async function getJSON(url, options) {
 }
 
 function fullSpan(d) {
+  if (normOn() && state.rates && state.rates.length) {
+    // The preroll is seconds, so on the shortest stroke it is the biggest share of one.
+    let lo = 0, hi = 1;
+    const ends = (curve, bounds) => {
+      const len = strokeLength(bounds, curve);
+      lo = Math.min(lo, -state.preroll / len);
+      hi = Math.max(hi, (lastOf(curve && curve.t) || len) / len);
+    };
+    for (const row of visibleRates()) if (row.curve) ends(row.curve, row.bounds);
+    const best = d && rateShown(d.spm) && d.best && d.best.curve;
+    if (best) ends(d.best.curve, { interval: d.best.interval });
+    return [lo, hi];
+  }
   if (rateMode() && state.rates && state.rates.length) {
     let hi = 0.8;
     for (const row of visibleRates()) {
@@ -1198,6 +1260,7 @@ function renderLegend() {
     box.append(span);
   });
   $("help").textContent = session ? copy().sessionHelp : rate ? copy().rateHelp : copy().help;
+  $("normalize-label").hidden = !rate;
   $("chips").hidden = session;
   fadeChips();
 }
@@ -1287,7 +1350,7 @@ function panelTitles(kind) {
     accel: nl ? "Versnelling (g)" : "Acceleration (g)",
     speed: nl ? "Snelheid (m/s)" : "Speed (m/s)",
     sway: (MOTION_TITLES[motionKey()] || MOTION_TITLES.sway)[nl ? 1 : 0],
-    time: kind === "session" ? "" : nl ? "seconden vanaf de haal" : "seconds from the catch",
+    time: kind === "session" ? "" : normOn() ? copy().normAxis : nl ? "seconden vanaf de haal" : "seconds from the catch",
   };
 }
 
@@ -1675,8 +1738,8 @@ function drawRate() {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = CARD;
   ctx.fillRect(0, 0, w, h);
-  const d = state.stroke;
-  if (!d || !d.valid || !d.curve) {
+  const picked = state.stroke;
+  if (!picked || !picked.valid || !picked.curve) {
     ctx.fillStyle = MUTED;
     ctx.font = "16px Segoe UI, sans-serif";
     ctx.textAlign = "center";
@@ -1684,9 +1747,13 @@ function drawRate() {
     return;
   }
   clampView();
+  const norm = normOn();
+  const d = norm ? normalised(picked) : picked;
   const box = layoutOf(w, h);
   const X = (t) => box.L + (t - state.t0) / (state.t1 - state.t0) * (box.R - box.L);
-  const shown = visibleRates();
+  const shown = visibleRates().map((row) => (norm && row.curve
+    ? Object.assign({}, row, { curve: scaleCurve(row.curve, 1 / strokeLength(row.bounds, row.curve)) })
+    : row));
   const series = [];
   for (const row of shown) if (row.curve) series.push(row.curve);
   if (d.best && d.best.curve) series.push(d.best.curve);
@@ -2016,7 +2083,7 @@ function drawAxis(ctx, X, box) {
     ctx.moveTo(x, bottom);
     ctx.lineTo(x, bottom + 4);
     ctx.stroke();
-    ctx.fillText(t.toFixed(step < 0.1 ? 2 : 1), x, bottom + 5);
+    ctx.fillText(normOn() ? Math.round(t * 100) + "%" : t.toFixed(step < 0.1 ? 2 : 1), x, bottom + 5);
   }
 }
 
@@ -2215,7 +2282,7 @@ function drawMarks(ctx, d, X, Ya, Yv, box) {
   if (d.now.speed_peak != null) {
     const t = d.now.speed_peak;
     const y = sampleAt(d.curve.t, d.curve.v, t);
-    dot(t, y == null ? null : Yv(y), focus === "speed", focus === "speed" ? t.toFixed(2) + " s" : "");
+    dot(t, y == null ? null : Yv(y), focus === "speed", focus === "speed" ? (d.now.speed_peak_s != null ? d.now.speed_peak_s : t).toFixed(2) + " s" : "");
   }
 }
 
@@ -2372,6 +2439,16 @@ try {
 } catch (err) { /* storage blocked */ }
 $("motion").addEventListener("change", () => {
   try { localStorage.setItem("stroke-motion", $("motion").value); } catch (err) { /* storage blocked */ }
+  draw();
+});
+try {
+  $("normalize").checked = localStorage.getItem("stroke-normalize") === "1";
+} catch (err) { /* storage blocked */ }
+$("normalize").addEventListener("change", () => {
+  try { localStorage.setItem("stroke-normalize", $("normalize").checked ? "1" : "0"); } catch (err) { /* storage blocked */ }
+  if (!rateMode() || !state.stroke) return;
+  // The time axis changes unit, so the old zoom means nothing.
+  resetZoom();
   draw();
 });
 function chooseFiles() { $("file").click(); }
