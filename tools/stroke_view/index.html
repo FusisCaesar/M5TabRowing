@@ -67,7 +67,7 @@
         <select id="chartmode" hidden tabindex="-1" aria-hidden="true">
           <option value="stroke" data-i18n="oneStroke">Stroke</option>
           <option value="session" data-i18n="wholeSession">Session</option>
-          <option value="rate" data-i18n="byRate">Rate</option>
+          <option value="rate" data-i18n="byRate" selected>Rate</option>
         </select>
       </div>
       <div class="field">
@@ -134,11 +134,11 @@
         <div id="stage-tools">
           <label id="recovery-label" class="switch" data-i18n-title="recoveryTip" title="Shade the recovery and mark how the speed changes over its first two thirds and its last third">
             <span data-i18n="recovery">Recovery</span>
-            <input id="recovery" type="checkbox" role="switch">
+            <input id="recovery" type="checkbox" role="switch" checked>
           </label>
           <label id="normalize-label" class="switch" hidden data-i18n-title="normalizeTip" title="Stretch every rate to the same stroke length, so the shapes can be compared on top of each other">
             <span data-i18n="normalize">Same stroke length</span>
-            <input id="normalize" type="checkbox" role="switch">
+            <input id="normalize" type="checkbox" role="switch" checked>
           </label>
         </div>
         <canvas id="chart"></canvas>

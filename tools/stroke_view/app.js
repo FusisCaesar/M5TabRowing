@@ -2552,10 +2552,11 @@ $("motion").addEventListener("change", () => {
   draw();
 });
 try {
-  $("normalize").checked = localStorage.getItem("stroke-normalize") === "1";
+  // On unless it was switched off before.
+  $("normalize").checked = localStorage.getItem("stroke-normalize") !== "0";
 } catch (err) { /* storage blocked */ }
 try {
-  $("recovery").checked = localStorage.getItem("stroke-recovery") === "1";
+  $("recovery").checked = localStorage.getItem("stroke-recovery") !== "0";
 } catch (err) { /* storage blocked */ }
 $("recovery").addEventListener("change", () => {
   try { localStorage.setItem("stroke-recovery", $("recovery").checked ? "1" : "0"); } catch (err) { /* storage blocked */ }

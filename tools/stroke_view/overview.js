@@ -585,7 +585,7 @@ async function overviewLoad(id) {
   }
   $("overview").hidden = false;
   ovRender(d);
-  ovShowPage(ov.page || "overview");
+  ovShowPage(ov.page || "strokes");
   ovLoadMotion(id, mine);
 }
 
