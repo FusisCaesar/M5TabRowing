@@ -1250,6 +1250,7 @@ def rate_report(session, crew, lang):
                 "split": _num(best_split, 1),
                 "dps": _num(best_dps, 2),
                 "drive": _num(float(np.mean([row["drive"] for row in best_rows])) if best_rows else 0),
+                "interval": _num(best_feat["interval"]) if best_feat is not None else None,
                 "curve": _curve_of(best_feat, best_shift),
             },
         })
