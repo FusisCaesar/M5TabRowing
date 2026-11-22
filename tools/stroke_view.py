@@ -323,7 +323,8 @@ def _replay_strokes(imu, t, gps, info, origin):
     gyro = tuple(imu[name] for name in GYRO_COLUMNS) if all(name in imu for name in GYRO_COLUMNS) else None
     rows = _Samples(t, imu["ax_g"], imu["ay_g"], imu["az_g"], gps, gyro)
     events, trace, det = replay.run(rows, k, floor, minima, keep_trace="surge", hindsight=True,
-                                    gps_delay=replay.gps_delay_of(info), auto=auto)
+                                    gps_delay=replay.gps_delay_of(info), auto=auto,
+                                    lag_auto=replay.gps_lag_auto_of(info))
     surge = np.frombuffer(trace, dtype=np.float64)
     motion = {"sway": np.frombuffer(det.sway, dtype=np.float32),
               "roll": np.frombuffer(det.roll_trace, dtype=np.float32),

@@ -24,6 +24,7 @@ import numpy as np
 
 FS = 100.0
 G = 9.80665
+GRAVITY_TAU_S = 2.0        # GRAVITY_TAU_S in src/config.h: the surge has this high-pass in it
 BAND_HZ = (0.25, 1.6)      # stroke rate and its first harmonics
 BLOCK_S = 60.0
 STEP_S = 30.0
@@ -93,7 +94,12 @@ def block_lag(a, g, signed=False):
         return None
     V = np.zeros_like(A)
     V[band] = A[band] / (2j * np.pi * f[band])   # integrating adds no delay of its own
-    Gb = np.where(band, Gs, 0)
+    # The logged surge has the slow gravity estimate taken off, a high-pass that runs a little ahead
+    # of the boat (0.07 s at the stroke rate). The GPS gets the same filter, so the two are compared
+    # alike and only the receiver's delay is left between them.
+    z = np.exp(-2j * np.pi * f / FS)
+    alpha = (1.0 / FS) / (GRAVITY_TAU_S + 1.0 / FS)
+    Gb = np.where(band, Gs * (1 - alpha) * (1 - z) / (1 - (1 - alpha) * z), 0)
     norm = np.sqrt(np.sum(np.abs(Gb) ** 2) * np.sum(np.abs(V) ** 2))
     if norm <= 0:
         return None
@@ -209,6 +215,14 @@ def selftest():
     ph = 2 * np.pi * np.cumsum(rate) / FS
     v = 3.5 + 0.4 * np.sin(ph) + 0.12 * np.sin(2 * ph + 0.6)
     accel = np.gradient(v, 1 / FS) + rng.normal(0, 0.6, len(t))
+    # As logged: the gravity estimate (a 2 s average) taken off.
+    alpha = (1 / FS) / (GRAVITY_TAU_S + 1 / FS)
+    slow = np.empty_like(accel)
+    m = accel[0]
+    for i, x in enumerate(accel):
+        m += (x - m) * alpha
+        slow[i] = m
+    accel = accel - slow
     ok = True
     for delay in (0.0, 0.3, 0.5, 0.8):
         fix_t = np.arange(0, 300, 0.1)
@@ -228,6 +242,18 @@ def selftest():
     start, end = lag.at([60.0])[0], lag.at([240.0])[0]
     print("delay 0.30 -> 0.70: followed %.2f at 60 s (true 0.38), %.2f at 240 s (true 0.62)" % (start, end))
     ok = ok and abs(start - 0.38) < 0.06 and abs(end - 0.62) < 0.06
+    # The estimator of the device (replay.GpsLagEstimator, a port of src/gps_lag.h), fed the way the
+    # device is: the surge sample by sample and the speed held between 10 Hz fixes, as logged.
+    import replay
+    for delay in (0.1, 0.35, 0.6):
+        fix_t = np.arange(0, 300, 0.1)
+        late = np.interp(fix_t - delay, t, v) + rng.normal(0, 0.03, len(fix_t))
+        held = late[np.maximum(np.searchsorted(fix_t, t, side="right") - 1, 0)]
+        est = replay.GpsLagEstimator(replay.GPS_LAG_INITIAL_S)
+        for ti, ai, gi in zip(t, accel / G, held):
+            est.process(ai, gi, ti > 5)
+        print("device estimator, known delay %.2f s -> %.2f s (r %.2f)" % (delay, est.delay, est.corr))
+        ok = ok and est.measured and abs(est.delay - delay) < 0.05
     print("OK" if ok else "FAILED")
     return 0 if ok else 1
 

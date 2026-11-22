@@ -553,8 +553,8 @@ bool Recorder::cut(double catchT, double prevCatchT, double finishT, Cycle& out)
                 speedN++;
             }
             // The receiver reports speed late, so a fix is drawn where the boat was doing
-            // that speed. The last half second of the stroke has no fix yet when it is cut.
-            double shown = s.t - (double)cfg::GPS_SPEED_DELAY_S;
+            // that speed. The last part of the stroke has no fix yet when it is cut.
+            double shown = s.t - (double)gpsDelayS_;
             if (out.gpsN < GPS_MAX && shown >= prevCatchT - (double)PREROLL_S) {
                 out.gpsT[out.gpsN] = (float)(shown - prevCatchT);
                 out.gpsV[out.gpsN] = s.gps;

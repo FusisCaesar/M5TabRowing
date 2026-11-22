@@ -340,7 +340,7 @@ coaching text on this screen and on Stroke. It stays until you tap it again.
 
 The **Stroke** screen splits the stroke you are rowing into five phases and compares the last few strokes with your own best at the same rate.
 
-The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. The receiver reports speed about half a second late, so each dot is drawn that much earlier than it arrived; the last half second of the stroke has no dots yet. (In the stroke viewer on the PC, the delay is not assumed but measured from the recording and followed over the outing, see `tools\gps_lag.py`; the line above the stroke list gives it. The device itself still uses the fixed half second.) A green line marks the catch and a cyan line the finish, as on the Plot screen.
+The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. The receiver reports speed late, from 0.1 to 0.6 s depending on the outing, so each dot is drawn that much earlier than it arrived; the last part of the stroke has no dots yet. The device measures the delay while you row (see below) and starts at 0.35 s until it has. (The stroke viewer on the PC measures it from the whole recording and follows it over the outing, see `tools\gps_lag.py`; the line above the stroke list gives it.) A green line marks the catch and a cyan line the finish, as on the Plot screen.
 
 The shaded bands are the phases:
 
@@ -843,8 +843,9 @@ session is recording. Map data is
    `replay.py` is a line-by-line port of `src/stroke_detector.cpp`; keep them in
    sync when changing the detector.
 
-   How late the GPS speed is in a recording (the device assumes a fixed
-   `GPS_SPEED_DELAY_S`) can be measured from the recording itself:
+   How late the GPS speed is in a recording can be measured from the whole
+   recording, without the device's running estimate (`replay.py` also has a port
+   of that, `GpsLagEstimator`, which `--selftest` checks as well):
 
    ```powershell
    python tools\gps_lag.py                                  # every recordings\*_imu.csv
@@ -856,7 +857,10 @@ session is recording. Map data is
    cross-correlated with the GPS speed; the lag of the peak is the delay. The
    table gives the median lag, the spread between blocks, the match (r), the lag
    over the first and last third of the session, and how often the logged surge
-   had the wrong sign (the lag is still found, from the negative match).
+   had the wrong sign (the lag is still found, from the negative match). The
+   logged surge has the slow gravity estimate taken off, a high-pass that runs a
+   little ahead of the boat, so the GPS speed gets the same filter before the two
+   are compared.
 
 Tuning hints:
 
@@ -900,10 +904,27 @@ Tuning hints:
 - **Forward direction**: the catch dip is short and deep, the drive is long and
   shallow, so the forward acceleration has negative skew. When GPS is moving, the
   integrated acceleration is correlated with the GPS speed fluctuations, which
-  settles the direction even for smooth rowers. The receiver reports speed about
-  half a second late, so the acceleration is held back by that much first
-  (`GPS_SPEED_DELAY_S`). Compared without the delay the two are a fifth of a
-  stroke apart and the match can tip either way.
+  settles the direction even for smooth rowers. The receiver reports speed late,
+  so the acceleration is held back by that much first. Compared without the
+  delay the two are a fifth of a stroke apart and the match can tip either way.
+- **GPS delay, measured**: how late the speed is differs from one outing to the
+  next (0.1 to 0.6 s over the recordings so far; the time stamp is when the
+  sentence is read, so it includes the receiver and the serial line). The
+  integrated forward surge rises and falls with the speed of the boat once per
+  stroke, so the two curves match best when the surge is held back by exactly
+  that delay (`gps_lag.h`). The match is kept as a running average of about a
+  minute at 19 delays between 0 and 0.9 s, once forward is known from GPS and
+  the boat moves faster than 1 m/s, and the delay with the best match is taken
+  about once a second (a quarter of the way each time, so it settles gently).
+  Both curves go through the same filters, so only the delay is left between
+  them; the speed is held between fixes, which adds half a fix interval that is
+  taken off again. It starts at 0.35 s (`GPS_LAG_INITIAL_S`) and the first
+  reading comes after one to a few minutes of rowing (it waits for forward to be
+  known and for 30 s of matching); the estimate is kept when a new session starts. Over the recordings so
+  far it follows the delay measured from the whole recording to within 0.04 s on
+  average. It is used for the direction check above and to draw the GPS dots in
+  a stroke. The info file has `gps_speed_delay_s` (where the session began) and
+  `gps_lag_auto`, which `tools/replay.py` uses to run the same estimate again.
 - **Forward held, sway kept apart**: the same comparison is made on all three axes, to learn which way in the unit's frame speeds the boat up. That direction is averaged over a couple of minutes (FORWARD_TAU_S) and, once 30 s of moving GPS agree with it (r of at least 0.3), the surge is measured along it. A sideways push then stays out of the surge, which the axis that follows the largest motion could not promise. What is left, perpendicular to forward and horizontal, is the sway: positive towards starboard, logged as sway_lin_g. The gyro gives the angles: its rate about forward and about up, less its slow average (so bias and a steady turn drop out), integrated with a 3 s leak, logged as oll_deg (positive with the starboard side down) and yaw_deg (positive with the bow towards starboard). They are the boat's movement around its own mean, not a compass heading. In the viewer one of the three is drawn under the speed, picked with Boat motion. One stroke of the sideways acceleration is mostly waves and noise; the swing that repeats stroke after stroke shows as the grey line, the usual one at that rate. It is acceleration, not distance, and a rolling boat tilts the unit a little too, which also reads as sideways.
 - **Split and distance per stroke**: the split on screen is the GPS speed over
   the last 3 strokes, taken as distance over time, so it does not jump with the

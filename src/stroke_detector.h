@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "dsp.h"
+#include "gps_lag.h"
 
 struct StrokeParams {
     float thresholdK = cfg::THRESHOLD_K_DEFAULT;
@@ -54,6 +55,11 @@ public:
     // Forward learned from GPS, as a unit vector in the device's frame; the surge is measured along it.
     bool forwardKnown() const { return fwdReady_; }
     float gpsCorrelation() const;
+    // How late the GPS speed is, s: measured once the boat has been moving for a while, else the
+    // starting value. The match at that lag, 0..1.
+    float gpsDelay() const { return lag_.delay(); }
+    bool gpsDelayMeasured() const { return lag_.measured(); }
+    float gpsLagCorrelation() const { return lag_.correlation(); }
     const StrokeParams& params() const { return params_; }
     void reset();
 
@@ -108,8 +114,11 @@ private:
     bool gpsValid_ = false;
     bool gpsLocked_ = false;
     float vInt_ = 0, gpsMean_ = 0;
-    float vDelay_[cfg::GPS_DIR_DELAY_SAMPLES] = {};  // integrated surge, oldest at vDelayHead_
+    // Integrated surge, the next to be written at vDelayHead_; the GPS is compared with the one from
+    // the GPS delay ago.
+    float vDelay_[cfg::GPS_LAG_RING] = {};
     int vDelayHead_ = 0;
+    GpsLagEstimator lag_;
     float dirVg_ = 0, dirVv_ = 0, dirGg_ = 0;
     uint32_t gpsDirN_ = 0;
 
@@ -122,7 +131,7 @@ private:
     uint32_t gyroN_ = 0;
     float rollDeg_ = 0, yawDeg_ = 0;
     dsp::Vec3 fVel_;
-    dsp::Vec3 fDelay_[cfg::GPS_DIR_DELAY_SAMPLES];
+    dsp::Vec3 fDelay_[cfg::GPS_LAG_RING];
     int fDelayHead_ = 0;
     dsp::Vec3 fCross_;
     float fCov_[6] = {};  // xx xy xz yy yz zz

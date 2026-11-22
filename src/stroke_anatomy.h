@@ -97,6 +97,8 @@ struct Summary {
 class Recorder {
 public:
     void push(double t, float surgeLinearG, float gpsMps, bool gpsValid);
+    // How late the GPS speed is, s: a fix is drawn that much earlier than it arrived.
+    void setGpsDelay(float s) { gpsDelayS_ = s; }
 
     // Cuts the stroke that ends at catchT and started at prevCatchT.
     // finishT is the detector's finish, between the two catches.
@@ -113,6 +115,7 @@ private:
     int count_ = 0;
     dsp::Biquad lp_;
     bool init_ = false;
+    float gpsDelayS_ = cfg::GPS_LAG_INITIAL_S;
 };
 
 void reset();

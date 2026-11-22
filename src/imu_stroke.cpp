@@ -84,6 +84,7 @@ void task(void*) {
         detector.setGps(gpsV, gpsOk);
         bool stroke = detector.process(t, ax, ay, az, out, ev);
         detector.attitude(gx, gy, gz, out);
+        recorder.setGpsDelay(detector.gpsDelay());
         recorder.push(t, out.surgeLinear, gpsV, gpsOk);
 
         fusion.setGps(gpsV, gpsOk && fusionEnabled);
@@ -135,6 +136,9 @@ void task(void*) {
         liveState.sign = detector.sign();
         liveState.directionFromGps = detector.directionFromGps();
         liveState.gpsCorrelation = detector.gpsCorrelation();
+        liveState.gpsLagS = detector.gpsDelay();
+        liveState.gpsLagMeasured = detector.gpsDelayMeasured();
+        liveState.gpsLagCorrelation = detector.gpsLagCorrelation();
         liveState.axis[0] = ax3.x;
         liveState.axis[1] = ax3.y;
         liveState.axis[2] = ax3.z;

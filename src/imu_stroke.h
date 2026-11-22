@@ -19,6 +19,9 @@ struct Live {
     int sign = 1;
     bool directionFromGps = false;
     float gpsCorrelation = 0;
+    float gpsLagS = cfg::GPS_LAG_INITIAL_S;  // how late the GPS speed is, as far as is known
+    bool gpsLagMeasured = false;             // false while it is still the starting value
+    float gpsLagCorrelation = 0;
     float axis[3] = {};
     float gravity[3] = {};
     float accel[3] = {};
