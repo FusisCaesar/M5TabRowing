@@ -44,11 +44,32 @@ constexpr float GPS_DIR_HP_TAU_S = 1.0f;
 constexpr float GPS_DIR_CORR_TAU_S = 15.0f;
 constexpr float GPS_DIR_MIN_CORR = 0.3f;
 constexpr float GPS_DIR_MIN_TIME_S = 10.0f;
-// The receiver reports speed about half a second late (measured on the water), so the
-// surge is held back this long before the two are compared. Compared without the delay
-// they are a fifth of a stroke apart: the match sits near zero and can tip either way.
-constexpr float GPS_SPEED_DELAY_S = 0.5f;
-constexpr int GPS_DIR_DELAY_SAMPLES = (int)(GPS_SPEED_DELAY_S * IMU_RATE_HZ + 0.5f);
+// The receiver reports speed late, so the surge is held back by that long before the two are
+// compared. Compared without the delay they are a fifth of a stroke apart: the match sits near
+// zero and can tip either way. How late differs from one outing to the next (0.1 to 0.6 s
+// across the recordings so far), so it is measured while rowing (gps_lag.h) and this is only
+// where it starts, about the middle of what was seen.
+constexpr float GPS_LAG_INITIAL_S = 0.35f;
+// The lags tried, 0 to 0.9 s in steps of 0.05 s. GPS cannot be early, and half a stroke is about a second.
+constexpr float GPS_LAG_MAX_S = 0.9f;
+constexpr int GPS_LAG_STEP_SAMPLES = 5;
+constexpr int GPS_LAG_STEPS = 19;
+constexpr int GPS_LAG_RING = (int)(GPS_LAG_MAX_S * IMU_RATE_HZ + 0.5f) + 1;  // samples of speed kept
+// Speed from the surge is integrated with a long leak, so it follows the boat without drifting.
+constexpr float GPS_LAG_INTEGRATOR_TAU_S = 30.0f;
+// The match is a running average over about this long.
+constexpr float GPS_LAG_CORR_TAU_S = 60.0f;
+// The same band-pass on both curves before they are compared: slow drift and fast noise are not the stroke.
+constexpr float GPS_LAG_HP_TAU_S = 1.0f;
+constexpr float GPS_LAG_LP_TAU_S = 0.1f;
+// A stretch of moving GPS needs this long before it counts: the GPS speed has its slow part taken off
+// the same way as the surge, and that needs a few time constants (GRAVITY_TAU_S) to settle.
+constexpr float GPS_LAG_SETTLE_S = 6.0f;
+constexpr float GPS_LAG_MIN_TIME_S = 30.0f;  // of matching before the first reading
+constexpr float GPS_LAG_MIN_CORR = 0.4f;     // a weaker match says nothing about the lag
+constexpr float GPS_LAG_FOLLOW = 0.25f;      // share of a new reading (once a second) taken into the lag
+// What the simulator's receiver does, so the estimate has something to find: not the starting value.
+constexpr float SIM_GPS_DELAY_S = 0.5f;
 
 // The direction of travel in the device's own frame is learned from GPS the same way and then
 // held: surge is measured along it and nothing else, so a sideways push is not a forward one.

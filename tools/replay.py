@@ -63,7 +63,23 @@ GPS_DIR_HP_TAU_S = 1.0
 GPS_DIR_CORR_TAU_S = 15.0
 GPS_DIR_MIN_CORR = 0.3
 GPS_DIR_MIN_TIME_S = 10.0
+# How late the GPS speed is where a recording does not say (older firmware had this fixed delay), and
+# for the synthetic receiver below. Newer firmware starts at GPS_LAG_INITIAL_S and measures it as it goes.
 GPS_SPEED_DELAY_S = 0.5
+GPS_LAG_INITIAL_S = 0.35
+GPS_LAG_STEP_SAMPLES = 5
+GPS_LAG_STEPS = 19                       # 0 to 0.9 s in steps of 0.05 s
+GPS_LAG_MAX_S = 0.9
+GPS_LAG_RING = int(GPS_LAG_MAX_S * FS + 0.5) + 1
+GPS_LAG_INTEGRATOR_TAU_S = 30.0
+GPS_LAG_CORR_TAU_S = 60.0
+# The same band-pass on both curves before they are compared: slow drift and fast noise are not the stroke.
+GPS_LAG_HP_TAU_S = 1.0
+GPS_LAG_LP_TAU_S = 0.1
+GPS_LAG_SETTLE_S = 6.0
+GPS_LAG_MIN_TIME_S = 30.0
+GPS_LAG_MIN_CORR = 0.4
+GPS_LAG_FOLLOW = 0.25
 # Forward in the device's frame, learned from GPS as it goes and then held (as the firmware does).
 FORWARD_TAU_S = 120.0
 FORWARD_MIN_TIME_S = 30.0
@@ -125,17 +141,129 @@ def norm(a):
     return math.sqrt(dot(a, a))
 
 
+class GpsLagEstimator:
+    """Port of src/gps_lag.h: how late the GPS speed is, measured while rowing.
+
+    The forward surge, integrated, rises and falls with the speed of the boat once per stroke, so the
+    two match when the surge is held back by the receiver's delay. The match is tried at 19 delays and
+    kept as a running average. Both curves have the same filters applied (the surge has the slow
+    gravity estimate taken off and the GPS speed gets that same filter, then both go through one
+    band-pass), so their phases are alike.
+    """
+
+    def __init__(self, delay=GPS_LAG_INITIAL_S):
+        self.delay = delay
+        self.measured = False
+        self.a_g = ema_alpha(GRAVITY_TAU_S)
+        self.a_c = ema_alpha(GPS_LAG_CORR_TAU_S)
+        self.a_hp = ema_alpha(GPS_LAG_HP_TAU_S)
+        self.a_lp = ema_alpha(GPS_LAG_LP_TAU_S)
+        self.reset()
+
+    def reset(self):
+        self.v = 0.0
+        self.v_slow = self.v_fast = 0.0
+        self.g_slow = self.g_fast = 0.0
+        self.ring = [0.0] * GPS_LAG_RING
+        self.head = 0
+        self.run = 0
+        self.g_mean = self.last_gps = 0.0
+        self.since_change = 0
+        self.hold_s = 0.1
+        self.c = [0.0] * GPS_LAG_STEPS
+        self.vv = self.gg = 0.0
+        self.n = 0
+        self.tick = 0
+        self.corr = 0.0
+
+    def delay_samples(self):
+        return max(1, min(GPS_LAG_RING - 1, int(self.delay * FS + 0.5)))
+
+    def process(self, surge_g, gps, moving):
+        self.v += (surge_g * STANDARD_GRAVITY - self.v * (1.0 / GPS_LAG_INTEGRATOR_TAU_S)) * DT
+        # Speed from the surge, band-passed: what is kept is the part that goes with the strokes.
+        self.v_slow += (self.v - self.v_slow) * self.a_hp
+        self.v_fast += (self.v - self.v_slow - self.v_fast) * self.a_lp
+        v_b = self.v_fast
+        self.ring[self.head] = v_b
+        if not moving:
+            self.run = 0
+        else:
+            if self.run == 0:
+                self.g_mean = self.last_gps = gps
+                self.g_slow = self.g_fast = 0.0
+                self.since_change = 0
+            self.run += 1
+            self.g_mean += (gps - self.g_mean) * self.a_g
+            g_slow_in = gps - self.g_mean
+            self.g_slow += (g_slow_in - self.g_slow) * self.a_hp
+            self.g_fast += (g_slow_in - self.g_slow - self.g_fast) * self.a_lp
+            g_h = self.g_fast
+            # How often the receiver reports: the speed is held between fixes, which delays the held
+            # curve by half of that on top of the receiver's own delay.
+            if self.since_change < 1000:
+                self.since_change += 1
+            if gps != self.last_gps:
+                if 3 <= self.since_change <= 50:
+                    self.hold_s += (self.since_change * DT - self.hold_s) * 0.05
+                self.since_change = 0
+                self.last_gps = gps
+            if self.run >= int(GPS_LAG_SETTLE_S * FS):
+                self.n += 1
+                a = max(self.a_c, 1.0 / self.n)
+                ring, c, head, v = self.ring, self.c, self.head, v_b
+                for k in range(GPS_LAG_STEPS):
+                    c[k] += (ring[(head - k * GPS_LAG_STEP_SAMPLES) % GPS_LAG_RING] * g_h - c[k]) * a
+                self.vv += (v * v - self.vv) * a
+                self.gg += (g_h * g_h - self.gg) * a
+        self.head = (self.head + 1) % GPS_LAG_RING
+        self.tick += 1
+        if self.tick >= int(FS):
+            self.tick = 0
+            self.read()
+
+    def read(self):
+        if self.n < int(GPS_LAG_MIN_TIME_S * FS):
+            return
+        den = math.sqrt(self.vv * self.gg)
+        if den < 1e-12:
+            return
+        c = self.c
+        best = 0
+        for k in range(1, GPS_LAG_STEPS):
+            if c[k] > c[best]:
+                best = k
+        r = c[best] / den
+        self.corr = r
+        if r < GPS_LAG_MIN_CORR:
+            return
+        k = float(best)
+        if 0 < best < GPS_LAG_STEPS - 1:
+            y0, y2 = c[best - 1] / den, c[best + 1] / den
+            d = y0 - 2.0 * r + y2
+            if d < 0:
+                k += min(max(0.5 * (y0 - y2) / d, -0.5), 0.5)
+        lag = min(max(k * GPS_LAG_STEP_SAMPLES * DT - 0.5 * self.hold_s, 0.0), GPS_LAG_MAX_S)
+        if not self.measured:
+            self.delay, self.measured = lag, True
+        else:
+            self.delay += (lag - self.delay) * GPS_LAG_FOLLOW
+
+
 class StrokeDetector:
-    def __init__(self, k=1.8, floor=0.12, minima=False, forward=None, gps_delay=GPS_SPEED_DELAY_S, auto=True):
+    def __init__(self, k=1.8, floor=0.12, minima=False, forward=None, gps_delay=GPS_SPEED_DELAY_S, auto=True,
+                 lag_auto=False):
         self.k, self.floor, self.use_minima, self.auto = k, floor, minima, auto
         self.blk_min, self.blk_n, self.blocks, self.depths = 0.0, 0, [], []
-        # The firmware has one fixed delay. A recording can say otherwise: see gps_delay_of().
-        self.delay_n = max(1, int(gps_delay * FS + 0.5) + 1)
+        # How late the GPS speed is. Newer firmware measures it as it goes (lag_auto, starting at
+        # gps_delay); older firmware had one fixed delay. A recording says which: see gps_delay_of().
+        self.gps_delay = gps_delay
+        self.lag = GpsLagEstimator(gps_delay) if lag_auto else None
         # Forward as a unit vector in the device's frame. Given: it decides the sign and
         # the skew and GPS checks are left out. None: the firmware's own behaviour.
         self.forward = forward
         self.h_v = (0.0, 0.0, 0.0)
-        self.h_ring = [(0.0, 0.0, 0.0)] * self.delay_n
+        self.h_ring = [(0.0, 0.0, 0.0)] * GPS_LAG_RING
         self.h_head = 0
         self.h_c = [0.0, 0.0, 0.0]
         self.h_m = [0.0] * 6  # xx xy xz yy yz zz
@@ -165,7 +293,7 @@ class StrokeDetector:
         self.skew_n = 0
         self.gps_locked = False
         self.v_int = self.gps_mean = 0.0
-        self.v_delay = [0.0] * self.delay_n  # one longer than the delay: written first, then read
+        self.v_delay = [0.0] * GPS_LAG_RING  # integrated surge; the GPS is compared with the one from the delay ago
         self.v_delay_head = 0
         self.cxy = self.cxx2 = self.cyy2 = 0.0
         self.gps_dir_n = 0
@@ -198,7 +326,13 @@ class StrokeDetector:
         d = math.sqrt(self.cxx2 * self.cyy2)
         return self.cxy / d if d > 1e-12 else 0.0
 
-    def learn_forward(self, lin_h, vg):
+    def delay_samples(self):
+        """The GPS delay in samples now: measured, or the fixed one."""
+        if self.lag is not None:
+            return self.lag.delay_samples()
+        return max(1, min(GPS_LAG_RING - 1, int(self.gps_delay * FS + 0.5)))
+
+    def learn_forward(self, lin_h, vg, back):
         """Recordings only: which way in the device's frame speeds the boat up.
 
         The same comparison as the GPS direction check, but on the whole horizontal
@@ -207,9 +341,9 @@ class StrokeDetector:
         """
         v = tuple(vi + (a * STANDARD_GRAVITY - vi / GPS_DIR_INTEGRATOR_TAU_S) * DT for vi, a in zip(self.h_v, lin_h))
         self.h_v = v
+        old = self.h_ring[(self.h_head - back) % GPS_LAG_RING]
         self.h_ring[self.h_head] = v
-        self.h_head = (self.h_head + 1) % self.delay_n
-        old = self.h_ring[self.h_head]
+        self.h_head = (self.h_head + 1) % GPS_LAG_RING
         for i in range(3):
             self.h_c[i] += old[i] * vg
         prods = (old[0] * old[0], old[0] * old[1], old[0] * old[2], old[1] * old[1], old[1] * old[2], old[2] * old[2])
@@ -400,9 +534,10 @@ class StrokeDetector:
 
         if warm and gps >= GPS_DIR_MIN_SPEED_MPS:
             self.v_int += (p_lin * STANDARD_GRAVITY - self.v_int / GPS_DIR_INTEGRATOR_TAU_S) * DT
+            back = self.delay_samples()
+            v_old = self.v_delay[(self.v_delay_head - back) % GPS_LAG_RING]
             self.v_delay[self.v_delay_head] = self.v_int
-            self.v_delay_head = (self.v_delay_head + 1) % self.delay_n
-            v_old = self.v_delay[self.v_delay_head]
+            self.v_delay_head = (self.v_delay_head + 1) % GPS_LAG_RING
             self.gps_mean += (gps - self.gps_mean) * ema_alpha(GPS_DIR_HP_TAU_S)
             vg = gps - self.gps_mean
             a_c = ema_alpha(GPS_DIR_CORR_TAU_S)
@@ -410,7 +545,7 @@ class StrokeDetector:
             self.cxx2 += (v_old ** 2 - self.cxx2) * a_c
             self.cyy2 += (vg * vg - self.cyy2) * a_c
             self.gps_dir_n += 1
-            self.learn_forward(lin_h, vg)
+            self.learn_forward(lin_h, vg, back)
             corr = self.gps_corr()
             if self.forward is None and LOCK_FORWARD and self.fwd_ready:
                 # Forward is known as a direction, so the axis points along it and surge is positive.
@@ -422,6 +557,11 @@ class StrokeDetector:
                 self.gps_locked = True
                 if want != self.sign:
                     self.sign, flipped = want, True
+
+        # How late the GPS is, measured from the surge and the speed once forward is known.
+        if self.lag is not None:
+            self.lag.process(self.sign * p_lin, gps,
+                             warm and gps >= GPS_DIR_MIN_SPEED_MPS and (self.gps_locked or self.forward is not None))
 
         x = self.sign * p
         # Sideways: perpendicular to forward, in the horizontal plane. Right of forward is
@@ -600,12 +740,18 @@ def gps_delay_of(info):
     """How late GPS speed is in a recording, from its info file.
 
     Sessions written before the delay was logged: the receiver on the water is
-    half a second late, the simulator of that time was not late at all.
+    half a second late, the simulator of that time was not late at all. From
+    firmware that measures it (see gps_lag_auto_of) this is where the session began.
     """
     try:
         return float(info["gps_speed_delay_s"])
     except (KeyError, TypeError, ValueError):
         return 0.0 if info.get("build") == "simulation" else GPS_SPEED_DELAY_S
+
+
+def gps_lag_auto_of(info):
+    """Whether the firmware that wrote a recording measured the GPS delay as it went."""
+    return info.get("gps_lag_auto") == "1"
 
 
 def direction_note(det):
@@ -615,7 +761,8 @@ def direction_note(det):
     return "forward from %s as it went, r %+.2f" % ("GPS" if det.gps_locked else "the stroke shape", det.gps_corr())
 
 
-def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS_SPEED_DELAY_S, auto=False):
+def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS_SPEED_DELAY_S, auto=False,
+        lag_auto=False):
     """Replays a log. Trace rows: t, surge, threshold, catch, finish, unfiltered surge.
 
     Without hindsight this is what the device does. With it, forward is first
@@ -625,14 +772,15 @@ def run(rows, k, floor, minima, keep_trace=False, hindsight=False, gps_delay=GPS
     """
     if hindsight and iter(rows) is rows:  # a one-shot iterator; the log is read twice
         rows = list(rows)
-    det = StrokeDetector(k, floor, minima, gps_delay=gps_delay, auto=auto)
+    det = StrokeDetector(k, floor, minima, gps_delay=gps_delay, auto=auto, lag_auto=lag_auto)
     events, trace = _run_once(rows, det, keep_trace)
     det.hindsight = None
     if hindsight:
         learned = det.learned_forward()
         if learned and learned[1] >= GPS_DIR_MIN_CORR and learned[2] >= HINDSIGHT_MIN_S:
             live = [e["t"] for e in events]
-            det = StrokeDetector(k, floor, minima, forward=learned[0], gps_delay=gps_delay, auto=auto)
+            det = StrokeDetector(k, floor, minima, forward=learned[0], gps_delay=gps_delay, auto=auto,
+                                 lag_auto=lag_auto)
             events, trace = _run_once(rows, det, keep_trace)
             moved = 0
             for e in events:
@@ -788,7 +936,8 @@ def rebuild_session(imu_path, force_auto=False):
     if not rows:
         raise SystemExit("no samples in %s" % imu_path)
     origin = float(info["start_t_s"]) if info.get("start_t_s") else rows[0][0]
-    events, _, det = run(rows, k, floor, minima, hindsight=True, gps_delay=gps_delay_of(info), auto=auto)
+    events, _, det = run(rows, k, floor, minima, hindsight=True, gps_delay=gps_delay_of(info), auto=auto,
+                         lag_auto=gps_lag_auto_of(info))
     kept = _keep_originals(imu_path, info)
     times = [r[0] for r in rows]
     speeds = [r[5] for r in rows]
@@ -987,12 +1136,13 @@ def main():
     ap.add_argument("--plot", nargs=2, type=float, metavar=("FROM", "TO"))
     args = ap.parse_args()
 
-    delay = GPS_SPEED_DELAY_S
+    delay, lag_auto = GPS_SPEED_DELAY_S, False
     if args.synthetic:
         rows = synthetic(args.synthetic)
     elif args.log:
         rows = load_log(args.log)
-        delay = gps_delay_of(_read_info(_sibling(args.log, "info")))
+        info = _read_info(_sibling(args.log, "info"))
+        delay, lag_auto = gps_delay_of(info), gps_lag_auto_of(info)
     else:
         ap.error("give a log file or --synthetic")
     print(f"{len(rows)} samples, {(rows[-1][0] - rows[0][0]):.0f} s")
@@ -1007,14 +1157,14 @@ def main():
         for minima in (False, True):
             for k in (1.4, 1.6, 1.8, 2.0, 2.2, 2.5):
                 for floor in (0.06, 0.09, 0.12, 0.15):
-                    events, _, _ = run(rows, k, floor, minima, gps_delay=delay)
+                    events, _, _ = run(rows, k, floor, minima, gps_delay=delay, lag_auto=lag_auto)
                     summarize(events, rows, f"K {k:.1f} floor {floor:.2f} minima {int(minima)}  ")
-        events, _, _ = run(rows, 0, 0, False, gps_delay=delay, auto=True)
+        events, _, _ = run(rows, 0, 0, False, gps_delay=delay, auto=True, lag_auto=lag_auto)
         summarize(events, rows, "automatic threshold  ")
         return
 
     events, trace, det = run(rows, args.k, args.floor, args.minima, keep_trace=bool(args.plot),
-                             hindsight=args.hindsight, gps_delay=delay, auto=not args.manual)
+                             hindsight=args.hindsight, gps_delay=delay, auto=not args.manual, lag_auto=lag_auto)
     summarize(events, rows)
     print(f"surge axis {tuple(round(a * det.sign, 2) for a in det.axis)}  skew {det.skew():+.2f}  "
           f"{direction_note(det)}")

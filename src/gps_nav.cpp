@@ -294,7 +294,7 @@ void simTask(void*) {
         xTaskDelayUntil(&wake, pdMS_TO_TICKS(cfg::GPS_RATE_MS_FAST));
         double t = board::nowS();
         // Late by the same amount as the real receiver, so the direction check sees what it sees on the water.
-        float v = sim::boatSpeed(t - cfg::GPS_SPEED_DELAY_S);
+        float v = sim::boatSpeed(t - cfg::SIM_GPS_DELAY_S);
         double step = v * cfg::GPS_RATE_MS_FAST / 1000.0;
         lat += step * cos(heading) / 111320.0;
         lon += step * sin(heading) / (111320.0 * cos(lat * M_PI / 180.0));

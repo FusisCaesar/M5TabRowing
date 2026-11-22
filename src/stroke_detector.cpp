@@ -33,6 +33,7 @@ void StrokeDetector::reset() {
     vInt_ = gpsMean_ = 0;
     for (float& v : vDelay_) v = 0;
     vDelayHead_ = 0;
+    lag_.reset();
     dirVg_ = dirVv_ = dirGg_ = 0;
     gpsDirN_ = 0;
     fVel_ = dsp::Vec3();
@@ -311,18 +312,19 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
         constexpr float dt = cfg::IMU_DT_S;
         vInt_ += (pLin * cfg::STANDARD_GRAVITY - vInt_ / cfg::GPS_DIR_INTEGRATOR_TAU_S) * dt;
         // GPS speed is late, so it is compared with the surge of that long ago.
-        float vOld = vDelay_[vDelayHead_];
+        const int back = lag_.delaySamples();
+        float vOld = vDelay_[(vDelayHead_ + cfg::GPS_LAG_RING - back) % cfg::GPS_LAG_RING];
         vDelay_[vDelayHead_] = vInt_;
-        vDelayHead_ = (vDelayHead_ + 1) % cfg::GPS_DIR_DELAY_SAMPLES;
+        vDelayHead_ = (vDelayHead_ + 1) % cfg::GPS_LAG_RING;
         gpsMean_ += (gpsSpeed_ - gpsMean_) * dsp::emaAlpha(cfg::GPS_DIR_HP_TAU_S, dt);
         float vg = gpsSpeed_ - gpsMean_;
 
         // The same comparison on the whole horizontal acceleration, to learn which way is forward.
         {
             fVel_ = fVel_ + (linH * cfg::STANDARD_GRAVITY - fVel_ * (1.0f / cfg::GPS_DIR_INTEGRATOR_TAU_S)) * dt;
-            Vec3 old = fDelay_[fDelayHead_];
+            Vec3 old = fDelay_[(fDelayHead_ + cfg::GPS_LAG_RING - back) % cfg::GPS_LAG_RING];
             fDelay_[fDelayHead_] = fVel_;
-            fDelayHead_ = (fDelayHead_ + 1) % cfg::GPS_DIR_DELAY_SAMPLES;
+            fDelayHead_ = (fDelayHead_ + 1) % cfg::GPS_LAG_RING;
             fN_++;
             float aF = fmaxf(alphaF_, 1.0f / (float)fN_);
             fCross_ = fCross_ + (old * vg - fCross_) * aF;
@@ -365,6 +367,10 @@ bool StrokeDetector::process(double t, float ax, float ay, float az, DetectorSam
             }
         }
     }
+
+    // How late the GPS is, measured from the surge and the speed once forward is known.
+    lag_.process(sign_ * pLin, gpsSpeed_,
+                 warm && gpsValid_ && gpsSpeed_ >= cfg::GPS_DIR_MIN_SPEED_MPS && gpsLocked_);
 
     float x = sign_ * p;
     out.surge = x;

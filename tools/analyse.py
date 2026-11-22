@@ -297,7 +297,8 @@ def main():
         minima = args.minima or info.get("minima_threshold") == "1"
         auto = info.get("auto_threshold") == "1" and args.k is None and args.floor is None and not args.minima
         rows = list(zip(t_abs, imu["ax_g"], imu["ay_g"], imu["az_g"], imu["catch"].astype(int), gps))
-        events, _, _ = replay.run(rows, k, floor, minima, gps_delay=replay.gps_delay_of(info), auto=auto)
+        events, _, _ = replay.run(rows, k, floor, minima, gps_delay=replay.gps_delay_of(info), auto=auto,
+                                  lag_auto=replay.gps_lag_auto_of(info))
         replay_t = np.array([e["t"] for e in events]) - t0
         replay_label = "automatic threshold" if auto else f"K {k:.2f} floor {floor:.2f} minima {int(minima)}"
 

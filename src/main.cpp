@@ -59,12 +59,14 @@ static void printStatus() {
     gps::Snapshot g = gps::get();
     hr::Snapshot h = hr::get();
     Serial.printf("[status] imu %.1f Hz ovr %lu acc(%+.4f %+.4f %+.4f) rms %.4f thr %.3f skew %+.2f sign %+d "
-                  "dir %s corr %+.2f axis(%+.2f %+.2f %+.2f) rate %.1f | gps conn %d fix %d %.1f Hz %.2f m/s "
+                  "dir %s corr %+.2f axis(%+.2f %+.2f %+.2f) rate %.1f | gps lag %.2f s (%s, r %.2f) "
+                  "conn %d fix %d %.1f Hz %.2f m/s "
                   "%d sats dist %.1f | hr %s %d bpm | cam %d %.1f fps | map %s trk %d | heap %lu psram %lu | "
                   "up %lus rst %d\n",
                   l.sampleHz, (unsigned long)l.overruns, l.accel[0], l.accel[1], l.accel[2], l.rms, l.threshold,
                   l.skew, l.sign, l.directionFromGps ? "gps" : "skew", l.gpsCorrelation, l.axis[0], l.axis[1],
-                  l.axis[2], l.rate, g.connected, g.fix, g.updateHz,
+                  l.axis[2], l.rate, l.gpsLagS, l.gpsLagMeasured ? "measured" : "start", l.gpsLagCorrelation,
+                  g.connected, g.fix, g.updateHz,
                   g.speed, g.sats, g.distance, hr::stateName(h.state), h.bpm, (int)camera::status(), camera::fps(),
                   mapdata::loaded() ? mapdata::current().name : "-", track::count(),
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getFreePsram(), millis() / 1000,
