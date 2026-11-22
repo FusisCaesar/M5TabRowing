@@ -311,6 +311,10 @@ function applyChrome() {
     const text = words[el.dataset.i18nTitle];
     if (text != null) el.title = text;
   }
+  for (const el of document.querySelectorAll("[data-i18n-label]")) {
+    const text = words[el.dataset.i18nLabel];
+    if (text != null) el.setAttribute("aria-label", text);
+  }
 }
 
 function startLanguage() {
@@ -341,8 +345,8 @@ let analysingNotice = null;
 
 // Whether the server keeps what is read in across restarts: it says so, and the welcome note follows.
 const KEPT = {
-  en: "Recordings you read in stay on this server until they are removed in the Disk tab (which asks for a code), and anyone who opens this page can see them. Reading from the tablet needs Chrome or Edge.",
-  nl: "Opnames die je inleest blijven op deze server tot ze worden verwijderd in het tabblad Schijf (dat om een code vraagt), en iedereen die deze pagina opent kan ze zien. Lezen van de tablet kan alleen in Chrome of Edge.",
+  en: "Recordings you read in stay on this server until they are removed in the Disk tab of Settings (which asks for a code), and anyone who opens this page can see them. Reading from the tablet needs Chrome or Edge.",
+  nl: "Opnames die je inleest blijven op deze server tot ze worden verwijderd in het tabblad Schijf van Instellingen (dat om een code vraagt), en iedereen die deze pagina opent kan ze zien. Lezen van de tablet kan alleen in Chrome of Edge.",
 };
 
 async function loadConfig() {

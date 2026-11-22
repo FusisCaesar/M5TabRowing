@@ -1,7 +1,7 @@
 "use strict";
 
-// Disk page: what the server has stored, and a way to remove it. It sits behind a code that the server
-// checks; the page only keeps the token the server hands back, for this browser tab.
+// Disk tab of the Settings window: what the server has stored, and a way to remove it. It sits behind a
+// code that the server checks; the page only keeps the token the server hands back, for this browser tab.
 
 Object.assign(CHROME.en, { pageDisk: "Disk" });
 Object.assign(CHROME.nl, { pageDisk: "Schijf" });
@@ -326,5 +326,5 @@ function diskShow() {
 }
 
 $("lang").addEventListener("change", () => {
-  if (document.body.classList.contains("page-disk")) diskRender();
+  if ($("settings").open) diskRender();
 });
