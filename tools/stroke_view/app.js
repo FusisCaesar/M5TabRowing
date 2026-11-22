@@ -25,6 +25,8 @@ const COPY = {
     rateHelp: "Tick the rates you want to compare. The chart draws only those, and the average of the best strokes at the selected rate in green. Double-click a rate to open its furthest stroke.",
     rateLegend: ["this rate", "best strokes", "slower", "faster"],
     normAxis: "% of the stroke, catch to catch",
+    recoveryFirst: "recovery, first ⅔",
+    recoveryLast: "last ⅓",
     bestWord: "best",
     vsBest: "against your best in this session",
     vsUsual: "against your usual in this session",
@@ -98,6 +100,8 @@ const COPY = {
     rateHelp: "Vink de tempo's aan die je wilt vergelijken. De grafiek tekent alleen die, en het gemiddelde van de beste slagen op het gekozen tempo in groen. Dubbelklik een tempo om de verste slag te openen.",
     rateLegend: ["dit tempo", "beste slagen", "langzamer", "sneller"],
     normAxis: "% van de slag, van haal tot haal",
+    recoveryFirst: "herstel, eerste ⅔",
+    recoveryLast: "laatste ⅓",
     bestWord: "beste",
     vsBest: "tegen je beste in deze sessie",
     vsUsual: "tegen je normale in deze sessie",
@@ -196,6 +200,8 @@ function sessionMode() { return $("chartmode").value === "session"; }
 function rateMode() { return $("chartmode").value === "rate"; }
 // By rate with every stroke stretched to the same length: time becomes the share of the stroke, catch to catch.
 function normOn() { return rateMode() && $("normalize").checked; }
+// The recovery overlay, under one stroke and by rate.
+function recoveryOn() { return !sessionMode() && $("recovery").checked; }
 
 function lastOf(arr) {
   for (let i = (arr ? arr.length : 0) - 1; i >= 0; i--) if (arr[i] != null) return arr[i];
@@ -277,6 +283,8 @@ const CHROME = {
     motionYaw: "Yaw",
     motionSway: "Sway",
     motionNone: "Off",
+    recovery: "Recovery",
+    recoveryTip: "Shade the recovery and mark how the speed changes over its first two thirds and its last third",
     normalize: "Same stroke length",
     normalizeTip: "Stretch every rate to the same stroke length, so the shapes can be compared on top of each other",
     openFiles: "Open files",
@@ -321,6 +329,8 @@ const CHROME = {
     motionYaw: "Gieren",
     motionSway: "Zij",
     motionNone: "Uit",
+    recovery: "Herstel",
+    recoveryTip: "Kleur het herstel en toon hoe de snelheid verandert in de eerste twee derde en het laatste derde ervan",
     normalize: "Zelfde slaglengte",
     normalizeTip: "Rek elk tempo uit tot dezelfde slaglengte, zodat de vormen over elkaar te vergelijken zijn",
     openFiles: "Bestanden openen",
@@ -1261,6 +1271,7 @@ function renderLegend() {
   });
   $("help").textContent = session ? copy().sessionHelp : rate ? copy().rateHelp : copy().help;
   $("normalize-label").hidden = !rate;
+  $("recovery-label").hidden = session;
   $("chips").hidden = session;
   fadeChips();
 }
@@ -1607,6 +1618,7 @@ function draw() {
 
   paintPanels(ctx, box);
   drawBands(ctx, d.bounds, X, box);
+  if (recoveryOn()) drawRecoveryBands(ctx, d.bounds, X, box);
   drawGrid(ctx, box, aRange, vRange, strokeTicks(state.t0, state.t1).times.map(X), "stroke", sRange);
 
   const vline = (t, color) => {
@@ -1681,6 +1693,7 @@ function draw() {
   });
 
   drawMarks(ctx, d, X, Ya, Yv, box);
+  if (recoveryOn()) drawRecoveryMarks(ctx, d, X, Yv, box);
   drawAxis(ctx, X, box);
 }
 
@@ -1719,6 +1732,101 @@ function drawBands(ctx, b, X, box) {
       ctx.fillStyle = "#4a443a";
       ctx.fillText(name, (X(u0) + X(u1)) / 2, box.aT + 6);
     }
+  }
+  ctx.restore();
+}
+
+// The recovery runs from the end of the drive to the next catch. In its first two thirds the boat is
+// expected to hold its speed or gain; in the last third the rower is coming forward and, if that is
+// too fast, takes speed off the boat. Two shades mark the parts, the marks below say what the speed did.
+const RECOVERY_UP = "#1f7a4d";
+const RECOVERY_DOWN = "#b3401f";
+
+function recoveryZones(b) {
+  if (!b || b.finish == null || b.interval == null || b.interval - b.finish < 0.02) return null;
+  const split = b.finish + (b.interval - b.finish) * 2 / 3;
+  return [
+    { from: b.finish, to: split, fill: "rgba(31, 122, 77, 0.13)", label: copy().recoveryFirst },
+    { from: split, to: b.interval, fill: "rgba(196, 85, 42, 0.17)", label: copy().recoveryLast },
+  ];
+}
+
+function drawRecoveryBands(ctx, b, X, box) {
+  const zones = recoveryZones(b);
+  if (!zones) return;
+  ctx.save();
+  ctx.beginPath();
+  for (const [top, bottom] of panelsOf(box)) ctx.rect(box.L, top, box.R - box.L, bottom - top);
+  ctx.clip();
+  for (const z of zones) {
+    const u0 = Math.max(state.t0, z.from);
+    const u1 = Math.min(state.t1, z.to);
+    if (u1 <= u0) continue;
+    ctx.fillStyle = z.fill;
+    for (const [top, bottom] of panelsOf(box)) ctx.fillRect(X(u0), top, X(u1) - X(u0), bottom - top);
+  }
+  const split = zones[0].to;
+  if (split >= state.t0 && split <= state.t1) {
+    ctx.strokeStyle = "rgba(28, 25, 21, 0.45)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    for (const [top, bottom] of panelsOf(box)) {
+      ctx.moveTo(Math.round(X(split)) + 0.5, top);
+      ctx.lineTo(Math.round(X(split)) + 0.5, bottom);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRecoveryMarks(ctx, d, X, Yv, box) {
+  const zones = recoveryZones(d.bounds);
+  if (!zones || !d.curve) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.L, box.vT, box.R - box.L, box.vB - box.vT);
+  ctx.clip();
+  ctx.font = "600 11px " + FONT;
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "center";
+  ctx.lineJoin = "round";
+  for (const z of zones) {
+    const u0 = Math.max(state.t0, z.from);
+    const u1 = Math.min(state.t1, z.to);
+    if (u1 <= u0) continue;
+    // The name of the part sits at the foot of the panel, clear of the speed change above the curve.
+    if (X(u1) - X(u0) > ctx.measureText(z.label).width + 8) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = CARD;
+      ctx.fillStyle = "#4a443a";
+      ctx.strokeText(z.label, (X(u0) + X(u1)) / 2, box.vB - 5);
+      ctx.fillText(z.label, (X(u0) + X(u1)) / 2, box.vB - 5);
+    }
+    // What the speed did across the part, from where it starts to where it ends, even when zoomed in.
+    const y0 = sampleAt(d.curve.t, d.curve.v, z.from);
+    const y1 = sampleAt(d.curve.t, d.curve.v, z.to);
+    if (y0 == null || y1 == null) continue;
+    const change = y1 - y0;
+    const color = change >= 0 ? RECOVERY_UP : RECOVERY_DOWN;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(X(z.from), Yv(y0));
+    ctx.lineTo(X(z.to), Yv(y1));
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(X(z.from), Yv(y0), 3.5, 0, Math.PI * 2);
+    ctx.arc(X(z.to), Yv(y1), 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    const text = (change >= 0 ? "+" : "-") + Math.abs(change).toFixed(2) + " m/s";
+    const lx = Math.max(box.L + 30, Math.min(box.R - 30, (X(z.from) + X(z.to)) / 2));
+    ctx.textBaseline = "bottom";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = CARD;
+    ctx.strokeText(text, lx, Math.min(Yv(y0), Yv(y1)) - 7);
+    ctx.fillText(text, lx, Math.min(Yv(y0), Yv(y1)) - 7);
   }
   ctx.restore();
 }
@@ -1785,6 +1893,7 @@ function drawRate() {
 
   paintPanels(ctx, box);
   drawBands(ctx, d.bounds, X, box);
+  if (recoveryOn()) drawRecoveryBands(ctx, d.bounds, X, box);
   drawGrid(ctx, box, aRange, vRange, strokeTicks(state.t0, state.t1).times.map(X), "rate");
 
   const vline = (t, color, dash) => {
@@ -1861,6 +1970,7 @@ function drawRate() {
   }
 
   drawMarks(ctx, d, X, Ya, Yv, box);
+  if (recoveryOn()) drawRecoveryMarks(ctx, d, X, Yv, box);
   drawAxis(ctx, X, box);
 }
 
@@ -2442,8 +2552,16 @@ $("motion").addEventListener("change", () => {
   draw();
 });
 try {
-  $("normalize").checked = localStorage.getItem("stroke-normalize") === "1";
+  // On unless it was switched off before.
+  $("normalize").checked = localStorage.getItem("stroke-normalize") !== "0";
 } catch (err) { /* storage blocked */ }
+try {
+  $("recovery").checked = localStorage.getItem("stroke-recovery") !== "0";
+} catch (err) { /* storage blocked */ }
+$("recovery").addEventListener("change", () => {
+  try { localStorage.setItem("stroke-recovery", $("recovery").checked ? "1" : "0"); } catch (err) { /* storage blocked */ }
+  draw();
+});
 $("normalize").addEventListener("change", () => {
   try { localStorage.setItem("stroke-normalize", $("normalize").checked ? "1" : "0"); } catch (err) { /* storage blocked */ }
   if (!rateMode() || !state.stroke) return;
