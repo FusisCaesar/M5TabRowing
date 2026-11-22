@@ -661,7 +661,7 @@ Seconds without a GPS fix are left out of the GPX track.
    adds roughly 15 MB); it is skipped when the disk is nearly full, goes away with
    the session, and the Disk tab can clear all of it.
 
-   **Disk tab.** Shows how full the disk is and lists every stored session with
+   **Disk tab.** The first tab of the Settings window (the cogwheel at the top right). Shows how full the disk is and lists every stored session with
    its size (including its saved analysis) and date (plus any loose files in the uploads folder). **Rename**
    gives a session a name of your own (empty goes back to the file name; it is
    kept in `<id>_name.txt` beside the recording) and the ticked ones can be

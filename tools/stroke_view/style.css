@@ -34,7 +34,7 @@ body {
   min-height: 100%;
 }
 
-#welcome, #app, #overview, #guide, #compare, #disk { grid-row: 4; }
+#welcome, #app, #overview, #guide, #compare { grid-row: 4; }
 
 a { color: var(--now); }
 
@@ -94,6 +94,33 @@ a { color: var(--now); }
 }
 .topbar nav a:hover { background: #2d2820; }
 .topbar nav .gh svg { width: 16px; height: 16px; fill: currentColor; }
+.topbar nav button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  background: transparent;
+  color: var(--paper);
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.topbar nav button.icon:hover { background: #2d2820; }
+.topbar nav button.icon[aria-pressed="true"] { background: #2d2820; border-color: #4a443a; }
+.topbar nav button.icon svg { width: 21px; height: 21px; fill: currentColor; }
+.topbar nav button.icon .q {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
 .topbar .lang { display: block; margin-left: 6px; }
 .topbar .lang select {
   background: #2d2820;
@@ -693,8 +720,6 @@ body.page-overview #app { display: none; }
 body.page-strokes #overview { display: none; }
 body.page-guide #welcome, body.page-guide #app, body.page-guide #overview, body.page-guide .analysis { display: none; }
 body.page-compare #welcome, body.page-compare #app, body.page-compare #overview, body.page-compare .analysis { display: none; }
-body.page-disk #welcome, body.page-disk #app, body.page-disk #overview, body.page-disk .analysis { display: none; }
-
 #overview {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 460px);
@@ -1025,17 +1050,20 @@ body.page-compare #compare { display: grid; }
 #cmp-table .cmp-th { overflow-wrap: anywhere; }
 #cmp-table small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
 #cmp-table td.best span { color: var(--ok); font-weight: 650; }
-/* Disk page: what is stored on the server, behind a code. */
-#disk { display: none; overflow: auto; padding: 16px; min-height: 0; align-items: start; }
-body.page-disk #disk { display: block; }
+/* Settings window, and its Disk tab: what is stored on the server, behind a code. */
+#settings { width: min(920px, 94vw); max-height: 90vh; padding: 18px; }
+#settings[open] { display: flex; flex-direction: column; }
+.st-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.st-head b { font-size: 17px; font-weight: 650; }
+.st-tabs { align-self: flex-start; margin-bottom: 14px; }
+.st-body { overflow: auto; min-height: 0; }
+.st-panel[hidden] { display: none; }
 .disk-card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--lift);
   padding: 18px;
-  max-width: 880px;
-  margin: 0 auto;
 }
 .disk-card h2 { margin: 0 0 6px; font-size: 18px; }
 .disk-lead { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.5; }
@@ -1064,9 +1092,6 @@ body.page-disk #disk { display: block; }
 .disk-tick { display: flex; flex-direction: row; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--ink); cursor: pointer; }
 .disk-tick input { margin: 0; flex: none; }
 .disk-sep td { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); background: var(--panel); }
-@media (max-width: 900px) {
-  #disk { padding: 10px; }
-}
 @media (max-width: 900px) {
   #compare { grid-template-columns: minmax(0, 1fr); padding: 10px; }
   #cmp-list { max-height: none; }

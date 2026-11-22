@@ -63,6 +63,7 @@ STATIC = {
     "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
     "/compare.js": ("compare.js", "text/javascript; charset=utf-8"),
     "/disk.js": ("disk.js", "text/javascript; charset=utf-8"),
+    "/settings.js": ("settings.js", "text/javascript; charset=utf-8"),
     "/picker.js": ("picker.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/vendor/leaflet.js": ("vendor/leaflet.js", "text/javascript; charset=utf-8"),

@@ -105,8 +105,8 @@ function ovColorOf(v, scale) {
 
 function ovCss(rgb) { return "rgb(" + rgb.map((x) => Math.round(x)).join(",") + ")"; }
 
-// Which tabs make sense: the Guide is always there; Overview and Strokes need a session (Overview also
-// its per-second log); with no session at all there is only Start, the welcome page.
+// Which tabs make sense: Overview and Strokes need a session (Overview also its per-second log); with no
+// session at all there is only Start, the welcome page. The Guide is the ? button, not a tab.
 function ovTabs() {
   const any = state.sessions.length > 0;
   $("page-start").hidden = any;
@@ -118,24 +118,24 @@ function ovTabs() {
     b.classList.toggle("first", i === 0);
     b.classList.toggle("last", i === shown.length - 1);
   });
-  const now = ov.page === "guide" || ov.page === "disk" ? ov.page : any ? ov.page : "start";
-  for (const key of ["start", "overview", "strokes", "compare", "guide", "disk"]) {
+  const now = ov.page === "guide" ? "guide" : any ? ov.page : "start";
+  for (const key of ["start", "overview", "strokes", "compare"]) {
     $("page-" + key).setAttribute("aria-selected", key === now);
   }
+  $("help-btn").setAttribute("aria-pressed", now === "guide");
 }
 
 function ovShowPage(page) {
+  // The ? button is a switch: pressed again, it goes back to where you were.
+  if (page === "guide" && ov.page !== "guide") ov.before = ov.page;
   ov.page = page;
   document.body.classList.toggle("page-overview", page === "overview");
   document.body.classList.toggle("page-strokes", page === "strokes");
   document.body.classList.toggle("page-guide", page === "guide");
   document.body.classList.toggle("page-compare", page === "compare");
-  document.body.classList.toggle("page-disk", page === "disk");
   ovTabs();
   if (page === "guide") {
     if (window.guideShow) guideShow();
-  } else if (page === "disk") {
-    if (typeof diskShow === "function") diskShow();
   } else if (page === "compare") {
     if (typeof cmpShow === "function") cmpShow();
   } else if (page === "overview") {
@@ -580,7 +580,7 @@ async function overviewLoad(id) {
   if (!d || !d.has_seconds) {
     ov.data = null;
     $("overview").hidden = true;
-    ovShowPage(["guide", "compare", "disk"].includes(ov.page) ? ov.page : "strokes");
+    ovShowPage(["guide", "compare"].includes(ov.page) ? ov.page : "strokes");
     return;
   }
   $("overview").hidden = false;
@@ -597,8 +597,10 @@ for (const box of document.querySelectorAll(".ov-chart")) {
 $("page-overview").addEventListener("click", () => ovShowPage("overview"));
 $("page-strokes").addEventListener("click", () => ovShowPage("strokes"));
 $("page-start").addEventListener("click", () => ovShowPage("strokes"));
-$("page-guide").addEventListener("click", () => ovShowPage("guide"));
-$("page-disk").addEventListener("click", () => ovShowPage("disk"));
+$("help-btn").addEventListener("click", () => {
+  const back = ov.before && ov.before !== "start" ? ov.before : "strokes";
+  ovShowPage(ov.page === "guide" ? back : "guide");
+});
 $("lang").addEventListener("change", () => { if (ov.data) ovRender(ov.data); });
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => ovSchedule()).observe($("ov-charts"));
