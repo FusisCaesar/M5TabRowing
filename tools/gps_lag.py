@@ -79,9 +79,10 @@ def regular(t, accel, gps):
     return grid, a, g, gap
 
 
-def block_lag(a, g):
+def block_lag(a, g, signed=False):
     """Lag (s) and correlation of the peak, for one block of acceleration and GPS speed.
-    Positive: the GPS is late."""
+    Positive: the GPS is late. With signed, the acceleration is known to point forward and only a
+    positive match counts; otherwise a negative one is taken too (see LAG_RANGE_S)."""
     n = len(a)
     w = np.hanning(n)
     A = np.fft.rfft((a - a.mean()) * w)
@@ -101,9 +102,10 @@ def block_lag(a, g):
     lags = np.arange(lo, hi + 1)
     r = xc[lags % n]
     # The device could have a wrong idea of forward in this block: then the match is negative.
-    i = int(np.argmax(np.abs(r)))
+    m = r if signed else np.abs(r)
+    i = int(np.argmax(m))
     if 0 < i < len(r) - 1:
-        y0, y1, y2 = np.abs(r[i - 1]), np.abs(r[i]), np.abs(r[i + 1])
+        y0, y1, y2 = m[i - 1], m[i], m[i + 1]
         den = y0 - 2 * y1 + y2
         off = 0.5 * (y0 - y2) / den if den != 0 else 0.0
     else:
@@ -111,7 +113,8 @@ def block_lag(a, g):
     return (lags[i] + off) / FS, float(r[i])
 
 
-def analyse(t, accel, gps):
+def analyse(t, accel, gps, signed=False):
+    """One entry per block: (start time as in t, lag s, correlation, median speed)."""
     grid, a, g, gap = regular(t, accel, gps)
     blocks = []
     if g is None:
@@ -121,15 +124,15 @@ def analyse(t, accel, gps):
         sl = slice(s, s + size)
         if gap[sl].any() or np.median(g[sl]) < MIN_SPEED_MPS or np.min(g[sl]) < 0.5:
             continue
-        res = block_lag(a[sl], g[sl])
+        res = block_lag(a[sl], g[sl], signed)
         if res is None:
             continue
-        blocks.append((grid[s] - grid[0], res[0], res[1], float(np.median(g[sl]))))
+        blocks.append((float(grid[s]), res[0], res[1], float(np.median(g[sl]))))
     return blocks
 
 
-def summarise(blocks):
-    use = [b for b in blocks if abs(b[2]) >= MIN_CORR]
+def summarise(blocks, signed=False):
+    use = [b for b in blocks if (b[2] if signed else abs(b[2])) >= MIN_CORR]
     if not use:
         return None
     lag = np.array([b[1] for b in use])
@@ -143,6 +146,59 @@ def summarise(blocks):
         "first": float(np.median(lag[:third])), "last": float(np.median(lag[-third:])),
         "flipped": sum(1 for b in use if b[2] < 0) / len(use),
     }
+
+
+SMOOTH_BLOCKS = 5   # the lag drifts slowly: a running median over this many blocks (about 2.5 minutes)
+
+
+class Lag:
+    """How late the GPS speed is, at any time of a recording.
+
+    Measured from the recording (see the top of this file) and followed over time: the lag of each
+    block, smoothed, joined by straight lines and held at the ends. When it cannot be measured (no
+    GPS, standing still, a weak match) it is the fallback, the fixed delay of the device."""
+
+    def __init__(self, fallback, blocks=(), signed=True):
+        self.fallback = float(fallback)
+        use = [b for b in blocks if (b[2] if signed else abs(b[2])) >= MIN_CORR]
+        self.n_blocks = len(blocks)
+        self.times = np.array([b[0] + BLOCK_S / 2 for b in use])
+        raw = np.array([b[1] for b in use])
+        half = SMOOTH_BLOCKS // 2
+        self.values = np.array([np.median(raw[max(0, i - half):i + half + 1]) for i in range(len(raw))])
+
+    @classmethod
+    def measure(cls, t, accel, gps, fallback=CONFIGURED_DELAY_S, signed=True):
+        """accel: the surge pointing forward, one value per sample of t (any unit)."""
+        try:
+            blocks = analyse(t, accel, gps, signed)
+        except (ValueError, IndexError):
+            blocks = []
+        return cls(fallback, blocks, signed)
+
+    @property
+    def measured(self):
+        return len(self.times) > 0
+
+    def at(self, when):
+        """The lag (s) at each of the times in `when`."""
+        when = np.asarray(when, dtype=np.float64)
+        if not self.measured:
+            return np.full(when.shape, self.fallback)
+        return np.interp(when, self.times, self.values)
+
+    def shifted(self, t):
+        """t less the lag: when the boat did what the GPS reported at t. Never goes backwards."""
+        return np.maximum.accumulate(t - self.at(t))
+
+    def summary(self):
+        """For display: the lag in use, the usual range over the outing, and how it was got."""
+        if not self.measured:
+            return {"measured": False, "median": self.fallback, "low": self.fallback, "high": self.fallback,
+                    "blocks": 0}
+        return {"measured": True, "median": float(np.median(self.values)),
+                "low": float(np.percentile(self.values, 10)), "high": float(np.percentile(self.values, 90)),
+                "blocks": len(self.times), "fallback": self.fallback}
 
 
 def selftest():
@@ -163,6 +219,15 @@ def selftest():
         s = summarise(analyse(t, accel, gps))
         print("known delay %.2f s -> measured %.2f s (r %.2f)" % (delay, s["median"], s["corr"]))
         ok = ok and abs(s["median"] - delay) < 0.06
+    # A delay that changes from 0.3 s to 0.7 s over the recording is followed.
+    fix_t = np.arange(0, 300, 0.1)
+    delay_t = 0.3 + 0.4 * fix_t / 300
+    late = np.interp(fix_t - delay_t, t, v) + rng.normal(0, 0.03, len(fix_t))
+    gps = late[np.maximum(np.searchsorted(fix_t, t, side="right") - 1, 0)]
+    lag = Lag.measure(t, accel, gps)
+    start, end = lag.at([60.0])[0], lag.at([240.0])[0]
+    print("delay 0.30 -> 0.70: followed %.2f at 60 s (true 0.38), %.2f at 240 s (true 0.62)" % (start, end))
+    ok = ok and abs(start - 0.38) < 0.06 and abs(end - 0.62) < 0.06
     print("OK" if ok else "FAILED")
     return 0 if ok else 1
 
@@ -191,7 +256,8 @@ def main():
         else:
             assumed = float(logged) if logged else CONFIGURED_DELAY_S
         try:
-            blocks = analyse(*load(path))
+            t, accel, gps = load(path)
+            blocks = analyse(t, accel, gps)
         except (ValueError, IndexError, OSError) as e:
             print("%-26s skipped: %s" % (name, e))
             continue
@@ -205,7 +271,7 @@ def main():
                 100 * s["flipped"], tag))
         if args.blocks:
             for at, lag, r, v in blocks:
-                print("    at %6.0f s  lag %6.2f s  r %+.2f  speed %.1f m/s" % (at, lag, r, v))
+                print("    at %6.0f s  lag %6.2f s  r %+.2f  speed %.1f m/s" % (at - t[0], lag, r, v))
     return 0
 
 

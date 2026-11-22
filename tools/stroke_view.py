@@ -209,6 +209,7 @@ class Session:
         self.detected = 0
         self.rescued_n = 0
         self.detector = ""
+        self.gps_lag = None  # how late the GPS speed is, see gps_lag.Lag.summary()
 
     def ref_for(self, rate):
         b = band_of(rate)
@@ -397,10 +398,15 @@ def load_session(imu_path):
     logged_n = len(logged)
     meta, detected, rescued_n, detector, raw_surge, raw_motion = _replay_strokes(imu, t, gps, info, origin)
     surge = anatomy.lowpass(raw_surge)
+    import gps_lag
     import replay
 
-    gps_delay = replay.gps_delay_of(info)
+    # How late the receiver reports speed is measured from this recording, against the surge the
+    # replay just settled the direction of. The device's fixed delay is only the fallback.
+    lag = gps_lag.Lag.measure(t, raw_surge, gps, fallback=replay.gps_delay_of(info))
+    gps_when = lag.shifted(t)  # when the boat did the speed each sample reports
     session = Session(sid, name)
+    session.gps_lag = lag.summary()
     session.motion = _motion_summary(t, gps, raw_motion)
     session.logged = logged_n
     session.detected = detected
@@ -444,11 +450,11 @@ def load_session(imu_path):
             row["raw_" + key] = part
             row["cyc_" + key] = cyc
         # The receiver reports speed late, so a fix is drawn where the boat was doing that speed.
-        glo = int(np.searchsorted(t, prev - anatomy.PREROLL_S + gps_delay))
-        ghi = int(np.searchsorted(t, catch + gps_delay, side="right"))
-        gt, gv = t[glo:ghi], gps[glo:ghi]
+        glo = int(np.searchsorted(gps_when, prev - anatomy.PREROLL_S))
+        ghi = int(np.searchsorted(gps_when, catch, side="right"))
+        gv = gps[glo:ghi]
         keep = np.flatnonzero(np.diff(gv, prepend=gv[:1] - 1) != 0)
-        row["gps_t"] = gt[keep] - gps_delay - prev
+        row["gps_t"] = gps_when[glo:ghi][keep] - prev
         row["gps_v"] = gv[keep]
         built.append(row)
 
@@ -493,7 +499,7 @@ def load_session(imu_path):
     session.t = t
     session.surge = np.asarray(surge, np.float32)
     # On the timeline the speed is moved back by the same delay, so it lines up with the surge.
-    later = np.searchsorted(t, t + gps_delay)
+    later = np.searchsorted(gps_when, t)
     shown = np.where(later < len(t), gps[np.minimum(later, len(t) - 1)], -1.0) if len(t) else gps
     session.gps = np.asarray(shown, np.float32)
     return session
@@ -517,7 +523,7 @@ def _cache_dir():
 
 def _code_stamp():
     """Identifies the code that turns a recording into an analysis: this file down to where the server
-    part starts, plus anatomy.py and replay.py. A change there makes saved analyses stale."""
+    part starts, plus anatomy.py, replay.py and gps_lag.py. A change there makes saved analyses stale."""
     global _stamp
     if _stamp is None:
         digest = hashlib.sha1()
@@ -528,7 +534,7 @@ def _code_stamp():
             digest.update(text if at < 0 else text[:at])
         except OSError:
             digest.update(b"?")
-        for name in ("anatomy.py", "replay.py"):
+        for name in ("anatomy.py", "replay.py", "gps_lag.py"):
             try:
                 with open(os.path.join(HERE, name), "rb") as f:
                     digest.update(f.read())
@@ -909,7 +915,8 @@ def session_index(session, crew, lang, view="stroke"):
     return {"id": session.id, "name": session.name, "strokes": out,
             "preroll_s": anatomy.PREROLL_S,
             "logged": session.logged, "detected": session.detected,
-            "rescued": session.rescued_n, "detector": session.detector}
+            "rescued": session.rescued_n, "detector": session.detector,
+            "gps_lag": session.gps_lag}
 
 
 def _average(session, index):

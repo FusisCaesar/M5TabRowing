@@ -429,6 +429,14 @@ function sessionBlurb(data, n) {
   if (data.logged && data.detected && data.logged !== data.detected) {
     text += " (file has " + data.logged + ")";
   }
+  const gl = data.gps_lag;
+  if (gl && gl.measured) {
+    // Measured from this recording: how late the receiver reports speed, drawn back by that much.
+    const s = (v) => v.toFixed(2).replace(".", lang() === "nl" ? "," : ".");
+    text += lang() === "nl"
+      ? " · GPS-snelheid " + s(gl.median) + " s te laat (" + s(gl.low) + " tot " + s(gl.high) + ")"
+      : " · GPS speed " + s(gl.median) + " s late (" + s(gl.low) + " to " + s(gl.high) + ")";
+  }
   const listed = state.sessions.find((s) => s.id === data.id);
   if (listed && listed.demo) {
     text += lang() === "nl"

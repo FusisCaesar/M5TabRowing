@@ -340,7 +340,7 @@ coaching text on this screen and on Stroke. It stays until you tap it again.
 
 The **Stroke** screen splits the stroke you are rowing into five phases and compares the last few strokes with your own best at the same rate.
 
-The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. The receiver reports speed about half a second late, so each dot is drawn that much earlier than it arrived; the last half second of the stroke has no dots yet. A green line marks the catch and a cyan line the finish, as on the Plot screen.
+The chart is one stroke, from just before the catch to the next one. The top line is the hull acceleration, averaged over the last five strokes, with your reference stroke drawn behind it. The bottom line is the speed through the stroke, built from that acceleration and set to the GPS speed of the stroke; the GPS speed itself is the dots, so the two can be read against each other. The receiver reports speed about half a second late, so each dot is drawn that much earlier than it arrived; the last half second of the stroke has no dots yet. (In the stroke viewer on the PC, the delay is not assumed but measured from the recording and followed over the outing, see `tools\gps_lag.py`; the line above the stroke list gives it. The device itself still uses the fixed half second.) A green line marks the catch and a cyan line the finish, as on the Plot screen.
 
 The shaded bands are the phases:
 
