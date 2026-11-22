@@ -143,6 +143,7 @@ a { color: var(--now); }
 .empty .toolbar .group:not(.pages) { display: none; }
 .toolbar .group { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 
+.field[hidden] { display: none; }
 label, .field {
   display: flex;
   flex-direction: column;

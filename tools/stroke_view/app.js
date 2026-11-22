@@ -348,6 +348,8 @@ function renderSegments() {
 }
 
 function syncSegments() {
+  // Roll, yaw and sideways swing are only drawn under a single stroke.
+  $("motion-field").hidden = $("chartmode").value !== "stroke";
   for (const bar of document.querySelectorAll(".seg[data-for]")) {
     const value = $(bar.dataset.for).value;
     for (const btn of bar.children) btn.setAttribute("aria-selected", btn.dataset.value === value ? "true" : "false");
