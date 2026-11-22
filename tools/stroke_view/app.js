@@ -222,15 +222,15 @@ const CHROME = {
     crew: "Crew",
     chart: "Chart",
     view: "View",
-    oneStroke: "One stroke",
-    wholeSession: "Whole session",
-    byRate: "By rate",
-    thisStroke: "This stroke",
-    lastFive: "Last 5 at this rate",
+    oneStroke: "Stroke",
+    wholeSession: "Session",
+    byRate: "Rate",
+    thisStroke: "Stroke",
+    lastFive: "Last 5",
     motion: "Boat motion",
     motionRoll: "Roll",
     motionYaw: "Yaw",
-    motionSway: "Sideways",
+    motionSway: "Sway",
     motionNone: "Off",
     openFiles: "Open files",
     openFilesTip: "Choose the _imu.csv of a session, with its _seconds.csv, _laps.csv and _info.csv for the map and heart rate",
@@ -264,15 +264,15 @@ const CHROME = {
     crew: "Bemanning",
     chart: "Grafiek",
     view: "Weergave",
-    oneStroke: "Eén slag",
-    wholeSession: "Hele sessie",
-    byRate: "Per slagfrequentie",
-    thisStroke: "Deze slag",
-    lastFive: "Laatste 5 op dit tempo",
+    oneStroke: "Slag",
+    wholeSession: "Sessie",
+    byRate: "Tempo",
+    thisStroke: "Slag",
+    lastFive: "Laatste 5",
     motion: "Bootbeweging",
     motionRoll: "Rol",
     motionYaw: "Gieren",
-    motionSway: "Zijwaarts",
+    motionSway: "Zij",
     motionNone: "Uit",
     openFiles: "Bestanden openen",
     openFilesTip: "Kies de _imu.csv van een sessie, met de _seconds.csv, _laps.csv en _info.csv voor de kaart en hartslag",
@@ -314,6 +314,45 @@ function applyChrome() {
   for (const el of document.querySelectorAll("[data-i18n-label]")) {
     const text = words[el.dataset.i18nLabel];
     if (text != null) el.setAttribute("aria-label", text);
+  }
+  renderSegments();
+}
+
+// Chart, View and Boat motion read as tabs, like the pages. The hidden select next to each stays the
+// value everything else reads, so the buttons only mirror it and set it.
+function renderSegments() {
+  for (const bar of document.querySelectorAll(".seg[data-for]")) {
+    const select = $(bar.dataset.for);
+    const options = [...select.options];
+    if (bar.children.length !== options.length) {
+      bar.innerHTML = "";
+      options.forEach((opt, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.setAttribute("role", "tab");
+        btn.dataset.value = opt.value;
+        if (i === 0) btn.classList.add("first");
+        if (i === options.length - 1) btn.classList.add("last");
+        btn.addEventListener("click", () => {
+          if (select.value === opt.value) return;
+          select.value = opt.value;
+          select.dispatchEvent(new Event("change"));
+          syncSegments();
+        });
+        bar.append(btn);
+      });
+    }
+    options.forEach((opt, i) => { bar.children[i].textContent = opt.textContent; });
+  }
+  syncSegments();
+}
+
+function syncSegments() {
+  // Roll, yaw and sideways swing are only drawn under a single stroke.
+  $("motion-field").hidden = $("chartmode").value !== "stroke";
+  for (const bar of document.querySelectorAll(".seg[data-for]")) {
+    const value = $(bar.dataset.for).value;
+    for (const btn of bar.children) btn.setAttribute("aria-selected", btn.dataset.value === value ? "true" : "false");
   }
 }
 
@@ -1145,6 +1184,7 @@ function gauge(row) {
 }
 
 function renderLegend() {
+  syncSegments();
   const box = $("legend");
   box.innerHTML = "";
   const session = sessionMode();
