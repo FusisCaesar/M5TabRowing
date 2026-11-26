@@ -23,6 +23,7 @@
 #include "map_view.h"
 #include "maps_ui.h"
 #include "net.h"
+#include "remote.h"
 #include "metrics.h"
 #include "rtclock.h"
 #include "segments.h"
@@ -105,7 +106,7 @@ constexpr int MAPS_BTN_X = 16, MAPS_BTN_Y = 16, MAPS_BTN_W = 170, MAPS_BTN_H = 6
 struct Cache {
     char text[120];
 };
-Cache tileCache[TILE_SLOTS], btnCache[BTN_COUNT], barCache, rowCache[12];
+Cache tileCache[TILE_SLOTS], btnCache[BTN_COUNT], barCache, rowCache[14];
 
 char hint[48] = "";
 uint32_t hintUntil = 0;
@@ -1259,8 +1260,8 @@ void drawPlot(const metrics::View& v) {
 
 // ---- settings screen -------------------------------------------------------
 
-enum SettingRow { S_AUTO, S_K, S_FLOOR, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_COUNT };
-constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 4;
+enum SettingRow { S_AUTO, S_K, S_FLOOR, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_REMOTE, S_COUNT };
+constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 5;
 constexpr int SET_ICON = 74, SET_PLUS_X = W - 20 - SET_ICON, SET_MINUS_X = SET_PLUS_X - 16 - SET_ICON;
 constexpr int SET_SWITCH_W = 130, SET_SWITCH_H = 60, SET_TEXT_BTN_W = 190;
 
@@ -1269,13 +1270,14 @@ struct SettingsTab {
     int rows[SET_ROWS];  // -1 = empty slot
 };
 constexpr SettingsTab SET_TABS[] = {
-    {"STROKE", {S_AUTO, S_K, S_FLOOR, S_RATIO}},
-    {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR}},
-    {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS}},
-    {"WIFI", {-1, -1, -1, -1}},
+    {"STROKE", {S_AUTO, S_K, S_FLOOR, S_RATIO, -1}},
+    {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR, S_REMOTE}},
+    {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS, -1}},
+    {"WIFI", {-1, -1, -1, -1, -1}},
+    {"SYSTEM", {-1, -1, -1, -1, -1}},
 };
 constexpr int SET_TAB_COUNT = sizeof(SET_TABS) / sizeof(SET_TABS[0]);
-constexpr int TAB_WIFI = 3;
+constexpr int TAB_WIFI = 3, TAB_SYSTEM = 4;
 constexpr int WIFI_ROW = 68;
 constexpr int WIFI_HEAD = 90;
 constexpr int WIFI_SUB = 52;
@@ -1335,6 +1337,13 @@ void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
             else if (hr::hasSaved()) snprintf(value, vn, "%s", hr::get().name);
             else snprintf(value, vn, "NONE");
             break;
+        case S_REMOTE: {
+            snprintf(label, ln, "Shelly BLU button (Bluetooth)");
+            if (remote::pairing()) snprintf(value, vn, "PRESS BUTTON");
+            else if (remote::hasSaved()) remote::name(value, vn);
+            else snprintf(value, vn, "NONE");
+            break;
+        }
         case S_GPS: {
             gps::Snapshot g = gps::get();
             snprintf(label, ln, "GPS");
@@ -1353,6 +1362,10 @@ const char* settingButton(int row) {
     if (row == S_HR) {
         if (hr::pairing()) return "...";
         return hr::hasSaved() ? "FORGET" : "PAIR";
+    }
+    if (row == S_REMOTE) {
+        if (remote::pairing()) return "...";
+        return remote::hasSaved() ? "FORGET" : "PAIR";
     }
     if (row == S_THEME) return settings::get().dayTheme ? "DAY" : "NIGHT";
     return switchState(row) == 1 ? "ON" : "OFF";
@@ -1412,7 +1425,7 @@ void drawSettingRow(int slot, int r) {
             bool day = settings::get().dayTheme;
             c.drawString(day ? "Day" : "Night", SET_PLUS_X - 24, mid);
             iconButton(SET_PLUS_X, day ? icons::Icon::Sun : icons::Icon::Moon);
-        } else if (r == S_HR || r == S_GPS) {
+        } else if (r == S_HR || r == S_GPS || r == S_REMOTE) {
             int bx = W - 20 - SET_TEXT_BTN_W;
             c.drawString(value, bx - 24, mid);
             c.fillSmoothRoundRect(bx, by, SET_TEXT_BTN_W, SET_ICON, 16, th->btn);
@@ -1608,17 +1621,21 @@ void drawSettings() {
     drawSettingsTabs();
     for (int i = 0; i < SET_ROWS; i++) drawSettingRow(i, SET_TABS[settingsTab].rows[i]);
 
-    char info[96];
-    snprintf(info, sizeof(info), "SD card: %s   log drops: %lu", logger::sdReady() ? "OK" : "not found",
-             (unsigned long)logger::dropped());
-    // Footer cache slot. S_COUNT is not an index: rowCache only has 12 entries.
-    drawRow(11, BTN_Y - ROW_H, info,
+    if (settingsTab != TAB_SYSTEM) return;
+    // System information, one line per row below the tab bar (rowCache slots 11..13).
+    char drops[16];
+    snprintf(drops, sizeof(drops), "%lu", (unsigned long)logger::dropped());
+    int y = BAR_H + SET_TAB_H + 8;
+    bool sd = logger::sdReady();
+    drawRow(11, y, "SD card", sd ? "OK" : "not found", sd ? th->ok : th->warn, true);
+    drawRow(12, y + ROW_H, "Log drops", drops, th->fg, true);
+    drawRow(13, y + 2 * ROW_H, "Build",
 #if SIM_MODE
-            "build: SIMULATION",
+            "SIMULATION",
 #else
-            "build: hardware",
+            "hardware",
 #endif
-            th->label);
+            th->fg, true);
 }
 
 void applySettings(bool full);
@@ -1682,6 +1699,12 @@ void onSettingsTap(int x, int y) {
             if (toggle && !hr::pairing()) {
                 if (hr::hasSaved()) hr::forget();
                 else hr::startPairing();
+            }
+            return;
+        case S_REMOTE:
+            if (toggle && !remote::pairing()) {
+                if (remote::hasSaved()) remote::forget();
+                else remote::startPairing();
             }
             return;
         case S_GPS:
@@ -3463,24 +3486,76 @@ void drawRaceModal() {
     fb::push(c, 0, BAR_H);
 }
 
-void nextScreen() {
+// BACK from the race result and the screens that are not part of the cycle. False when none is open.
+bool backFromOverlay() {
     if (race.open) {
         dismissRace();
-        return;
+        return true;
     }
     if (screen == Screen::Gps) {
         closeGps();
-        return;
+        return true;
     }
     if (screen == Screen::Targets) {
         closeTargets();
-        return;
+        return true;
     }
     if (screen == Screen::Segments) {
         closeSegments();
+        return true;
+    }
+    return false;
+}
+
+void nextScreen() {
+    if (backFromOverlay()) return;
+    setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + 1) % CYCLE));
+}
+
+void prevScreen() {
+    if (backFromOverlay()) return;
+    setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + CYCLE - 1) % CYCLE));
+}
+
+// Jump to a screen of the cycle from anywhere, closing whatever is open on top first.
+void goToScreen(Screen target) {
+    if (race.open) dismissRace();
+    for (int i = 0; i < 6 && screen == Screen::Targets; i++) closeTargets();
+    for (int i = 0; i < 6 && screen == Screen::Segments; i++) closeSegments();
+    setScreen(target);
+}
+
+// The Shelly BLU button: click patterns while rowing.
+void handleRemote(remote::Event e) {
+    using remote::Event;
+    if (race.open) {  // the result card first, whatever the pattern
+        dismissRace();
         return;
     }
-    setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + 1) % CYCLE));
+    switch (e) {
+        case Event::Single: nextScreen(); break;
+        case Event::Double: prevScreen(); break;
+        case Event::Triple:
+            goToScreen(Screen::Main);  // the PIP only shows on the main screen
+            cyclePip();
+            {
+                static const char* const names[] = {"Picture-in-picture off", "Camera", "Map"};
+                showHint(names[settings::get().pipMode % 3]);
+            }
+            break;
+        case Event::Long:
+            if (metrics::view().state == metrics::State::Running) {
+                metrics::stop();
+                showHint("Session stopped");
+            } else {
+                metrics::start();
+                showHint("Session started");
+            }
+            break;
+        case Event::DoubleLong: goToScreen(Screen::Main); break;
+        case Event::TripleLong: goToScreen(Screen::Stroke); break;
+        case Event::None: break;
+    }
 }
 
 void onWifiButton() {
@@ -3900,6 +3975,10 @@ void drag(int x0, int y0, int x1, int y1) {
 }
 
 void command(char c) {
+    if (c >= '1' && c <= '6') {  // simulate the Shelly button: single, double, triple, long, double long, triple long
+        remote::inject((remote::Event)(c - '0'));
+        return;
+    }
     if (race.open) {
         if (c == 'N') dismissRace();
         return;
@@ -3944,6 +4023,19 @@ void loop() {
         showHint(text);
     }
     wasPairing = pairingNow;
+
+    static bool wasRemotePairing = false;
+    bool remotePairing = remote::pairing();
+    if (wasRemotePairing && !remotePairing) {
+        char text[48], n[24];
+        if (remote::hasSaved()) snprintf(text, sizeof(text), "Button paired: %s", remote::name(n, sizeof(n)));
+        else snprintf(text, sizeof(text), "No button press heard");
+        showHint(text);
+    }
+    wasRemotePairing = remotePairing;
+
+    remote::Event re;
+    while (remote::popEvent(re)) handleRemote(re);
 
     auto t = M5.Touch.getDetail();
     handleDrag(t);

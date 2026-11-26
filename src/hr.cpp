@@ -5,6 +5,8 @@
 
 #include <atomic>
 
+#include "remote.h"
+
 #if SIM_MODE
 #include "board.h"
 #include "sim.h"
@@ -58,6 +60,29 @@ class ClientCallbacks : public BLEClientCallbacks {
     void onDisconnect(BLEClient*) override { linkUp = false; }
 };
 ClientCallbacks clientCallbacks;
+
+// The Shelly BLU button is only listened to: every advertisement goes to the remote module.
+constexpr uint32_t REMOTE_PAIR_MS = 15000;
+
+class AdvertCallbacks : public BLEAdvertisedDeviceCallbacks {
+    void onResult(BLEAdvertisedDevice d) override {
+        BLEAddress a = d.getAddress();
+        remote::onAdvert((const uint8_t*)a.getNative(), (uint8_t)d.getAddressType(), d.getRSSI(), d.getPayload(),
+                         d.getPayloadLength());
+    }
+};
+AdvertCallbacks advertCallbacks;
+
+// One second of passive listening that reports every packet. The callbacks are removed again
+// afterwards because the heart rate scans read their results from the scan's own list.
+void scanRemote() {
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(false);
+    scan->setAdvertisedDeviceCallbacks(&advertCallbacks, true, false);
+    scan->start(1, false);
+    scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
+    scan->clearResults();
+}
 
 void loadSaved() {
     Preferences prefs;
@@ -202,8 +227,10 @@ void task(void*) {
             retryMs = RETRY_MIN_MS;
             fails = 0;
         }
+        bool pairRemote = remote::takePairRequest();
+        if (pairRemote) bleFailed = false;
 
-        if (!bleUp && !bleFailed && (c == Cmd::Pair || saved)) {
+        if (!bleUp && !bleFailed && (c == Cmd::Pair || pairRemote || saved || remote::hasSaved())) {
             bleUp = BLEDevice::init("TabRowing");
             bleFailed = !bleUp;
             if (bleFailed) {
@@ -211,6 +238,16 @@ void task(void*) {
                 st = State::Off;
                 pairingNow = false;
             }
+        }
+
+        if (pairRemote) {
+            remote::pairBegin();
+            if (bleUp) {
+                Serial.println("[remote] press the button now");
+                uint32_t t0 = millis();
+                while (!remote::pairFound() && millis() - t0 < REMOTE_PAIR_MS) scanRemote();
+            }
+            remote::pairEnd();
         }
 
         if (c == Cmd::Pair && bleUp) {
@@ -258,7 +295,8 @@ void task(void*) {
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(200));
+        if (bleUp && remote::hasSaved()) scanRemote();  // takes a second, so the loop pace stays low
+        else vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
