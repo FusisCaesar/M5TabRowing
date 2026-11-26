@@ -94,10 +94,32 @@
         </div>
       </div>
 
+      <h2>Oar sensor (experimental)</h2>
+      <p class="lead">
+        One M5Stack StickS3 goes on the oar of each rower. Plug the stick in
+        (not the Tab5) and press the button. Flash every stick the same way;
+        each one gets its own id from its hardware, shown on its screen.
+      </p>
+      <div class="choices">
+        <div class="choice">
+          <esp-web-install-button manifest="manifest-sticks3.json">
+            <button slot="activate">Oar sensor (StickS3)</button>
+            <span slot="unsupported">Use Chrome or Edge on a computer.</span>
+          </esp-web-install-button>
+          <p>
+            Flash the Tab5 from this same page so both speak the same protocol.
+            Pairing, mounting and zeroing are in the
+            <a href="https://github.com/FusisCaesar/M5TabRowing#oar-sensors-experimental">project readme</a>.
+            Erasing is fine: the stick keeps nothing that matters.
+          </p>
+        </div>
+      </div>
+
       <h2>If it does not start</h2>
       <ul>
         <li>If no port appears, hold the boot button while resetting the Tab5, then try again.</li>
         <li>If the screen stays black after flashing, flash the other button. A wrong pick can be flashed over.</li>
+        <li>If no port appears for a StickS3, put it in download mode as described in M5Stack's StickS3 documentation, then try again.</li>
       </ul>
       <p>
         The page asks whether to erase the tablet. Erase on a first install.
