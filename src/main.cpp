@@ -84,7 +84,7 @@ static constexpr uint32_t BINARY_TX_TIMEOUT_MS = 200;
 // 'U path size crc' uploads a file (see tools/send_file.py), 'W ssid password' joins Wi-Fi,
 // 'T x y' / 'P x y' / 'Z x0 y0 x1 y1' simulate a tap / hold / drag, 'F' then 'Y' within 10 s formats the SD card,
 // 'B path' downloads a file (see tools/fetch.py), 'h' pairs a heart rate sensor;
-// '1'..'6' simulate the Shelly button (single, double, triple, long, double long, triple long); other keys go to ui::command.
+// '1'..'7' simulate the Shelly button (single, double, triple, long, double long, triple long, hold); other keys go to ui::command.
 static void serialCommands() {
     static uint32_t formatArmedMs = 0;
     while (Serial.available()) {

@@ -3553,6 +3553,14 @@ void handleRemote(remote::Event e) {
                 showHint("Session started");
             }
             break;
+        case Event::Hold:  // the HOLD: RESET button
+            if (metrics::view().state == metrics::State::Stopped) {
+                metrics::reset();
+                showHint("Session reset");
+            } else if (metrics::view().state == metrics::State::Running) {
+                showHint("Stop the session to reset");
+            }
+            break;
         case Event::DoubleLong: goToScreen(Screen::Main); break;
         case Event::TripleLong: goToScreen(Screen::Stroke); break;
         case Event::None: break;
@@ -3976,7 +3984,7 @@ void drag(int x0, int y0, int x1, int y1) {
 }
 
 void command(char c) {
-    if (c >= '1' && c <= '6') {  // simulate the Shelly button: single, double, triple, long, double long, triple long
+    if (c >= '1' && c <= '7') {  // simulate the Shelly button: single, double, triple, long, double long, triple long, hold
         remote::inject((remote::Event)(c - '0'));
         return;
     }

@@ -21,6 +21,7 @@ std::atomic<bool> pairingNow{false};
 std::atomic<bool> pairReq{false};
 int lastPid = -1;  // only touched by the Bluetooth callback
 uint32_t lastHoldMs = 0;
+bool holdFired = false;
 constexpr uint32_t HOLD_REPEAT_MS = 2500;  // the button repeats a hold about once a second
 
 // Pairing candidate: the strongest button that was heard being pressed.
@@ -76,8 +77,8 @@ Event eventFromCode(int code) {
         case 1: return Event::Single;
         case 2: return Event::Double;
         case 3: return Event::Triple;
-        case 4:
-        case 0x80: return Event::Long;  // this button reports a long press as "hold press" (0x80)
+        case 4: return Event::Long;
+        case 0x80: return Event::Hold;  // "hold press": sent at the start of a hold and while it lasts
         case 5: return Event::DoubleLong;
         case 6: return Event::TripleLong;
     }
@@ -199,6 +200,7 @@ const char* eventName(Event e) {
         case Event::Long: return "long";
         case Event::DoubleLong: return "double long";
         case Event::TripleLong: return "triple long";
+        case Event::Hold: return "hold";
         case Event::None: break;
     }
     return "none";
@@ -237,16 +239,21 @@ void onAdvert(const uint8_t* addr, uint8_t addrType, int rssi, const uint8_t* pa
         lastPid = pk.pid;
     }
     if (pk.button == 0) return;
-    if (pk.button == 0x80 || pk.button == 4) {
-        // Holding the button sends a hold event (0x80) when the hold starts, more of them about every
-        // second while it lasts, and a long press (4) at the end. Only the first one counts; each
-        // later one extends the hold.
-        uint32_t now = millis();
-        bool repeat = now - lastHoldMs < HOLD_REPEAT_MS;
-        lastHoldMs = now;
-        if (repeat) return;
-    }
+    uint32_t now = millis();
     Event e = eventFromCode(pk.button);
+    if (pk.button == 0x80) {
+        // Holding the button sends a hold event (0x80) once the hold starts and another one about every
+        // second while it lasts. A normal long press sends one hold event and then a long press (4).
+        // So the first hold event alone means nothing yet; a second one means the button is really
+        // being held, and that counts as Hold, once.
+        bool sustained = now - lastHoldMs < HOLD_REPEAT_MS;
+        lastHoldMs = now;
+        if (!sustained) holdFired = false;
+        if (!sustained || holdFired) e = Event::None;
+        else holdFired = true;
+    } else if (pk.button == 4 && holdFired && now - lastHoldMs < HOLD_REPEAT_MS) {
+        e = Event::None;  // the end of a hold that already was a Hold: not a long press as well
+    }
     Serial.printf("[remote] pid %d button code %d (%s) rssi %d\n", pk.pid, pk.button, eventName(e), rssi);
     if (e != Event::None) push(e);
 }

@@ -235,13 +235,14 @@ press the button once within 15 seconds. **FORGET** removes it.
 | Single | Next screen (BACK on screens outside the cycle) |
 | Double | Previous screen |
 | Triple | Picture-in-picture: off, camera, map (goes to the main screen first) |
-| Long | Start a session, or stop it when one is running |
+| Long press (release after about a second) | Start a session, or stop it when one is running |
+| Keep holding (a few seconds) | Reset a stopped session, like the HOLD: RESET button |
 | Double click, then hold | Main screen |
 | Triple click, then hold | Stroke screen |
 
 The serial monitor logs every event (`[remote] ...`). Do not click five times
-quickly: that puts the button into Zigbee pairing mode. Over serial, `1` to `6`
-simulate single, double, triple, long, double long and triple long.
+quickly: that puts the button into Zigbee pairing mode. Over serial, `1` to `7`
+simulate single, double, triple, long, double long, triple long and hold.
 
 ### Heart rate
 

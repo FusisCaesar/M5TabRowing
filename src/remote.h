@@ -10,7 +10,8 @@
 // Encrypted BTHome is not supported: leave the button in its default (unencrypted) mode.
 namespace remote {
 
-enum class Event : uint8_t { None, Single, Double, Triple, Long, DoubleLong, TripleLong };
+// Long is a long press, Hold is the button kept pressed on purpose (it sends hold events while held).
+enum class Event : uint8_t { None, Single, Double, Triple, Long, DoubleLong, TripleLong, Hold };
 
 void begin();
 
