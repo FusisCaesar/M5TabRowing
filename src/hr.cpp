@@ -5,6 +5,8 @@
 
 #include <atomic>
 
+#include "remote.h"
+
 #if SIM_MODE
 #include "board.h"
 #include "sim.h"
@@ -59,6 +61,97 @@ class ClientCallbacks : public BLEClientCallbacks {
 };
 ClientCallbacks clientCallbacks;
 
+// The Shelly BLU button is only listened to: every advertisement goes to the remote module.
+constexpr uint32_t REMOTE_PAIR_MS = 15000;
+
+std::atomic<uint32_t> lastAdvertMs{0};
+
+// When the saved heart rate sensor was last heard advertising (needs the scan to be running).
+constexpr uint32_t HR_HEARD_MS = 5000;
+constexpr int SILENT_CHECKS_BEFORE_RESCAN = 30;  // one per second
+std::atomic<uint32_t> hrHeardMs{0};
+portMUX_TYPE hrAddrMux = portMUX_INITIALIZER_UNLOCKED;
+uint8_t hrAddr[6] = {0};
+bool hrAddrValid = false;
+
+class AdvertCallbacks : public BLEAdvertisedDeviceCallbacks {
+    void onResult(BLEAdvertisedDevice d) override {
+        lastAdvertMs = millis();
+        BLEAddress a = d.getAddress();
+        bool hrSensor;
+        portENTER_CRITICAL(&hrAddrMux);
+        hrSensor = hrAddrValid && memcmp(hrAddr, a.getNative(), 6) == 0;
+        portEXIT_CRITICAL(&hrAddrMux);
+        if (hrSensor) hrHeardMs = millis();
+        remote::onAdvert((const uint8_t*)a.getNative(), (uint8_t)d.getAddressType(), d.getRSSI(), d.getPayload(),
+                         d.getPayloadLength());
+    }
+};
+AdvertCallbacks advertCallbacks;
+
+// One second of passive listening that reports every packet. The callbacks are removed again
+// afterwards because the heart rate scans read their results from the scan's own list.
+// Used for pairing the button.
+void scanRemote() {
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(false);
+    scan->setAdvertisedDeviceCallbacks(&advertCallbacks, true, false);
+    scan->start(1, false);
+    scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
+    scan->clearResults();
+}
+
+// While a button is saved, one endless passive scan runs in the background. It keeps running while
+// the heart rate sensor connects (a connect attempt takes seconds), and is only stopped for the
+// blocking scans that read their results from the scan's own list.
+bool remoteScanning = false;
+uint32_t remoteScanStartMs = 0;
+
+void remoteScanStart() {
+    if (remoteScanning) return;
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(false);
+    scan->setAdvertisedDeviceCallbacks(&advertCallbacks, true, false);
+    remoteScanning = scan->start(0, nullptr, false);  // 0 = until stopped
+    remoteScanStartMs = millis();
+    if (!remoteScanning) scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
+}
+
+void remoteScanStop() {
+    if (!remoteScanning) return;
+    BLEScan* scan = BLEDevice::getScan();
+    scan->stop();
+    scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
+    scan->clearResults();
+    remoteScanning = false;
+}
+
+// The controller can end a scan on its own (a connection coming up, for one), after which the
+// stack ignores results. Nothing reports that, so a scan that went quiet is started again. The
+// air is never silent for this long in practice: even a quiet room has a few advertisers.
+void remoteScanWatchdog() {
+    if (!remoteScanning) return;
+    uint32_t since = max(lastAdvertMs.load(), remoteScanStartMs);
+    if (millis() - since < 3000) return;
+    Serial.println("[remote] scan went quiet, restarting it");
+    remoteScanStop();
+    remoteScanStart();
+}
+
+// Keeps the saved sensor's address as bytes for the advertisement callback.
+void publishAddr(const String& addr) {
+    portENTER_CRITICAL(&hrAddrMux);
+    hrAddrValid = false;
+    portEXIT_CRITICAL(&hrAddrMux);
+    hrHeardMs = 0;
+    if (addr.length() != 17) return;
+    BLEAddress a(addr);
+    portENTER_CRITICAL(&hrAddrMux);
+    memcpy(hrAddr, a.getNative(), 6);
+    hrAddrValid = true;
+    portEXIT_CRITICAL(&hrAddrMux);
+}
+
 void loadSaved() {
     Preferences prefs;
     prefs.begin("hr", true);
@@ -68,6 +161,7 @@ void loadSaved() {
     prefs.end();
     setName(name.c_str());
     saved = savedAddr.length() > 0;
+    publishAddr(savedAddr);
 }
 
 void store(const String& addr, uint8_t type, const String& name) {
@@ -81,6 +175,7 @@ void store(const String& addr, uint8_t type, const String& name) {
     savedType = type;
     setName(name.c_str());
     saved = addr.length() > 0;
+    publishAddr(addr);
 }
 
 // Heart Rate Measurement (0x2A37): flags, 8- or 16-bit bpm, optional energy expended, then RR intervals in 1/1024 s.
@@ -113,6 +208,7 @@ bool isHrSensor(BLEAdvertisedDevice& d) {
 // Pairing: the strongest sensor in range wins. Rescan (byName): find the saved sensor again after
 // it changed its address.
 bool scanFor(uint32_t seconds, bool byName) {
+    remoteScanStop();
     BLEScan* scan = BLEDevice::getScan();
     scan->setActiveScan(true);
     BLEScanResults* r = scan->start(seconds, false);
@@ -187,7 +283,7 @@ void dropLink() {
 void task(void*) {
     bool bleUp = false, bleFailed = false;
     uint32_t nextTry = 0, retryMs = RETRY_MIN_MS;
-    int fails = 0;
+    int fails = 0, silentChecks = 0;
     for (;;) {
         Cmd c = cmd.exchange(Cmd::None);
         if (c != Cmd::None) {
@@ -202,8 +298,10 @@ void task(void*) {
             retryMs = RETRY_MIN_MS;
             fails = 0;
         }
+        bool pairRemote = remote::takePairRequest();
+        if (pairRemote) bleFailed = false;
 
-        if (!bleUp && !bleFailed && (c == Cmd::Pair || saved)) {
+        if (!bleUp && !bleFailed && (c == Cmd::Pair || pairRemote || saved || remote::hasSaved())) {
             bleUp = BLEDevice::init("TabRowing");
             bleFailed = !bleUp;
             if (bleFailed) {
@@ -211,6 +309,17 @@ void task(void*) {
                 st = State::Off;
                 pairingNow = false;
             }
+        }
+
+        if (pairRemote) {
+            remoteScanStop();
+            remote::pairBegin();
+            if (bleUp) {
+                Serial.println("[remote] press the button now");
+                uint32_t t0 = millis();
+                while (!remote::pairFound() && millis() - t0 < REMOTE_PAIR_MS) scanRemote();
+            }
+            remote::pairEnd();
         }
 
         if (c == Cmd::Pair && bleUp) {
@@ -221,6 +330,8 @@ void task(void*) {
             }
             pairingNow = false;
         }
+
+        if (bleUp && remote::hasSaved()) remoteScanStart();  // before the heart rate part, which listens to it
 
         if (saved && bleUp) {
             bool up = linkUp && client && client->isConnected();
@@ -236,12 +347,33 @@ void task(void*) {
                     bpm = 0;
                     nextTry = millis();
                 }
-                if ((int32_t)(millis() - nextTry) >= 0) {
+                // With the button scan running the sensor's advertisements are seen too. Connecting to a
+                // sensor that is not advertising blocks for about a minute, during which no button
+                // events arrive, so wait until it is heard. If it stays silent, look for it by name.
+                bool listening = remoteScanning && remote::hasSaved();
+                if (listening && (int32_t)(millis() - nextTry) >= 0 && millis() - hrHeardMs.load() > HR_HEARD_MS) {
+                    if (st != State::Scanning) st = State::Lost;
+                    if (++silentChecks >= SILENT_CHECKS_BEFORE_RESCAN && savedName[0]) {
+                        silentChecks = 0;
+                        st = State::Scanning;
+                        scanFor(RESCAN_S, true);
+                        st = State::Lost;
+                        remoteScanStart();
+                    }
+                    nextTry = millis() + 1000;
+                } else if ((int32_t)(millis() - nextTry) >= 0) {
+                    silentChecks = 0;
                     if (fails >= FAILS_BEFORE_RESCAN && savedName[0]) {
                         st = State::Scanning;
                         scanFor(RESCAN_S, true);
                     }
-                    if (connectSaved()) {
+                    if (bleUp && remote::hasSaved()) remoteScanStart();  // scanFor() above stopped it
+                    bool linked = connectSaved();
+                    if (remote::hasSaved()) {  // a connect attempt can end the scan
+                        remoteScanStop();
+                        remoteScanStart();
+                    }
+                    if (linked) {
                         char n[24];
                         portENTER_CRITICAL(&nameMux);
                         strlcpy(n, savedName, sizeof(n));
@@ -257,6 +389,12 @@ void task(void*) {
                     }
                 }
             }
+        }
+        if (bleUp && remote::hasSaved()) {
+            remoteScanStart();
+            remoteScanWatchdog();
+        } else {
+            remoteScanStop();
         }
         vTaskDelay(pdMS_TO_TICKS(200));
     }

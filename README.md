@@ -219,6 +219,31 @@ in a strip above it).
 
 ![Map in picture-in-picture](shots/main_pip_small.png)
 
+### Shelly BLU button (remote)
+
+A **Shelly BLU Button Tough 1 ZB** (or any Shelly BLU Button) works as a remote
+you can reach while rowing. It never connects: the Tab5 only listens to its
+Bluetooth broadcasts (BTHome), so there is no pairing in the Bluetooth sense and
+it works next to the heart rate sensor. In the Shelly app, leave the button in
+its default mode with **encryption off**; encrypted packets are ignored.
+
+Register it in Settings, DISPLAY tab: tap **PAIR** on the Shelly button row and
+press the button once within 15 seconds. **FORGET** removes it.
+
+| Click | Action |
+| --- | --- |
+| Single | Next screen (BACK on screens outside the cycle) |
+| Double | Previous screen |
+| Triple | Picture-in-picture: off, camera, map (goes to the main screen first) |
+| Long press (release after about a second) | Start a session, or stop it when one is running |
+| Keep holding (about 4 seconds, no release) | Reset a stopped session, like the HOLD: RESET button |
+| Double click, then hold | Main screen |
+| Triple click, then hold | Stroke screen |
+
+The serial monitor logs every event (`[remote] ...`). Do not click five times
+quickly: that puts the button into Zigbee pairing mode. Over serial, `1` to `7`
+simulate single, double, triple, long, double long, triple long and hold.
+
 ### Heart rate
 
 Any Bluetooth heart rate sensor works: a chest strap (Polar H10, Garmin HRM,
@@ -382,7 +407,7 @@ warns that nothing is being written.
 
 ### Settings
 
-Four tabs. Values are kept in flash.
+Five tabs. Values are kept in flash.
 
 **STROKE**
 
@@ -398,6 +423,7 @@ Four tabs. Values are kept in flash.
 - Brightness.
 - Rotate screen 180, for a case mounted the other way up (camera image follows).
 - Camera mirror image (on by default).
+- Shelly BLU button: **PAIR** / **FORGET**, see above.
 
 **SENSORS**
 
@@ -420,8 +446,10 @@ retyping. **RESCAN** looks again. The top bar shows `WIFI` once it is connected.
 Wi-Fi still turns off when you leave Settings, except while the Maps screen is
 open.
 
-The footer shows whether the SD card is present, how many log lines were
-dropped, and `build: hardware` or `build: SIMULATION`.
+**SYSTEM**
+
+Shows whether the SD card is present, how many log lines were dropped, and the
+build: `hardware` or `SIMULATION`.
 
 ![Settings screen](shots/settings.png)
 
