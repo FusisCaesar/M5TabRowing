@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'stick/platformio.ini') }}
           restore-keys: |
             pio-${{ runner.os }}-
 
@@ -39,16 +39,21 @@ jobs:
       # platformio.ini pins a Windows core directory so the toolchain stays
       # under the MAX_PATH limit. Linux CI uses the default ~/.platformio.
       - name: Drop the Windows-only core directory
-        run: sed -i '/^core_dir[[:space:]]*=/d' platformio.ini
+        run: sed -i '/^core_dir[[:space:]]*=/d' platformio.ini stick/platformio.ini
 
       - name: Build both Tab5 variants
         run: pio run -e tab5 -e tab5x
+
+      - name: Build the oar sensor (StickS3)
+        working-directory: stick
+        run: pio run -e sticks3
 
       - name: Stage the factory images
         run: |
           mkdir -p web/firmware
           cp .pio/build/tab5/firmware.factory.bin web/firmware/tab5.factory.bin
           cp .pio/build/tab5x/firmware.factory.bin web/firmware/tab5x.factory.bin
+          cp stick/.pio/build/sticks3/firmware.factory.bin web/firmware/sticks3.factory.bin
 
       - name: Stamp the manifest version
         env:
@@ -66,7 +71,7 @@ jobs:
           else:
               version = "dev-" + version[:7]
 
-          for name in ("manifest-tab5.json", "manifest-tab5x.json"):
+          for name in ("manifest-tab5.json", "manifest-tab5x.json", "manifest-sticks3.json"):
               path = Path("web") / name
               data = json.loads(path.read_text(encoding="utf-8"))
               data["version"] = version
@@ -84,9 +89,11 @@ jobs:
 
             - `tab5.factory.bin` is the original Tab5 (chip revision below 300), the tested build.
             - `tab5x.factory.bin` is the newer Tab5 (chip revision 300 and above). It has not been run on hardware.
+            - `sticks3.factory.bin` is the experimental oar sensor for the M5Stack StickS3.
           files: |
             web/firmware/tab5.factory.bin
             web/firmware/tab5x.factory.bin
+            web/firmware/sticks3.factory.bin
 
       - name: Upload the installer site
         uses: actions/upload-pages-artifact@v5
