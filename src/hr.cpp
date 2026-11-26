@@ -75,6 +75,7 @@ AdvertCallbacks advertCallbacks;
 
 // One second of passive listening that reports every packet. The callbacks are removed again
 // afterwards because the heart rate scans read their results from the scan's own list.
+// Used for pairing the button.
 void scanRemote() {
     BLEScan* scan = BLEDevice::getScan();
     scan->setActiveScan(false);
@@ -82,6 +83,29 @@ void scanRemote() {
     scan->start(1, false);
     scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
     scan->clearResults();
+}
+
+// While a button is saved, one endless passive scan runs in the background. It keeps running while
+// the heart rate sensor connects (a connect attempt takes seconds), and is only stopped for the
+// blocking scans that read their results from the scan's own list.
+bool remoteScanning = false;
+
+void remoteScanStart() {
+    if (remoteScanning) return;
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(false);
+    scan->setAdvertisedDeviceCallbacks(&advertCallbacks, true, false);
+    remoteScanning = scan->start(0, nullptr, false);  // 0 = until stopped
+    if (!remoteScanning) scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
+}
+
+void remoteScanStop() {
+    if (!remoteScanning) return;
+    BLEScan* scan = BLEDevice::getScan();
+    scan->stop();
+    scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
+    scan->clearResults();
+    remoteScanning = false;
 }
 
 void loadSaved() {
@@ -138,6 +162,7 @@ bool isHrSensor(BLEAdvertisedDevice& d) {
 // Pairing: the strongest sensor in range wins. Rescan (byName): find the saved sensor again after
 // it changed its address.
 bool scanFor(uint32_t seconds, bool byName) {
+    remoteScanStop();
     BLEScan* scan = BLEDevice::getScan();
     scan->setActiveScan(true);
     BLEScanResults* r = scan->start(seconds, false);
@@ -241,6 +266,7 @@ void task(void*) {
         }
 
         if (pairRemote) {
+            remoteScanStop();
             remote::pairBegin();
             if (bleUp) {
                 Serial.println("[remote] press the button now");
@@ -278,6 +304,7 @@ void task(void*) {
                         st = State::Scanning;
                         scanFor(RESCAN_S, true);
                     }
+                    if (bleUp && remote::hasSaved()) remoteScanStart();  // scanFor() above stopped it
                     if (connectSaved()) {
                         char n[24];
                         portENTER_CRITICAL(&nameMux);
@@ -295,8 +322,9 @@ void task(void*) {
                 }
             }
         }
-        if (bleUp && remote::hasSaved()) scanRemote();  // takes a second, so the loop pace stays low
-        else vTaskDelay(pdMS_TO_TICKS(200));
+        if (bleUp && remote::hasSaved()) remoteScanStart();
+        else remoteScanStop();
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 

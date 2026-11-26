@@ -3528,6 +3528,7 @@ void goToScreen(Screen target) {
 // The Shelly BLU button: click patterns while rowing.
 void handleRemote(remote::Event e) {
     using remote::Event;
+    Serial.printf("[remote] handle %s on screen %d\n", remote::eventName(e), (int)screen);
     if (race.open) {  // the result card first, whatever the pattern
         dismissRace();
         return;

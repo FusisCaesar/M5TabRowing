@@ -74,7 +74,8 @@ Event eventFromCode(int code) {
         case 1: return Event::Single;
         case 2: return Event::Double;
         case 3: return Event::Triple;
-        case 4: return Event::Long;
+        case 4:
+        case 0x80: return Event::Long;  // this button reports a long press as "hold press" (0x80)
         case 5: return Event::DoubleLong;
         case 6: return Event::TripleLong;
     }
@@ -228,7 +229,6 @@ void onAdvert(const uint8_t* addr, uint8_t addrType, int rssi, const uint8_t* pa
     mine = memcmp(savedAddr, addr, 6) == 0;
     portEXIT_CRITICAL(&mux);
     if (!mine) return;
-
     if (pk.encrypted || pk.button < 0) return;
     if (pk.pid >= 0) {
         if (pk.pid == lastPid) return;  // the button repeats each packet a few times
