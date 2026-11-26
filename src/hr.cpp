@@ -66,10 +66,23 @@ constexpr uint32_t REMOTE_PAIR_MS = 15000;
 
 std::atomic<uint32_t> lastAdvertMs{0};
 
+// When the saved heart rate sensor was last heard advertising (needs the scan to be running).
+constexpr uint32_t HR_HEARD_MS = 5000;
+constexpr int SILENT_CHECKS_BEFORE_RESCAN = 30;  // one per second
+std::atomic<uint32_t> hrHeardMs{0};
+portMUX_TYPE hrAddrMux = portMUX_INITIALIZER_UNLOCKED;
+uint8_t hrAddr[6] = {0};
+bool hrAddrValid = false;
+
 class AdvertCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice d) override {
         lastAdvertMs = millis();
         BLEAddress a = d.getAddress();
+        bool hrSensor;
+        portENTER_CRITICAL(&hrAddrMux);
+        hrSensor = hrAddrValid && memcmp(hrAddr, a.getNative(), 6) == 0;
+        portEXIT_CRITICAL(&hrAddrMux);
+        if (hrSensor) hrHeardMs = millis();
         remote::onAdvert((const uint8_t*)a.getNative(), (uint8_t)d.getAddressType(), d.getRSSI(), d.getPayload(),
                          d.getPayloadLength());
     }
@@ -125,6 +138,20 @@ void remoteScanWatchdog() {
     remoteScanStart();
 }
 
+// Keeps the saved sensor's address as bytes for the advertisement callback.
+void publishAddr(const String& addr) {
+    portENTER_CRITICAL(&hrAddrMux);
+    hrAddrValid = false;
+    portEXIT_CRITICAL(&hrAddrMux);
+    hrHeardMs = 0;
+    if (addr.length() != 17) return;
+    BLEAddress a(addr);
+    portENTER_CRITICAL(&hrAddrMux);
+    memcpy(hrAddr, a.getNative(), 6);
+    hrAddrValid = true;
+    portEXIT_CRITICAL(&hrAddrMux);
+}
+
 void loadSaved() {
     Preferences prefs;
     prefs.begin("hr", true);
@@ -134,6 +161,7 @@ void loadSaved() {
     prefs.end();
     setName(name.c_str());
     saved = savedAddr.length() > 0;
+    publishAddr(savedAddr);
 }
 
 void store(const String& addr, uint8_t type, const String& name) {
@@ -147,6 +175,7 @@ void store(const String& addr, uint8_t type, const String& name) {
     savedType = type;
     setName(name.c_str());
     saved = addr.length() > 0;
+    publishAddr(addr);
 }
 
 // Heart Rate Measurement (0x2A37): flags, 8- or 16-bit bpm, optional energy expended, then RR intervals in 1/1024 s.
@@ -254,7 +283,7 @@ void dropLink() {
 void task(void*) {
     bool bleUp = false, bleFailed = false;
     uint32_t nextTry = 0, retryMs = RETRY_MIN_MS;
-    int fails = 0;
+    int fails = 0, silentChecks = 0;
     for (;;) {
         Cmd c = cmd.exchange(Cmd::None);
         if (c != Cmd::None) {
@@ -302,6 +331,8 @@ void task(void*) {
             pairingNow = false;
         }
 
+        if (bleUp && remote::hasSaved()) remoteScanStart();  // before the heart rate part, which listens to it
+
         if (saved && bleUp) {
             bool up = linkUp && client && client->isConnected();
             if (up && millis() - lastMs > STALE_MS) {
@@ -316,7 +347,22 @@ void task(void*) {
                     bpm = 0;
                     nextTry = millis();
                 }
-                if ((int32_t)(millis() - nextTry) >= 0) {
+                // With the button scan running the sensor's advertisements are seen too. Connecting to a
+                // sensor that is not advertising blocks for about a minute, during which no button
+                // events arrive, so wait until it is heard. If it stays silent, look for it by name.
+                bool listening = remoteScanning && remote::hasSaved();
+                if (listening && (int32_t)(millis() - nextTry) >= 0 && millis() - hrHeardMs.load() > HR_HEARD_MS) {
+                    if (st != State::Scanning) st = State::Lost;
+                    if (++silentChecks >= SILENT_CHECKS_BEFORE_RESCAN && savedName[0]) {
+                        silentChecks = 0;
+                        st = State::Scanning;
+                        scanFor(RESCAN_S, true);
+                        st = State::Lost;
+                        remoteScanStart();
+                    }
+                    nextTry = millis() + 1000;
+                } else if ((int32_t)(millis() - nextTry) >= 0) {
+                    silentChecks = 0;
                     if (fails >= FAILS_BEFORE_RESCAN && savedName[0]) {
                         st = State::Scanning;
                         scanFor(RESCAN_S, true);

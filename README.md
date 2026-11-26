@@ -236,7 +236,7 @@ press the button once within 15 seconds. **FORGET** removes it.
 | Double | Previous screen |
 | Triple | Picture-in-picture: off, camera, map (goes to the main screen first) |
 | Long press (release after about a second) | Start a session, or stop it when one is running |
-| Keep holding (a few seconds) | Reset a stopped session, like the HOLD: RESET button |
+| Keep holding (about 4 seconds, no release) | Reset a stopped session, like the HOLD: RESET button |
 | Double click, then hold | Main screen |
 | Triple click, then hold | Stroke screen |
 

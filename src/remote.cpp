@@ -20,9 +20,12 @@ std::atomic<bool> saved{false};
 std::atomic<bool> pairingNow{false};
 std::atomic<bool> pairReq{false};
 int lastPid = -1;  // only touched by the Bluetooth callback
-uint32_t lastHoldMs = 0;
-bool holdFired = false;
-constexpr uint32_t HOLD_REPEAT_MS = 2500;  // the button repeats a hold about once a second
+// A hold event (0x80) is a Hold unless a click-type event follows within HOLD_WAIT_MS. The long press
+// sent at the end of a Hold is ignored for HOLD_SUPPRESS_MS after the Hold fired.
+constexpr uint32_t HOLD_WAIT_MS = 2500, HOLD_SUPPRESS_MS = 6000;
+std::atomic<bool> holdPending{false};
+std::atomic<uint32_t> holdAt{0};
+std::atomic<uint32_t> holdFiredMs{0};
 
 // Pairing candidate: the strongest button that was heard being pressed.
 bool pairActive = false;
@@ -186,7 +189,15 @@ const char* name(char* out, size_t n) {
 
 bool popEvent(Event& e) {
     uint8_t t = qTail.load();
-    if (t == qHead.load()) return false;
+    if (t == qHead.load()) {
+        if (holdPending.load() && millis() - holdAt.load() >= HOLD_WAIT_MS && holdPending.exchange(false)) {
+            holdFiredMs = millis();
+            Serial.println("[remote] hold");
+            e = Event::Hold;
+            return true;
+        }
+        return false;
+    }
     e = queue[t];
     qTail = (t + 1) % QUEUE;
     return true;
@@ -242,19 +253,16 @@ void onAdvert(const uint8_t* addr, uint8_t addrType, int rssi, const uint8_t* pa
     uint32_t now = millis();
     Event e = eventFromCode(pk.button);
     if (pk.button == 0x80) {
-        // Holding the button sends a hold event (0x80) once the hold starts and another one about every
-        // second while it lasts. A normal long press sends one hold event and then a long press (4).
-        // So the first hold event alone means nothing yet; a second one means the button is really
-        // being held, and that counts as Hold, once.
-        bool sustained = now - lastHoldMs < HOLD_REPEAT_MS;
-        lastHoldMs = now;
-        if (!sustained) holdFired = false;
-        if (!sustained || holdFired) e = Event::None;
-        else holdFired = true;
-    } else if (pk.button == 4 && holdFired && now - lastHoldMs < HOLD_REPEAT_MS) {
-        e = Event::None;  // the end of a hold that already was a Hold: not a long press as well
+        // The button sends a hold event (0x80) when a press has lasted a while. If it is released as a
+        // long press or a click-and-hold, that event follows within a couple of seconds (4, 5 or 6).
+        // A hold that nothing follows is a Hold: popEvent() reports it once the wait is over.
+        if (!holdPending.exchange(true)) holdAt = now;
+        e = Event::None;
+    } else {
+        holdPending = false;
+        if (e == Event::Long && holdFiredMs != 0 && now - holdFiredMs < HOLD_SUPPRESS_MS) e = Event::None;  // end of a Hold
     }
-    Serial.printf("[remote] pid %d button code %d (%s) rssi %d\n", pk.pid, pk.button, eventName(e), rssi);
+    Serial.printf("[remote] t=%lu pid %d button code %d (%s) rssi %d\n", (unsigned long)now, pk.pid, pk.button, eventName(e), rssi);
     if (e != Event::None) push(e);
 }
 
