@@ -78,6 +78,8 @@ Chrome or Edge on a computer, and a USB-C cable that carries data.
 4. If no port appears, hold the boot button while resetting the Tab5, then try again.
 5. If the screen stays black, flash the other button. A wrong pick can be flashed over.
 
+The same page flashes an [oar sensor](#oar-sensors-experimental): plug in a StickS3 instead of the Tab5 and press **Oar sensor (StickS3)**. Flash the Tab5 from the same release so both speak the same protocol.
+
 The page asks whether to erase the tablet. Erase on a first install. Leave the data in place when you are updating and want to keep the saved Wi-Fi network, the paired heart-rate sensor, and the stroke and display settings. Maps and session logs sit on the microSD card and are left alone either way.
 
 ### Build it yourself
@@ -471,6 +473,8 @@ paired seats and the signal level.
 | `catch_deg`, `finish_deg`, `arc_deg` | oar angle at the catch and finish, and the difference |
 | `drive_s`, `recovery_s` | phase times of this stroke on this oar |
 | `rssi`, `battery_pct` | signal and the stick's battery |
+
+**Flashing the stick.** Easiest from the [install page](https://fusiscaesar.github.io/M5TabRowing/) in Chrome or Edge: press **Oar sensor (StickS3)**, choose the port, repeat for every stick.
 
 **Building the stick firmware.** The stick is its own PlatformIO project in
 `stick/`; `src/oar_protocol.h` is shared with the Tab5 firmware:
