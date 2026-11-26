@@ -146,7 +146,6 @@ constexpr float GPS_MIN_STEP_M = 3.0f;
 constexpr float GPS_SPEED_ZERO_MPS = 0.3f;
 
 // ---- Metrics ------------------------------------------------------------
-constexpr float SPLIT_IDLE_WINDOW_S = 3.0f;
 constexpr float MIN_SPLIT_SPEED_MPS = 0.5f;
 constexpr int SPLIT_AVG_STROKES = 3;  // displayed split averages this many strokes
 constexpr int SPEED_HISTORY = 256;   // ~25 s at 10 Hz

@@ -216,7 +216,7 @@ void closeLap(int64_t nowUs) {
     l.number = v.lapNumber;
     l.time = (float)((nowUs - lapStartUs) * 1e-6);
     l.distance = (float)(gpsNow.distance - lapStartDistance);
-    l.avgSplit = l.distance > 1 ? l.time * 500.0f / l.distance : 0;
+    l.avgSplit = l.distance > 1 && lapStrokes > 0 ? l.time * 500.0f / l.distance : 0;
     l.avgRate = lapRateCount ? (float)(lapRateSum / lapRateCount) : 0;
     l.strokes = lapStrokes;
     l.avgHr = lapHrCount ? (float)(lapHrSum / lapHrCount) : 0;
@@ -338,14 +338,9 @@ void update() {
     imu::Live live = imu::live();
     v.rate = live.rate;
     bool rowing = live.lastCatch > 0 && (now * 1e-6 - live.lastCatch) < cfg::STROKE_TIMEOUT_S;
-    if (rowing && strokeSplit > 0) {
-        v.split = strokeSplit;
-    } else if (rowing) {
-        v.split = 0;
-    } else {
-        float s = meanSpeed(now - (int64_t)(cfg::SPLIT_IDLE_WINDOW_S * 1e6), now);
-        v.split = s > 0 ? splitFromSpeed(s) : 0;
-    }
+    // A split only exists while strokes are being detected. Drifting or paddling slowly without
+    // strokes shows no split.
+    v.split = rowing && strokeSplit > 0 ? strokeSplit : 0;
     if (!gpsNow.fix) v.split = 0;
     if (!rowing) v.dps = 0;
 
@@ -365,7 +360,7 @@ void update() {
     if (v.state == State::Running) {
         v.elapsed = (float)((now - startUs) * 1e-6);
         v.distance = (float)(gpsNow.distance - startDistance);
-        v.avgSplit = v.distance > 10 ? v.elapsed * 500.0f / v.distance : 0;
+        v.avgSplit = v.distance > 10 && v.strokes > 0 ? v.elapsed * 500.0f / v.distance : 0;
         v.avgRate = rateCount ? (float)(rateSum / rateCount) : 0;
         int sec = (int)v.elapsed;
         if (sec != lastLoggedSecond) {
