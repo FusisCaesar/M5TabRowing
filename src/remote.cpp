@@ -20,6 +20,8 @@ std::atomic<bool> saved{false};
 std::atomic<bool> pairingNow{false};
 std::atomic<bool> pairReq{false};
 int lastPid = -1;  // only touched by the Bluetooth callback
+uint32_t lastHoldMs = 0;
+constexpr uint32_t HOLD_REPEAT_MS = 2500;  // the button repeats a hold about once a second
 
 // Pairing candidate: the strongest button that was heard being pressed.
 bool pairActive = false;
@@ -235,6 +237,15 @@ void onAdvert(const uint8_t* addr, uint8_t addrType, int rssi, const uint8_t* pa
         lastPid = pk.pid;
     }
     if (pk.button == 0) return;
+    if (pk.button == 0x80 || pk.button == 4) {
+        // Holding the button sends a hold event (0x80) when the hold starts, more of them about every
+        // second while it lasts, and a long press (4) at the end. Only the first one counts; each
+        // later one extends the hold.
+        uint32_t now = millis();
+        bool repeat = now - lastHoldMs < HOLD_REPEAT_MS;
+        lastHoldMs = now;
+        if (repeat) return;
+    }
     Event e = eventFromCode(pk.button);
     Serial.printf("[remote] pid %d button code %d (%s) rssi %d\n", pk.pid, pk.button, eventName(e), rssi);
     if (e != Event::None) push(e);
