@@ -64,8 +64,11 @@ ClientCallbacks clientCallbacks;
 // The Shelly BLU button is only listened to: every advertisement goes to the remote module.
 constexpr uint32_t REMOTE_PAIR_MS = 15000;
 
+std::atomic<uint32_t> lastAdvertMs{0};
+
 class AdvertCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice d) override {
+        lastAdvertMs = millis();
         BLEAddress a = d.getAddress();
         remote::onAdvert((const uint8_t*)a.getNative(), (uint8_t)d.getAddressType(), d.getRSSI(), d.getPayload(),
                          d.getPayloadLength());
@@ -89,6 +92,7 @@ void scanRemote() {
 // the heart rate sensor connects (a connect attempt takes seconds), and is only stopped for the
 // blocking scans that read their results from the scan's own list.
 bool remoteScanning = false;
+uint32_t remoteScanStartMs = 0;
 
 void remoteScanStart() {
     if (remoteScanning) return;
@@ -96,6 +100,7 @@ void remoteScanStart() {
     scan->setActiveScan(false);
     scan->setAdvertisedDeviceCallbacks(&advertCallbacks, true, false);
     remoteScanning = scan->start(0, nullptr, false);  // 0 = until stopped
+    remoteScanStartMs = millis();
     if (!remoteScanning) scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
 }
 
@@ -106,6 +111,18 @@ void remoteScanStop() {
     scan->setAdvertisedDeviceCallbacks(nullptr, false, true);
     scan->clearResults();
     remoteScanning = false;
+}
+
+// The controller can end a scan on its own (a connection coming up, for one), after which the
+// stack ignores results. Nothing reports that, so a scan that went quiet is started again. The
+// air is never silent for this long in practice: even a quiet room has a few advertisers.
+void remoteScanWatchdog() {
+    if (!remoteScanning) return;
+    uint32_t since = max(lastAdvertMs.load(), remoteScanStartMs);
+    if (millis() - since < 3000) return;
+    Serial.println("[remote] scan went quiet, restarting it");
+    remoteScanStop();
+    remoteScanStart();
 }
 
 void loadSaved() {
@@ -305,7 +322,12 @@ void task(void*) {
                         scanFor(RESCAN_S, true);
                     }
                     if (bleUp && remote::hasSaved()) remoteScanStart();  // scanFor() above stopped it
-                    if (connectSaved()) {
+                    bool linked = connectSaved();
+                    if (remote::hasSaved()) {  // a connect attempt can end the scan
+                        remoteScanStop();
+                        remoteScanStart();
+                    }
+                    if (linked) {
                         char n[24];
                         portENTER_CRITICAL(&nameMux);
                         strlcpy(n, savedName, sizeof(n));
@@ -322,8 +344,12 @@ void task(void*) {
                 }
             }
         }
-        if (bleUp && remote::hasSaved()) remoteScanStart();
-        else remoteScanStop();
+        if (bleUp && remote::hasSaved()) {
+            remoteScanStart();
+            remoteScanWatchdog();
+        } else {
+            remoteScanStop();
+        }
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
