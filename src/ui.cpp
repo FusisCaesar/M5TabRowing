@@ -23,6 +23,7 @@
 #include "map_view.h"
 #include "maps_ui.h"
 #include "net.h"
+#include "oars.h"
 #include "remote.h"
 #include "metrics.h"
 #include "rtclock.h"
@@ -63,8 +64,10 @@ constexpr float PLOT_RANGE_G = 0.6f;
 // screen; GPS diagnostics opens from the top bar; the target and segment lists
 // open from the map. None of those is part of the cycle.
 // Screens from Sessions on draw their own content area (sessions_ui, maps_ui).
-enum class Screen { Main, Map, Efficiency, Stroke, Plot, Settings, Sessions, Maps, Gps, Targets, Segments };
-constexpr int CYCLE = 7;
+// Crew (oar sensors) is part of the cycle but skipped while no oar sensor is paired. The oar seat
+// list opens from Settings -> SENSORS and from the Crew screen.
+enum class Screen { Main, Map, Efficiency, Stroke, Crew, Plot, Settings, Sessions, Maps, Gps, Targets, Segments, OarSeats };
+constexpr int CYCLE = 8;
 enum PipMode : uint8_t { PipOff = 0, PipCamera = 1, PipMap = 2 };
 // Efficiency screen: chart on the left, score and technique on the right, coaching hint below.
 constexpr int EFF_H = BTN_Y - ROW_H - BAR_H;
@@ -89,6 +92,9 @@ M5Canvas mapC(&M5.Display);     // full-size map area (Map screen or full-on-Mai
 M5Canvas mapPipC(&M5.Display);  // picture-in-picture map
 M5Canvas effC(&M5.Display);     // efficiency chart
 M5Canvas effP(&M5.Display);     // efficiency score and technique panel
+M5Canvas crewC(&M5.Display);    // crew screen: oar fan and seat table, above the hint row
+
+bool crewAvailable();
 
 Screen screen = Screen::Main;
 Screen gpsBack = Screen::Main;
@@ -574,6 +580,8 @@ void drawButtons(const metrics::View& v) {
         char crew[12];
         snprintf(crew, sizeof(crew), i18n::tr(i18n::CrewButton), settings::get().crew);
         drawButton(3, crew, true);
+    } else if (screen == Screen::Crew) {
+        drawButton(3, i18n::tr(i18n::CrewSeats), true);
     } else if (screen == Screen::Sessions) {
         bool inner = sessionsui::reviewing() || sessionsui::editing();
         drawButton(3, inner ? "BACK" : "", inner);
@@ -581,14 +589,16 @@ void drawButtons(const metrics::View& v) {
         drawButton(3, "", false);
     }
 
-    if (screen == Screen::Gps || screen == Screen::Targets || screen == Screen::Segments) {
+    if (screen == Screen::Gps || screen == Screen::Targets || screen == Screen::Segments ||
+        screen == Screen::OarSeats) {
         drawButton(4, "BACK", true);
         return;
     }
     const char* next = screen == Screen::Main         ? "MAP"
                        : screen == Screen::Map        ? "EFFICIENCY"
                        : screen == Screen::Efficiency ? "STROKE"
-                       : screen == Screen::Stroke     ? "PLOT"
+                       : screen == Screen::Stroke     ? (crewAvailable() ? i18n::tr(i18n::CrewTitle) : "PLOT")
+                       : screen == Screen::Crew       ? "PLOT"
                        : screen == Screen::Plot       ? "SETTINGS"
                        : screen == Screen::Settings   ? "SESSIONS"
                                                       : "METRICS";
@@ -1260,7 +1270,7 @@ void drawPlot(const metrics::View& v) {
 
 // ---- settings screen -------------------------------------------------------
 
-enum SettingRow { S_AUTO, S_K, S_FLOOR, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_REMOTE, S_COUNT };
+enum SettingRow { S_AUTO, S_K, S_FLOOR, S_RAW, S_FUSION, S_RATIO, S_CAM_MIRROR, S_THEME, S_FLIP, S_BRIGHT, S_HR, S_GPS, S_REMOTE, S_OARS, S_COUNT };
 constexpr int SET_TAB_H = 72, SET_ROW_H = 90, SET_ROWS = 5;
 constexpr int SET_ICON = 74, SET_PLUS_X = W - 20 - SET_ICON, SET_MINUS_X = SET_PLUS_X - 16 - SET_ICON;
 constexpr int SET_SWITCH_W = 130, SET_SWITCH_H = 60, SET_TEXT_BTN_W = 190;
@@ -1272,7 +1282,7 @@ struct SettingsTab {
 constexpr SettingsTab SET_TABS[] = {
     {"STROKE", {S_AUTO, S_K, S_FLOOR, S_RATIO, -1}},
     {"DISPLAY", {S_THEME, S_BRIGHT, S_FLIP, S_CAM_MIRROR, S_REMOTE}},
-    {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS, -1}},
+    {"SENSORS", {S_HR, S_FUSION, S_RAW, S_GPS, S_OARS}},
     {"WIFI", {-1, -1, -1, -1, -1}},
     {"SYSTEM", {-1, -1, -1, -1, -1}},
 };
@@ -1344,6 +1354,14 @@ void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
             else snprintf(value, vn, "NONE");
             break;
         }
+        case S_OARS: {
+            snprintf(label, ln, "Oar sensors (StickS3, experimental)");
+            oars::View ov = oars::view();
+            if (ov.pairingSeat >= 0) snprintf(value, vn, "SEAT %d...", ov.pairingSeat + 1);
+            else if (ov.paired > 0) snprintf(value, vn, "%d/%d ONLINE", ov.online, ov.paired);
+            else snprintf(value, vn, "NONE");
+            break;
+        }
         case S_GPS: {
             gps::Snapshot g = gps::get();
             snprintf(label, ln, "GPS");
@@ -1358,7 +1376,7 @@ void settingText(int row, char* label, size_t ln, char* value, size_t vn) {
 }
 
 const char* settingButton(int row) {
-    if (row == S_GPS) return "OPEN";
+    if (row == S_GPS || row == S_OARS) return "OPEN";
     if (row == S_HR) {
         if (hr::pairing()) return "...";
         return hr::hasSaved() ? "FORGET" : "PAIR";
@@ -1425,7 +1443,7 @@ void drawSettingRow(int slot, int r) {
             bool day = settings::get().dayTheme;
             c.drawString(day ? "Day" : "Night", SET_PLUS_X - 24, mid);
             iconButton(SET_PLUS_X, day ? icons::Icon::Sun : icons::Icon::Moon);
-        } else if (r == S_HR || r == S_GPS || r == S_REMOTE) {
+        } else if (r == S_HR || r == S_GPS || r == S_REMOTE || r == S_OARS) {
             int bx = W - 20 - SET_TEXT_BTN_W;
             c.drawString(value, bx - 24, mid);
             c.fillSmoothRoundRect(bx, by, SET_TEXT_BTN_W, SET_ICON, 16, th->btn);
@@ -1640,6 +1658,7 @@ void drawSettings() {
 
 void applySettings(bool full);
 void openGps();
+void openOarSeats();
 
 void onSettingsTap(int x, int y) {
     if (settingsTab == TAB_WIFI && wifiEditing) {
@@ -1709,6 +1728,9 @@ void onSettingsTap(int x, int y) {
             return;
         case S_GPS:
             openGps();
+            return;
+        case S_OARS:
+            if (toggle) openOarSeats();
             return;
     }
     if (minus || plus || toggle) {
@@ -3486,10 +3508,365 @@ void drawRaceModal() {
     fb::push(c, 0, BAR_H);
 }
 
+// ---- crew screen and oar seats (experimental oar sensors) -------------------
+
+constexpr int CREW_HEAD = 48, CREW_COLS = 26, CREW_ROW = 52;
+constexpr int CREW_TABLE_X = 380;
+constexpr int CREW_BAR_W = 240, CREW_BAR_H = 14;
+constexpr float CREW_BAR_MS = 80.0f;  // a full half bar
+constexpr int SEATS_HEAD = 80, SEATS_ROW = 60, SEATS_BTN_W = 170;
+const uint16_t SEAT_COLOR[oars::MAX_SEATS] = {0xF9A6, 0xFD20, 0xCE60, 0x2E66, 0x0555, 0x3B7F, 0x9B1F, 0xE81C};
+Screen oarBack = Screen::Settings;
+
+bool crewAvailable() {
+#if SIM_MODE
+    return true;
+#else
+    return oars::hasSaved();
+#endif
+}
+
+void openOarSeats() {
+    if (screen == Screen::OarSeats) return;
+    oarBack = screen;
+    setScreen(Screen::OarSeats);
+}
+
+void closeOarSeats() {
+    oars::cancelPairing();
+    setScreen(oarBack == Screen::OarSeats ? Screen::Settings : oarBack);
+}
+
+uint16_t spreadColor(float ms) { return ms <= 25 ? th->ok : ms <= 50 ? th->caution : th->warn; }
+uint16_t offsetColor(float ms) { return spreadColor(fabsf(ms)); }
+
+// A bar from the centre: right = later than the stroke seat, left = earlier.
+void drawOffsetBar(M5Canvas& c, int x, int y, bool have, float ms) {
+    int cx = x + CREW_BAR_W / 2;
+    c.fillRect(x, y, CREW_BAR_W, CREW_BAR_H, th->btn);
+    if (have) {
+        float clamped = fmaxf(-CREW_BAR_MS, fminf(CREW_BAR_MS, ms));
+        int len = (int)(fabsf(clamped) / CREW_BAR_MS * (CREW_BAR_W / 2 - 2));
+        if (len > 0) c.fillRect(clamped >= 0 ? cx : cx - len, y, len, CREW_BAR_H, offsetColor(ms));
+    }
+    c.drawFastVLine(cx, y - 3, CREW_BAR_H + 6, th->label);
+}
+
+void drawCrew() {
+    oars::View v = oars::view();
+
+    // Redraw only when a shown number changed.
+    uint32_t h = 2166136261u;
+    auto mix = [&](int32_t x) { h = (h ^ (uint32_t)x) * 16777619u; };
+    mix(v.ref);
+    mix(v.hasSpread);
+    mix((int32_t)lroundf(v.catchSpreadMs));
+    mix((int32_t)lroundf(v.finishSpreadMs));
+    for (int i = 0; i < oars::MAX_SEATS; i++) {
+        const oars::SeatView& s = v.seat[i];
+        mix(s.paired * 4 + s.online * 2 + s.avgHasOffset);
+        if (!s.paired) continue;
+        mix((int32_t)lroundf(s.angleDeg));
+        mix(s.avgN);
+        mix((int32_t)lroundf(s.avgCatchOffsetMs));
+        mix((int32_t)lroundf(s.avgFinishOffsetMs));
+        mix((int32_t)lroundf(s.avgArcDeg));
+        mix((int32_t)lroundf(s.avgDriveS * 10));
+        mix((int32_t)lroundf(s.avgRecoveryS * 10));
+        mix(s.id);
+    }
+    static uint32_t shown = 0;
+    static bool shownOnce = false;
+    bool redraw = forceRedraw || !shownOnce || h != shown;
+    shown = h;
+    shownOnce = true;
+
+    // The hint row: the seat that is furthest off at the catch, else at the finish, else "together".
+    char left[96] = "", right[16] = "";
+    uint16_t hintColor = th->fg;
+    snprintf(right, sizeof(right), "%d/%d", v.online, v.paired);
+    if (v.online == 0) {
+        snprintf(left, sizeof(left), "%s", i18n::tr(i18n::CrewHintWaiting));
+        hintColor = th->label;
+    } else if (!v.hasSpread) {
+        snprintf(left, sizeof(left), "%s", i18n::tr(i18n::CrewHintStrokes));
+        hintColor = th->label;
+    } else {
+        int worstC = -1, worstF = -1;
+        for (int i = 0; i < oars::MAX_SEATS; i++) {
+            const oars::SeatView& s = v.seat[i];
+            if (!s.online || !s.avgHasOffset) continue;
+            if (worstC < 0 || fabsf(s.avgCatchOffsetMs) > fabsf(v.seat[worstC].avgCatchOffsetMs)) worstC = i;
+            if (worstF < 0 || fabsf(s.avgFinishOffsetMs) > fabsf(v.seat[worstF].avgFinishOffsetMs)) worstF = i;
+        }
+        if (worstC >= 0 && fabsf(v.seat[worstC].avgCatchOffsetMs) > 25) {
+            float ms = v.seat[worstC].avgCatchOffsetMs;
+            snprintf(left, sizeof(left), i18n::tr(ms > 0 ? i18n::CrewHintCatchLate : i18n::CrewHintCatchEarly),
+                     worstC + 1, (int)lroundf(fabsf(ms)));
+            hintColor = offsetColor(ms);
+        } else if (worstF >= 0 && fabsf(v.seat[worstF].avgFinishOffsetMs) > 40) {
+            float ms = v.seat[worstF].avgFinishOffsetMs;
+            snprintf(left, sizeof(left), i18n::tr(ms > 0 ? i18n::CrewHintFinishLate : i18n::CrewHintFinishEarly),
+                     worstF + 1, (int)lroundf(fabsf(ms)));
+            hintColor = offsetColor(ms);
+        } else {
+            snprintf(left, sizeof(left), i18n::tr(i18n::CrewHintTogether), v.catchSpreadMs);
+            hintColor = th->ok;
+        }
+    }
+    if (!redraw) return;
+
+    M5Canvas& c = crewC;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+
+    // Header: title on the left, how far apart the crew is on the right.
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(middle_left);
+    c.setTextColor(th->fg);
+    c.drawString(i18n::tr(i18n::CrewTitle), 24, CREW_HEAD / 2);
+    if (v.hasSpread) {
+        char a[40], b[40];
+        snprintf(a, sizeof(a), i18n::tr(i18n::CrewSpreadCatch), v.catchSpreadMs);
+        snprintf(b, sizeof(b), i18n::tr(i18n::CrewSpreadFinish), v.finishSpreadMs);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(middle_right);
+        c.setTextColor(spreadColor(v.finishSpreadMs));
+        c.drawString(b, W - 24, CREW_HEAD / 2);
+        int bw = c.textWidth(b);
+        c.setTextColor(spreadColor(v.catchSpreadMs));
+        c.drawString(a, W - 24 - bw - 40, CREW_HEAD / 2);
+    }
+    c.drawFastHLine(0, CREW_HEAD - 1, W, th->dim);
+
+    // Column titles.
+    const int catchX = 500, finishX = 760, arcR = 1110, drR = W - 24;
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextColor(th->label);
+    c.setTextDatum(middle_center);
+    c.drawString(i18n::tr(i18n::PhaseCatch), catchX + CREW_BAR_W / 2, CREW_HEAD + CREW_COLS / 2);
+    c.drawString(i18n::tr(i18n::PhaseFinish), finishX + CREW_BAR_W / 2, CREW_HEAD + CREW_COLS / 2);
+    c.setTextDatum(middle_right);
+    c.drawString(i18n::tr(i18n::CrewColArc), arcR, CREW_HEAD + CREW_COLS / 2);
+    c.drawString(i18n::tr(i18n::CrewColDriveRec), drR, CREW_HEAD + CREW_COLS / 2);
+    c.setFont(&fonts::FreeSans9pt7b);
+    for (int x : {catchX, finishX}) {
+        c.setTextDatum(middle_left);
+        c.drawString(i18n::tr(i18n::CrewEarly), x, CREW_HEAD + CREW_COLS / 2);
+        c.setTextDatum(middle_right);
+        c.drawString(i18n::tr(i18n::CrewLate), x + CREW_BAR_W, CREW_HEAD + CREW_COLS / 2);
+    }
+
+    const int rowsTop = CREW_HEAD + CREW_COLS;
+
+    // Oar fan on the left. The boat runs top to bottom; an oar square to the boat points right and
+    // swings to the stern (down) when the angle is positive. One line per seat, each a different length.
+    {
+        const int px = 50, py = rowsTop + (c.height() - rowsTop) / 2;
+        const int maxLen = 270;
+        const float rad = 3.14159265f / 180.0f;
+        c.drawFastVLine(px, py - maxLen, 2 * maxLen, th->dim);
+        c.setFont(&fonts::FreeSans9pt7b);
+        c.setTextColor(th->label);
+        c.setTextDatum(top_left);
+        c.drawString(i18n::tr(i18n::CrewBow), px + 8, py - maxLen);
+        c.setTextDatum(bottom_left);
+        c.drawString(i18n::tr(i18n::CrewStern), px + 8, py + maxLen);
+        for (int a = -60; a <= 60; a += 30) {
+            float r = a * rad;
+            c.drawLine(px, py, px + (int)(maxLen * cosf(r)), py + (int)(maxLen * sinf(r)), th->dim);
+        }
+        int lastX = px + maxLen, lastY = py - (int)(maxLen * sinf(70 * rad));
+        for (int a = -70; a <= 70; a += 5) {
+            float r = a * rad;
+            int ex = px + (int)(maxLen * cosf(r)), ey = py + (int)(maxLen * sinf(r));
+            if (a > -70) c.drawLine(lastX, lastY, ex, ey, th->dim);
+            lastX = ex;
+            lastY = ey;
+        }
+        for (int i = 0; i < oars::MAX_SEATS; i++) {
+            const oars::SeatView& s = v.seat[i];
+            if (!s.paired || !s.online) continue;
+            float r = fmaxf(-70.0f, fminf(70.0f, s.angleDeg)) * rad;
+            int len = 90 + i * 24;
+            int ex = px + (int)(len * cosf(r)), ey = py + (int)(len * sinf(r));
+            uint16_t col = SEAT_COLOR[i];
+            c.drawWideLine(px, py, ex, ey, i == v.ref ? 5 : 3, col);
+            c.fillCircle(ex, ey, 12, col);
+            char n[4];
+            snprintf(n, sizeof(n), "%d", i + 1);
+            c.setFont(&fonts::FreeSansBold9pt7b);
+            c.setTextDatum(middle_center);
+            c.setTextColor(TFT_BLACK);
+            c.drawString(n, ex, ey);
+        }
+        c.fillCircle(px, py, 7, th->fg);
+    }
+
+    // Table: the highest seat (stroke) on top.
+    int row = 0;
+    for (int i = oars::MAX_SEATS - 1; i >= 0; i--) {
+        const oars::SeatView& s = v.seat[i];
+        if (!s.paired) continue;
+        int ry = rowsTop + row * CREW_ROW;
+        row++;
+        if (ry + CREW_ROW > c.height()) break;
+        int mid = ry + CREW_ROW / 2;
+        bool on = s.online;
+        uint16_t fg = on ? th->fg : th->dim;
+        c.drawFastHLine(CREW_TABLE_X, ry + CREW_ROW - 1, W - CREW_TABLE_X, th->dim);
+
+        c.fillCircle(CREW_TABLE_X + 22, mid, 17, on ? SEAT_COLOR[i] : th->dim);
+        if (i == v.ref) c.drawCircle(CREW_TABLE_X + 22, mid, 21, th->fg);
+        char n[4];
+        snprintf(n, sizeof(n), "%d", i + 1);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(middle_center);
+        c.setTextColor(TFT_BLACK);
+        c.drawString(n, CREW_TABLE_X + 22, mid);
+        c.setFont(&fonts::FreeSans9pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(th->label);
+        c.drawString(i == v.ref ? i18n::tr(i18n::CrewRef) : s.idText, CREW_TABLE_X + 52, mid);
+
+        if (!on) {
+            c.setFont(&fonts::FreeSansBold12pt7b);
+            c.setTextColor(th->dim);
+            c.setTextDatum(middle_left);
+            c.drawString(i18n::tr(i18n::CrewOffline), catchX, mid);
+            continue;
+        }
+        bool ref = i == v.ref;
+        bool have = s.avgN > 0 && (s.avgHasOffset || ref);
+        float cOff = ref ? 0.0f : s.avgCatchOffsetMs, fOff = ref ? 0.0f : s.avgFinishOffsetMs;
+        drawOffsetBar(c, catchX, ry + 8, have, cOff);
+        drawOffsetBar(c, finishX, ry + 8, have, fOff);
+        c.setFont(&fonts::FreeSans9pt7b);
+        c.setTextDatum(middle_center);
+        char t[24];
+        if (have && !ref) {
+            snprintf(t, sizeof(t), "%+.0f ms", cOff);
+            c.setTextColor(offsetColor(cOff));
+            c.drawString(t, catchX + CREW_BAR_W / 2, ry + 36);
+            snprintf(t, sizeof(t), "%+.0f ms", fOff);
+            c.setTextColor(offsetColor(fOff));
+            c.drawString(t, finishX + CREW_BAR_W / 2, ry + 36);
+        }
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextColor(fg);
+        c.setTextDatum(middle_right);
+        if (s.avgN > 0) {
+            snprintf(t, sizeof(t), "%.0f", s.avgArcDeg);
+            c.drawString(t, arcR, mid);
+            if (s.avgRecoveryS > 0) snprintf(t, sizeof(t), "%.1f / %.1f", s.avgDriveS, s.avgRecoveryS);
+            else snprintf(t, sizeof(t), "%.1f / --", s.avgDriveS);
+            c.drawString(t, drR, mid);
+        } else {
+            c.drawString("--", arcR, mid);
+            c.drawString("--", drR, mid);
+        }
+    }
+    fb::push(c, 0, BAR_H);
+    // The hint row has its own cache; a redraw of the area above must not leave it stale.
+    drawRow(0, BTN_Y - ROW_H, left, right, hintColor, true);
+}
+
+void drawSeats() {
+    oars::View v = oars::view();
+    char key[256];
+    int pos = snprintf(key, sizeof(key), "%d|", v.pairingSeat);
+    for (int i = 0; i < oars::MAX_SEATS && pos < (int)sizeof(key) - 40; i++) {
+        const oars::SeatView& s = v.seat[i];
+        pos += snprintf(key + pos, sizeof(key) - pos, "%d%d%s,%d,%d;", s.paired, s.online, s.idText, s.rssi / 4,
+                        s.battery / 10);
+    }
+    static char shown[256];
+    if (!forceRedraw && strcmp(shown, key) == 0) return;
+    strlcpy(shown, key, sizeof(shown));
+
+    M5Canvas& c = wifiC;
+    c.fillSprite(th->bg);
+    c.setTextSize(1);
+    c.setFont(&fonts::FreeSansBold18pt7b);
+    c.setTextDatum(middle_left);
+    c.setTextColor(th->fg);
+    c.drawString("OAR SENSORS", 24, SEATS_HEAD / 2);
+    c.setFont(&fonts::FreeSansBold12pt7b);
+    c.setTextDatum(middle_right);
+    c.setTextColor(th->label);
+    c.drawString(v.pairingSeat >= 0 ? "Press the button on the stick" : "PAIR, then press the button on the stick",
+                 W - 24, SEATS_HEAD / 2);
+    c.drawFastHLine(0, SEATS_HEAD - 1, W, th->dim);
+
+    for (int i = 0; i < oars::MAX_SEATS; i++) {
+        const oars::SeatView& s = v.seat[i];
+        int ry = SEATS_HEAD + i * SEATS_ROW, mid = ry + SEATS_ROW / 2;
+        if (ry + SEATS_ROW > c.height()) break;
+        c.drawFastHLine(0, ry + SEATS_ROW - 1, W, th->dim);
+        c.fillCircle(46, mid, 18, s.paired ? SEAT_COLOR[i] : th->dim);
+        char n[4];
+        snprintf(n, sizeof(n), "%d", i + 1);
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextDatum(middle_center);
+        c.setTextColor(TFT_BLACK);
+        c.drawString(n, 46, mid);
+
+        char name[24];
+        snprintf(name, sizeof(name), "Seat %d%s", i + 1, i == 0 ? " (bow)" : "");
+        c.setFont(&fonts::FreeSansBold18pt7b);
+        c.setTextDatum(middle_left);
+        c.setTextColor(s.paired ? th->fg : th->label);
+        c.drawString(name, 90, mid);
+
+        char info[64] = "";
+        uint16_t infoColor = th->label;
+        if (v.pairingSeat == i) {
+            snprintf(info, sizeof(info), "WAITING FOR BUTTON...");
+            infoColor = th->accent;
+        } else if (s.paired && s.online) {
+            snprintf(info, sizeof(info), "%s  %d dBm  %d%%  %s", s.idText, s.rssi,
+                     s.battery < 0 ? 0 : s.battery, s.zeroed ? "zeroed" : "not zeroed");
+            infoColor = th->ok;
+        } else if (s.paired) {
+            snprintf(info, sizeof(info), "%s  OFFLINE", s.idText);
+            infoColor = th->caution;
+        } else {
+            snprintf(info, sizeof(info), "NOT PAIRED");
+        }
+        c.setFont(&fonts::FreeSansBold12pt7b);
+        c.setTextColor(infoColor);
+        c.setTextDatum(middle_left);
+        c.drawString(info, 400, mid);
+
+        bool wait = v.pairingSeat == i;
+        int bx = W - 20 - SEATS_BTN_W;
+        c.fillSmoothRoundRect(bx, ry + 8, SEATS_BTN_W, SEATS_ROW - 16, 12, wait ? th->accent : th->btn);
+        c.setTextDatum(middle_center);
+        c.setTextColor(wait ? th->bg : th->btnText);
+        c.drawString(wait ? "CANCEL" : s.paired ? "FORGET" : "PAIR", bx + SEATS_BTN_W / 2, mid);
+    }
+    fb::push(c, 0, BAR_H);
+}
+
+void onSeatsTap(int x, int y) {
+    int cy = y - BAR_H;
+    if (cy < SEATS_HEAD || x < W - 20 - SEATS_BTN_W - 20) return;
+    int i = (cy - SEATS_HEAD) / SEATS_ROW;
+    if (i < 0 || i >= oars::MAX_SEATS) return;
+    oars::View v = oars::view();
+    if (v.pairingSeat == i) oars::cancelPairing();
+    else if (v.seat[i].paired) oars::forget(i);
+    else oars::startPairing(i);
+}
+
 // BACK from the race result and the screens that are not part of the cycle. False when none is open.
 bool backFromOverlay() {
     if (race.open) {
         dismissRace();
+        return true;
+    }
+    if (screen == Screen::OarSeats) {
+        closeOarSeats();
         return true;
     }
     if (screen == Screen::Gps) {
@@ -3509,12 +3886,24 @@ bool backFromOverlay() {
 
 void nextScreen() {
     if (backFromOverlay()) return;
-    setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + 1) % CYCLE));
+    if (screen == Screen::Maps) {
+        setScreen(Screen::Map);
+        return;
+    }
+    Screen n = (Screen)(((int)screen + 1) % CYCLE);
+    if (n == Screen::Crew && !crewAvailable()) n = (Screen)(((int)n + 1) % CYCLE);
+    setScreen(n);
 }
 
 void prevScreen() {
     if (backFromOverlay()) return;
-    setScreen(screen == Screen::Maps ? Screen::Map : (Screen)(((int)screen + CYCLE - 1) % CYCLE));
+    if (screen == Screen::Maps) {
+        setScreen(Screen::Map);
+        return;
+    }
+    Screen n = (Screen)(((int)screen + CYCLE - 1) % CYCLE);
+    if (n == Screen::Crew && !crewAvailable()) n = (Screen)(((int)n + CYCLE - 1) % CYCLE);
+    setScreen(n);
 }
 
 // Jump to a screen of the cycle from anywhere, closing whatever is open on top first.
@@ -3522,6 +3911,7 @@ void goToScreen(Screen target) {
     if (race.open) dismissRace();
     for (int i = 0; i < 6 && screen == Screen::Targets; i++) closeTargets();
     for (int i = 0; i < 6 && screen == Screen::Segments; i++) closeSegments();
+    if (screen == Screen::OarSeats) closeOarSeats();
     setScreen(target);
 }
 
@@ -3652,6 +4042,11 @@ void onTap(int x, int y) {
         forceRedraw = true;
         return;
     }
+    if (screen == Screen::OarSeats && y < BTN_Y) {
+        onSeatsTap(x, y);
+        forceRedraw = true;
+        return;
+    }
     metrics::View v = metrics::view();
     if (screen == Screen::Map && mapsButtonShown() && x >= MAPS_BTN_X && x < MAPS_BTN_X + MAPS_BTN_W &&
         y >= FULL_CAM_Y + MAPS_BTN_Y && y < FULL_CAM_Y + MAPS_BTN_Y + MAPS_BTN_H) {
@@ -3714,6 +4109,8 @@ void onTap(int x, int y) {
                     snprintf(msg, sizeof(msg), i18n::tr(i18n::CrewOf), st.crew);
                     showHint(msg);
                     forceRedraw = true;
+                } else if (screen == Screen::Crew) {
+                    openOarSeats();
                 } else if (screen == Screen::Sessions) {
                     sessionsui::back();
                     forceRedraw = true;
@@ -3939,7 +4336,7 @@ void begin() {
     Serial.printf("[ui] display %d x %d\n", M5.Display.width(), M5.Display.height());
     M5.Touch.setHoldThresh(cfg::TOUCH_HOLD_MS);
 
-    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &setTabC, &wifiC, &mapC, &mapPipC, &effC, &effP}) {
+    for (M5Canvas* c : {&bigC, &smallC, &barC, &rowC, &plotC, &btnC, &setC, &setTabC, &wifiC, &mapC, &mapPipC, &effC, &effP, &crewC}) {
         c->setColorDepth(16);
         c->setPsram(true);
     }
@@ -3959,6 +4356,7 @@ void begin() {
     mapPipC.createSprite(PIP_W, PIP_H);
     effC.createSprite(EFF_CHART_W, EFF_H);
     effP.createSprite(EFF_PANEL_W, EFF_H);
+    crewC.createSprite(W, EFF_H);
 
     camera::begin();
     mapview::begin();
@@ -4016,6 +4414,7 @@ void command(char c) {
         case 'g': openGps(); break;
         case 't': openTargets(); break;
         case 's': openSegments(); break;
+        case 'o': openOarSeats(); break;
         case 'X': metrics::stop(); break;
         case 'L': metrics::lap(); break;
         case 'R': metrics::reset(); break;
@@ -4042,6 +4441,19 @@ void loop() {
         showHint(text);
     }
     wasRemotePairing = remotePairing;
+
+    static int oarPairingSeat = -1;
+    int oarNow = oars::pairingSeat();
+    if (oarPairingSeat >= 0 && oarNow < 0) {
+        oars::View ov = oars::view();
+        char text[48];
+        if (ov.seat[oarPairingSeat].paired)
+            snprintf(text, sizeof(text), "Seat %d: stick %s", oarPairingSeat + 1, ov.seat[oarPairingSeat].idText);
+        else
+            snprintf(text, sizeof(text), "No stick button heard");
+        showHint(text);
+    }
+    oarPairingSeat = oarNow;
 
     remote::Event re;
     while (remote::popEvent(re)) handleRemote(re);
@@ -4140,6 +4552,8 @@ void loop() {
             case Screen::Map: drawTopTiles(v); break;
             case Screen::Efficiency: drawEfficiency(v); break;
             case Screen::Stroke: drawStroke(v); break;
+            case Screen::Crew: drawCrew(); break;
+            case Screen::OarSeats: drawSeats(); break;
             case Screen::Plot: drawPlot(v); break;
             case Screen::Settings: drawSettings(); break;
             case Screen::Sessions:

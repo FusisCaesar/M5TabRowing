@@ -5,6 +5,7 @@
 
 #include <atomic>
 
+#include "oars.h"
 #include "remote.h"
 
 #if SIM_MODE
@@ -85,6 +86,8 @@ class AdvertCallbacks : public BLEAdvertisedDeviceCallbacks {
         if (hrSensor) hrHeardMs = millis();
         remote::onAdvert((const uint8_t*)a.getNative(), (uint8_t)d.getAddressType(), d.getRSSI(), d.getPayload(),
                          d.getPayloadLength());
+        oars::onAdvert((const uint8_t*)a.getNative(), (uint8_t)d.getAddressType(), d.getRSSI(), d.getPayload(),
+                       d.getPayloadLength());
     }
 };
 AdvertCallbacks advertCallbacks;
@@ -101,7 +104,11 @@ void scanRemote() {
     scan->clearResults();
 }
 
-// While a button is saved, one endless passive scan runs in the background. It keeps running while
+// The background scan has two listeners: the Shelly button and the oar sensors (oars.cpp). It runs while
+// either is wanted.
+bool wantBackgroundScan() { return remote::hasSaved() || oars::wantsScan(); }
+
+// While a button or an oar sensor is saved, one endless passive scan runs in the background. It keeps running while
 // the heart rate sensor connects (a connect attempt takes seconds), and is only stopped for the
 // blocking scans that read their results from the scan's own list.
 bool remoteScanning = false;
@@ -111,6 +118,9 @@ void remoteScanStart() {
     if (remoteScanning) return;
     BLEScan* scan = BLEDevice::getScan();
     scan->setActiveScan(false);
+    // Listening all the time: an oar sensor sends every 50 ms and its stroke times are what is wanted.
+    scan->setInterval(100);
+    scan->setWindow(100);
     scan->setAdvertisedDeviceCallbacks(&advertCallbacks, true, false);
     remoteScanning = scan->start(0, nullptr, false);  // 0 = until stopped
     remoteScanStartMs = millis();
@@ -301,7 +311,7 @@ void task(void*) {
         bool pairRemote = remote::takePairRequest();
         if (pairRemote) bleFailed = false;
 
-        if (!bleUp && !bleFailed && (c == Cmd::Pair || pairRemote || saved || remote::hasSaved())) {
+        if (!bleUp && !bleFailed && (c == Cmd::Pair || pairRemote || saved || wantBackgroundScan())) {
             bleUp = BLEDevice::init("TabRowing");
             bleFailed = !bleUp;
             if (bleFailed) {
@@ -331,7 +341,7 @@ void task(void*) {
             pairingNow = false;
         }
 
-        if (bleUp && remote::hasSaved()) remoteScanStart();  // before the heart rate part, which listens to it
+        if (bleUp && wantBackgroundScan()) remoteScanStart();  // before the heart rate part, which listens to it
 
         if (saved && bleUp) {
             bool up = linkUp && client && client->isConnected();
@@ -350,7 +360,7 @@ void task(void*) {
                 // With the button scan running the sensor's advertisements are seen too. Connecting to a
                 // sensor that is not advertising blocks for about a minute, during which no button
                 // events arrive, so wait until it is heard. If it stays silent, look for it by name.
-                bool listening = remoteScanning && remote::hasSaved();
+                bool listening = remoteScanning && wantBackgroundScan();
                 if (listening && (int32_t)(millis() - nextTry) >= 0 && millis() - hrHeardMs.load() > HR_HEARD_MS) {
                     if (st != State::Scanning) st = State::Lost;
                     if (++silentChecks >= SILENT_CHECKS_BEFORE_RESCAN && savedName[0]) {
@@ -367,9 +377,9 @@ void task(void*) {
                         st = State::Scanning;
                         scanFor(RESCAN_S, true);
                     }
-                    if (bleUp && remote::hasSaved()) remoteScanStart();  // scanFor() above stopped it
+                    if (bleUp && wantBackgroundScan()) remoteScanStart();  // scanFor() above stopped it
                     bool linked = connectSaved();
-                    if (remote::hasSaved()) {  // a connect attempt can end the scan
+                    if (wantBackgroundScan()) {  // a connect attempt can end the scan
                         remoteScanStop();
                         remoteScanStart();
                     }
@@ -390,7 +400,7 @@ void task(void*) {
                 }
             }
         }
-        if (bleUp && remote::hasSaved()) {
+        if (bleUp && wantBackgroundScan()) {
             remoteScanStart();
             remoteScanWatchdog();
         } else {
