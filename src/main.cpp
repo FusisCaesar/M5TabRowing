@@ -10,6 +10,7 @@
 #include "map_data.h"
 #include "metrics.h"
 #include "net.h"
+#include "oars.h"
 #include "remote.h"
 #include "rtclock.h"
 #include "segments.h"
@@ -48,6 +49,7 @@ void setup() {
     imu::begin(s.strokeParams(), s.fusion);
     gps::begin();
     remote::begin();
+    oars::begin();
     hr::begin();
     metrics::begin();
     ui::begin();
@@ -73,6 +75,11 @@ static void printStatus() {
                   mapdata::loaded() ? mapdata::current().name : "-", track::count(),
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getFreePsram(), millis() / 1000,
                   (int)esp_reset_reason());
+    if (oars::hasSaved()) {
+        char line[200];
+        oars::describe(line, sizeof(line));
+        Serial.printf("[oars] %s\n", line);
+    }
 }
 
 // Binary transfers need writes to wait for buffer space; with no timeout the USB driver drops what doesn't fit.
@@ -188,6 +195,7 @@ void loop() {
     }
     rtclock::update();
     metrics::update();
+    oars::update();
     ui::loop();
     printStatus();
     serialCommands();

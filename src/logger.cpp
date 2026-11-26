@@ -27,13 +27,15 @@ struct Msg {
     char text[MAX_LINE_LEN];
 };
 
-const char* const SUFFIX[] = {"strokes", "seconds", "laps", "info", "imu"};
+const char* const SUFFIX[] = {"strokes", "seconds", "laps", "info", "oars", "imu"};
 const char* const HEADER[] = {
     "elapsed_s,stroke,rate_spm,interval_s,drive_s,recovery_s,ratio,split_s,speed_mps,dps_m,"
     "distance_m,peak_decel_g,check_mg,bounce_mg,lat,lon,t_s,rescued,split3_s\n",
     "elapsed_s,utc,lat,lon,speed_mps,split_s,distance_m,rate_spm,hdop,sats,battery_pct,hr_bpm\n",
     "lap,elapsed_s,lap_time_s,lap_distance_m,avg_split_s,avg_rate_spm,strokes,avg_hr_bpm,max_hr_bpm\n",
     "key,value\n",
+    "t_s,seat,stick,catch_t_s,finish_t_s,catch_offset_ms,finish_offset_ms,catch_deg,finish_deg,arc_deg,drive_s,"
+    "recovery_s,rssi,battery_pct\n",
     "t_s,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,surge_g,threshold_g,catch,gps_mps,surge_lin_g,vert_g,finish,sway_lin_g,roll_deg,yaw_deg\n",
 };
 static_assert(sizeof(SUFFIX) / sizeof(SUFFIX[0]) == (int)Stream::Count, "one suffix per stream");
@@ -101,7 +103,7 @@ void task(void*) {
                     closeAll();
                     current = msg.session;
                     strlcpy(label, msg.text, sizeof(label));
-                    for (int i = 0; i < (int)Stream::Raw; i++) openFile(current, (Stream)i, label);
+                    for (int i = 0; i < (int)Stream::Oars; i++) openFile(current, (Stream)i, label);
                     break;
                 case Kind::End:
                     closeAll();
@@ -111,7 +113,7 @@ void task(void*) {
                 case Kind::Line: {
                     if (current < 0) break;
                     File& f = files[(int)msg.stream];
-                    if (!f && msg.stream == Stream::Raw) openFile(current, Stream::Raw, label);
+                    if (!f && (msg.stream == Stream::Oars || msg.stream == Stream::Raw)) openFile(current, msg.stream, label);
                     if (f) f.print(msg.text);
                     break;
                 }

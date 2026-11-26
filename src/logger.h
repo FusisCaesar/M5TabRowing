@@ -6,8 +6,9 @@
 
 namespace logger {
 
-// Raw must stay last: it is the only stream that is opened lazily.
-enum class Stream : uint8_t { Strokes = 0, Seconds, Laps, Info, Raw, Count };
+// Oars and Raw are opened lazily, on their first line: a session without oar sensors or raw logging has
+// no such file. Everything before Oars is opened when the session starts. Raw must stay last.
+enum class Stream : uint8_t { Strokes = 0, Seconds, Laps, Info, Oars, Raw, Count };
 
 bool begin();
 bool sdReady();

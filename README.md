@@ -109,11 +109,12 @@ Windows notes:
 
 ## Using it
 
-The right-most bottom button cycles seven screens. **Maps** is opened with **MAPS**
+The right-most bottom button cycles seven screens, eight once an
+[oar sensor](#oar-sensors-experimental) is paired. **Maps** is opened with **MAPS**
 on the Map screen between sessions (Wi-Fi is only used there). **GPS diagnostics** opens from the GPS status in the centre of the top bar, or
 from **OPEN** on Settings → Sensors. **TARGETS** and **SEGMENTS** on the map
 open those lists. **BACK** returns to the screen you came from. Maps, GPS
-diagnostics, the target list and the segment list are not part of the seven-screen cycle.
+diagnostics, the target list, the segment list and the oar seat list are not part of the cycle.
 
 | Screen | Content |
 | --- | --- |
@@ -121,6 +122,7 @@ diagnostics, the target list and the segment list are not part of the seven-scre
 | Map | offline waterway map with your position, heading, track, targets and segments |
 | Efficiency | metres per stroke against rate, efficiency score, rec:drive / check / bounce, coaching hint |
 | Stroke | one stroke split into catch, drive, finish, run and approach, against acceleration and GPS speed, with one coaching hint |
+| Crew | experimental: oar angle and catch / finish timing of every seat against the stroke seat (only with oar sensors paired) |
 | Plot | last 6 s of surge acceleration with catch, finish and threshold; IMU diagnostics |
 | Settings | **STROKE**, **DISPLAY**, **SENSORS** and **WIFI** tabs |
 | Sessions | recordings on the card: review, rename, delete |
@@ -405,6 +407,96 @@ warns that nothing is being written.
 
 ![Plot screen](shots/plot.png)
 
+### Oar sensors (experimental)
+
+One M5Stack StickS3 on the oar of each rower shows how the crew moves, seat by
+seat. Each stick works out its own oar angle and strokes from its IMU and
+broadcasts them as Bluetooth advertisements. Nothing connects, so the sticks
+never slow each other down and a stick can drop out and come back. The Tab5
+listens with the scan it already runs for the heart rate sensor and the Shelly
+button. This is a first version: expect to tune it on the water.
+
+**What you see on the Crew screen** (between Stroke and Plot, only with at least
+one stick paired):
+
+- *Oar fan* on the left: one line per seat, at the angle of its oar. The boat
+  runs top (bow) to bottom (stern); an oar square to the boat points right and
+  swings down when the angle is towards the stern.
+- *Table*, stroke seat on top: catch and finish **offset in ms against the stroke
+  seat** (bar to the right = later than the stroke seat, left = earlier; green
+  within 25 ms, orange within 50 ms, red beyond), arc in degrees, and drive and
+  recovery time in seconds. All numbers are the average of the last five strokes.
+- *Header*: how far apart the crew is, latest minus earliest seat, for the catch
+  and the finish.
+- *Hint row*: the seat that is furthest off, or that the crew is together.
+- **SEATS** opens the seat list.
+
+The reference is the highest numbered seat that is online and has strokes, the
+stroke seat in a crew boat (seat 1 is the bow). If that stick drops out, the
+next seat becomes the reference.
+
+**What "catch" and "finish" mean here.** They are the turning points of the oar
+at the two ends of its arc, not the blade entering and leaving the water. Every
+stick measures them the same way, so seats compare fairly with each other, but
+the numbers will not match what you see at the blade. The catch is the turn that
+is followed by the shorter phase (the drive is shorter than the recovery).
+
+**Mounting.** Fasten the stick to the oar shaft, any position and direction,
+with the screen where the rower can read it. Fix it so it cannot rotate on the
+shaft. The same stick must stay on the same oar.
+
+**Zeroing.** With the oar square to the boat (blade at right angles), hold the
+front button (A) for two seconds. The screen flashes and that position becomes
+0 degrees. Until a stick is zeroed the angle is relative to where it started,
+and the stick shows `not zeroed`. The B button switches between the angle and
+a large version of its id. The stick works out which way is the bow: the catch
+always has the larger angle.
+
+**Pairing.** Settings → SENSORS → **Oar sensors** → **OPEN**, then **PAIR** on
+the seat (1 is the bow) and press the front button of the stick. The seat is
+bound to that stick for good (the Tab5 remembers it); **FORGET** frees it.
+Pair the sticks one at a time so you know which is which; the 4-digit id shown
+on the stick is shown in the seat list. The row shows `online` seats against
+paired seats and the signal level.
+
+**Log.** While a session records, every stroke of every seat adds a row to
+`S####_oars.csv`:
+
+| Column | Meaning |
+| --- | --- |
+| `t_s` | session clock when the row was written |
+| `seat`, `stick` | seat number (1 = bow) and the stick's id |
+| `catch_t_s`, `finish_t_s` | when this stick's catch and finish were, on the same clock as the other files |
+| `catch_offset_ms`, `finish_offset_ms` | against the reference seat, positive = later (empty when no reference stroke matched) |
+| `catch_deg`, `finish_deg`, `arc_deg` | oar angle at the catch and finish, and the difference |
+| `drive_s`, `recovery_s` | phase times of this stroke on this oar |
+| `rssi`, `battery_pct` | signal and the stick's battery |
+
+**Building the stick firmware.** The stick is its own PlatformIO project in
+`stick/`; `src/oar_protocol.h` is shared with the Tab5 firmware:
+
+```
+cd stick
+python -m platformio run -e sticks3 -t upload
+```
+
+There is no StickS3 board file yet, so the project builds as an ESP32-S3 dev
+board with the M5Unified library, and the stick runs `NimBLE-Arduino`.
+
+**Trying it without sticks.** The `tab5_sim` build creates four simulated seats
+with slightly different timing and arc, so the Crew screen and the log can be
+seen on the bench. `tools/oar_sim.py` is a Python copy of the stick's tracker
+with a rowing simulation (`--selftest` checks catch and finish timing, bow and
+stroke side, and seat offsets; `--plot` draws it). Change the tracker in
+`stick/src/oar_tracker.h` and the Python copy together.
+
+**Known limits.** The angle drifts a little with the gyro and is pulled back
+towards the middle of the arc every stroke, so very short or very irregular
+strokes read less well. Over a long session with a stick that was knocked loose
+the zero may be off; zero again. How many packets reach the Tab5 while the
+heart rate sensor and the Shelly button are also in range has not been measured
+on the water yet.
+
 ### Settings
 
 Five tabs. Values are kept in flash.
@@ -435,6 +527,8 @@ Five tabs. Values are kept in flash.
   `analyse.py` / `replay.py`.
 - GPS: **OPEN** shows the same tiles as the GPS page. The row shows
   `SEARCHING`, `FIX`, `SCANNING` or `NO LINK`.
+- Oar sensors (StickS3, experimental): **OPEN** shows the seat list, see
+  [Oar sensors](#oar-sensors-experimental).
 
 **WIFI**
 
@@ -488,6 +582,7 @@ Each session writes `/rowing/S####_*.csv` on the SD card:
 | `_strokes.csv` | stroke | rate, drive/recovery time, one-stroke split (`split_s`), the 3-stroke split shown on screen (`split3_s`), speed, distance per stroke, distance, catch depth, check, bounce, position, catch time (`t_s`), and `rescued` when the normal threshold missed it |
 | `_seconds.csv` | second | UTC, position, speed, the 3-stroke split, distance, rate, HDOP, satellites, battery, heart rate (empty without a sensor) |
 | `_laps.csv` | lap | lap time, distance, average split and rate, strokes, average and maximum heart rate |
+| `_oars.csv` | stroke of an oar sensor | catch and finish time, offset against the stroke seat, oar angles, drive and recovery (only with oar sensors paired, see [Oar sensors](#oar-sensors-experimental)) |
 | `_info.csv` | setting | build, start time, and the detector settings in use, so a session can be replayed exactly |
 | `_imu.csv` | IMU sample (100 Hz) | raw accelerometer and gyro, filtered and unfiltered surge, vertical, threshold, catch / finish flags, GPS speed, and the boat's motion: sway_lin_g (sideways acceleration), oll_deg and yaw_deg (only with raw logging on) |
 
