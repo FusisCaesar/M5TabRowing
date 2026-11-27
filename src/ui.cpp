@@ -3574,6 +3574,7 @@ void drawCrew() {
         mix((int32_t)lroundf(s.avgDriveS * 10));
         mix((int32_t)lroundf(s.avgRecoveryS * 10));
         mix(s.id);
+        mix(s.battery);
     }
     static uint32_t shown = 0;
     static bool shownOnce = false;
@@ -3727,7 +3728,14 @@ void drawCrew() {
         c.setFont(&fonts::FreeSans9pt7b);
         c.setTextDatum(middle_left);
         c.setTextColor(th->label);
-        c.drawString(i == v.ref ? i18n::tr(i18n::CrewRef) : s.idText, CREW_TABLE_X + 52, mid);
+        bool lowBat = s.battery >= 0 && s.battery <= 25;
+        c.drawString(i == v.ref ? i18n::tr(i18n::CrewRef) : s.idText, CREW_TABLE_X + 52, lowBat ? mid - 9 : mid);
+        if (lowBat) {  // the stick's own screen is off to save its battery, so the low level is shown here
+            char bat[8];
+            snprintf(bat, sizeof(bat), "%d%%", s.battery);
+            c.setTextColor(s.battery <= 10 ? th->warn : th->caution);
+            c.drawString(bat, CREW_TABLE_X + 52, mid + 11);
+        }
 
         if (!on) {
             c.setFont(&fonts::FreeSansBold12pt7b);

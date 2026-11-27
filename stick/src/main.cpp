@@ -10,6 +10,9 @@
 #include <esp_mac.h>
 #include <esp_timer.h>
 
+#include <algorithm>
+
+#include "oar_battery.h"
 #include "oar_protocol.h"
 #include "oar_tracker.h"
 
@@ -19,10 +22,33 @@ constexpr uint32_t IMU_PERIOD_US = 10000;  // 100 Hz
 constexpr uint32_t ADV_PERIOD_MS = 50;
 constexpr uint32_t DRAW_PERIOD_MS = 100;
 constexpr uint32_t ZERO_HOLD_MS = 2000;
-constexpr uint32_t BATTERY_PERIOD_MS = 5000;
+// The screen is the biggest consumer after the radio, so it sleeps when nobody is looking: it is on for a
+// minute after the start and for 30 s after every button press. The Tab5 shows the battery of every stick.
+constexpr uint32_t BOOT_SCREEN_MS = 60000;
+constexpr uint32_t SCREEN_ON_MS = 30000;
+constexpr uint8_t SCREEN_BRIGHTNESS = 80;
 
 oartrack::Tracker tracker;
 M5Canvas canvas(&M5.Display);
+bool screenOn = true;
+uint32_t screenUntil = 0;
+
+void setScreen(bool on) {
+    if (on == screenOn) return;
+    screenOn = on;
+    if (on) {
+        M5.Display.wakeup();
+        M5.Display.setBrightness(SCREEN_BRIGHTNESS);
+    } else {
+        M5.Display.setBrightness(0);
+        M5.Display.sleep();
+    }
+}
+
+void wakeScreen(uint32_t now) {
+    screenUntil = now + SCREEN_ON_MS;
+    setScreen(true);
+}
 
 uint16_t stickId = 0;
 uint8_t seq = 0;
@@ -141,11 +167,14 @@ void draw(bool buttonDown) {
     canvas.setTextDatum(top_left);
     canvas.drawString(idText, 4, 2);
     char b[12];
-    if (batteryPct <= 100) snprintf(b, sizeof(b), "%d%%", batteryPct);
+    if (batteryPct <= 100) snprintf(b, sizeof(b), "%d%%%s", batteryPct, oarbat::usb() ? "+" : "");
     else snprintf(b, sizeof(b), "--");
     canvas.setTextDatum(top_right);
     canvas.setTextColor(batteryPct <= 15 ? TFT_RED : TFT_LIGHTGREY, TFT_BLACK);
     canvas.drawString(b, W - 4, 2);
+    canvas.setFont(&fonts::Font2);
+    snprintf(b, sizeof(b), "%.2f V", oarbat::millivolts() / 1000.0f);
+    canvas.drawString(b, W - 4, 26);
     canvas.setTextColor(TFT_WHITE, TFT_BLACK);
 
     // The oar angle on a scale of -90 to +90 degrees, with the last stroke's catch and finish.
@@ -198,6 +227,9 @@ void draw(bool buttonDown) {
 }  // namespace
 
 void setup() {
+    // 80 MHz is plenty for 100 Hz of IMU maths and keeps the radio running; the stick lives on a 250 mAh cell.
+    setCpuFrequencyMhz(80);
+
     auto cfg = M5.config();
     cfg.serial_baudrate = 115200;
     cfg.internal_imu = true;
@@ -206,51 +238,68 @@ void setup() {
     M5.Imu.setCalibration(0, 0, 0);  // the tracker finds the gyro bias itself
 
     M5.Display.setRotation(1);  // landscape
-    M5.Display.setBrightness(80);
+    M5.Display.setBrightness(SCREEN_BRIGHTNESS);
     canvas.setColorDepth(16);
     canvas.createSprite(M5.Display.width(), M5.Display.height());
+    screenUntil = millis() + BOOT_SCREEN_MS;
+
+    oarbat::begin();
+    batteryPct = (uint8_t)oarbat::percent();
 
     stickId = makeId();
     char idText[5];
     oarproto::idText(stickId, idText);
-    Serial.printf("\n[oar] stick %s, imu %d\n", idText, (int)M5.Imu.getType());
+    Serial.printf("\n[oar] stick %s, imu %d, %d MHz, battery %d mV %d%%\n", idText, (int)M5.Imu.getType(),
+                  (int)getCpuFrequencyMhz(), oarbat::millivolts(), oarbat::percent());
     bleBegin();
 }
 
 void loop() {
     M5.update();
     readImu();
+    uint32_t now = millis();
 
     bool down = M5.BtnA.isPressed();
+    bool screenWasOn = screenOn;
+    if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed()) wakeScreen(now);
+    if (down) screenUntil = now + SCREEN_ON_MS;  // stay on while the button is held
     if (down && !zeroDone && M5.BtnA.pressedFor(ZERO_HOLD_MS)) {
         tracker.zero();
         zeroDone = true;
-        zeroFlashMs = millis() ? millis() : 1;
+        zeroFlashMs = now ? now : 1;
+        wakeScreen(now);
         Serial.println("[oar] zero set");
     }
     if (!down) zeroDone = false;
-    if (M5.BtnB.wasClicked()) page = 1 - page;
+    // The click that wakes the screen only wakes it.
+    if (M5.BtnB.wasClicked() && screenWasOn) page = 1 - page;
+    if (screenOn && (int32_t)(now - screenUntil) > 0) setScreen(false);
 
-    static uint32_t lastAdv = 0, lastDraw = 0, lastBat = 0, lastLog = 0;
-    uint32_t now = millis();
-    if (now - lastBat >= BATTERY_PERIOD_MS || lastBat == 0) {
-        lastBat = now ? now : 1;
-        int lvl = M5.Power.getBatteryLevel();
-        batteryPct = lvl >= 0 && lvl <= 100 ? (uint8_t)lvl : 255;
-    }
+    static uint32_t lastAdv = 0, lastDraw = 0, lastLog = 0;
+    oarbat::update(now, screenOn);
+    int pct = oarbat::percent();
+    batteryPct = pct >= 0 && pct <= 100 ? (uint8_t)pct : 255;
     if (now - lastAdv >= ADV_PERIOD_MS) {
         lastAdv = now;
         buildAndAdvertise(down);
     }
-    if (now - lastDraw >= DRAW_PERIOD_MS) {
+    if (screenOn && now - lastDraw >= DRAW_PERIOD_MS) {
         lastDraw = now;
         draw(down);
     }
     if (now - lastLog >= 5000) {
         lastLog = now;
-        Serial.printf("[oar] angle %.1f strokes %lu rate %.1f still %d zero %d bat %u\n", tracker.angleDeg(),
-                      (unsigned long)tracker.strokeCount(), tracker.rateSpm(nowS()), tracker.still(), tracker.zeroed(),
-                      batteryPct);
+        Serial.printf("[oar] angle %.1f strokes %lu rate %.1f still %d zero %d bat %u%% %d mV%s screen %d\n",
+                      tracker.angleDeg(), (unsigned long)tracker.strokeCount(), tracker.rateSpm(nowS()),
+                      tracker.still(), tracker.zeroed(), batteryPct, oarbat::millivolts(),
+                      oarbat::usb() ? " usb" : "", screenOn);
+    }
+    // USB serial commands for testing: h = print the battery log, x = clear it, s = screen on/off.
+    while (Serial.available()) {
+        int c = Serial.read();
+        if (c == 'h') oarbat::dump(Serial);
+        else if (c == 'x') { oarbat::clear(); Serial.println("[bat-hist] cleared"); }
+        else if (c == 's') { if (screenOn) setScreen(false); else wakeScreen(now); }
     }
     delay(1);
 }
