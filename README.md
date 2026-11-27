@@ -474,6 +474,20 @@ paired seats and the signal level.
 | `drive_s`, `recovery_s` | phase times of this stroke on this oar |
 | `rssi`, `battery_pct` | signal and the stick's battery |
 
+**Battery.** The StickS3 has a 250 mAh cell. To make it last, the stick runs its CPU at 80 MHz and its screen
+sleeps: it is on for a minute after the start and for 30 s after every button press (A or B wakes it; the
+press that wakes it does nothing else). The Tab5 shows a stick's battery in the seat list, and on the Crew
+screen once it is at 25% or below. The percentage is the median voltage of the last 10 s on a Li-ion discharge
+curve. It only goes down while the stick is on battery and shows a `+` while USB is plugged in, then it is an
+estimate, because the charger lifts the voltage. The stick also switches off the 5 V boost converter that
+M5Unified turns on by default (Grove, Hat and IR power, none of which is used): left on, it drained the cell
+and fought the USB supply, so the stick barely charged and its voltage reading jumped by 100 mV. A cell that
+is nearly empty reads 1-5% below 3.5 V.
+
+For a discharge test the stick logs its battery voltage and level every minute in flash (the last 16 hours,
+screen and USB state included). Plug it in over USB and send `h` on the serial port (115200 baud) to print it,
+`x` to clear it, `s` to switch its screen.
+
 **Flashing the stick.** Easiest from the [install page](https://fusiscaesar.github.io/M5TabRowing/) in Chrome or Edge: press **Oar sensor (StickS3)**, choose the port, repeat for every stick.
 
 **Building the stick firmware.** The stick is its own PlatformIO project in
