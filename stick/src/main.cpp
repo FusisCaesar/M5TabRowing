@@ -233,6 +233,9 @@ void setup() {
     auto cfg = M5.config();
     cfg.serial_baudrate = 115200;
     cfg.internal_imu = true;
+    // Leave the 5 V boost converter (Grove, Hat and IR power) off. M5Unified switches it on by default; it
+    // drains the cell and, with USB plugged in, fights the USB supply, so the stick barely charged.
+    cfg.output_power = false;
     M5.begin(cfg);
     Serial.setTxTimeoutMs(0);
     M5.Imu.setCalibration(0, 0, 0);  // the tracker finds the gyro bias itself
@@ -300,6 +303,17 @@ void loop() {
         if (c == 'h') oarbat::dump(Serial);
         else if (c == 'x') { oarbat::clear(); Serial.println("[bat-hist] cleared"); }
         else if (c == 's') { if (screenOn) setScreen(false); else wakeScreen(now); }
+        else if (c == 'r') {  // the power chip's registers, to see how it is set up
+            uint8_t reg[0x2C] = {0};
+            M5.In_I2C.readRegister(0x6E, 0x00, reg, sizeof(reg), 100000);
+            for (int i = 0; i < (int)sizeof(reg); i += 8) {
+                Serial.printf("[pm1] %02X:", i);
+                for (int k = i; k < i + 8 && k < (int)sizeof(reg); k++) Serial.printf(" %02X", reg[k]);
+                Serial.println();
+            }
+            Serial.printf("[pm1] charging %d state %d usb %d vbus %d\n", (int)M5.Power.isCharging(),
+                          (int)M5.Power.getChargeState(), (int)oarbat::usb(), (int)M5.Power.getVBUSVoltage());
+        }
     }
     delay(1);
 }
